@@ -97,6 +97,7 @@ The map servers run [Acekorneya's POK image](https://github.com/Acekorneya/Ark-S
 which Obelisk drives rather than replaces.
 
 Design and reasoning: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+Things that fail silently, and what Obelisk does about them: [docs/GOTCHAS.md](docs/GOTCHAS.md).
 Every setting: [docs/SETTINGS.md](docs/SETTINGS.md) (generated from the schema).
 
 ## Running the tests

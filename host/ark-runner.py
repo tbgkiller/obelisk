@@ -280,6 +280,19 @@ def _first_running_map():
     return None
 
 
+# A failed download leaves a shell of a folder. There is no manifest to check against,
+# so compare each install with its siblings: anything far smaller than the median of the
+# others is worth a second look. Deliberately a flag, not a verdict - some mods really
+# are tiny - but it turns an invisible failure into a visible question.
+def _looks_stub(mod_id, sizes):
+    others = [v["files"] for k, v in sizes.items() if k != mod_id]
+    if len(others) < 3:
+        return False
+    others.sort()
+    median = others[len(others) // 2]
+    return sizes[mod_id]["files"] * 2 <= median
+
+
 def a_verify_mods(args, cfg):
     """Compare what settings ask for, what a map is actually running, and what is on disk."""
     want = _mods_from_env_file()
@@ -292,21 +305,45 @@ def a_verify_mods(args, cfg):
 
     # Mod folders are named <modid>_<fileid> under the game's own Mods tree. Find them
     # rather than assuming the path, which changes between game versions.
+    # Presence is not health. A mod whose download failed part way leaves a folder and
+    # a subfolder behind with almost nothing in them - it is listed on the launch line,
+    # it looks installed, and it silently does nothing in game. So measure each install
+    # as well as finding it.
     rc2, out2 = run(["docker", "exec", container, "sh", "-c",
-                     "find /home/pok/arkserver/ShooterGame/Binaries -maxdepth 6 -type d "
-                     "-name '[0-9]*_[0-9]*' 2>/dev/null"], timeout=120)
-    on_disk = []
-    for line in out2.split():
-        base = line.rsplit("/", 1)[-1]
-        mid = base.split("_", 1)[0]
-        if mid.isdigit() and mid not in on_disk:
+                     "for d in $(find /home/pok/arkserver/ShooterGame/Binaries -maxdepth 6 "
+                     "-type d -name '[0-9]*_[0-9]*' 2>/dev/null); do "
+                     "echo \"$(basename $d) $(find $d -type f 2>/dev/null | wc -l) "
+                     "$(du -sk $d 2>/dev/null | cut -f1)\"; done"], timeout=180)
+    on_disk, sizes = [], {}
+    for line in out2.strip().splitlines():
+        bits = line.split()
+        if len(bits) != 3 or "_" not in bits[0]:
+            continue
+        mid = bits[0].split("_", 1)[0]
+        if not mid.isdigit():
+            continue
+        try:
+            files, kb = int(bits[1]), int(bits[2])
+        except ValueError:
+            continue
+        if mid not in on_disk:
             on_disk.append(mid)
+        sizes[mid] = {"files": files, "kb": kb}
+
+    if sizes:
+        lines_sizes = ["  %-10s %4d file(s) %6.1f MB%s"
+                       % (m, sizes[m]["files"], sizes[m]["kb"] / 1024.0,
+                          "   <- suspiciously small" if _looks_stub(m, sizes) else "")
+                       for m in sorted(sizes)]
+    else:
+        lines_sizes = ["  (couldn't measure the installs)"]
 
     lines = ["checked against %s" % container,
              "  settings ask for : %s" % (", ".join(want) or "(none)"),
              "  actually running : %s" % (", ".join(running) or "(none)"),
              "  present on disk  : %s" % (", ".join(sorted(on_disk)) or "(none)"),
-             ""]
+             "",
+             "install sizes:"] + lines_sizes + [""]
     problems = []
 
     if want and running and want != running:
@@ -330,6 +367,14 @@ def a_verify_mods(args, cfg):
         problems.append("ON DISK BUT NOT LOADED: %s. Harmless, just leftovers from a mod you "
                         "removed - they take up space until cleaned up." % ", ".join(extra))
 
+    stubs = [m for m in (running or want) if m in sizes and _looks_stub(m, sizes)]
+    if stubs:
+        problems.append(
+            "LOOKS INSTALLED BUT ISN'T: %s. These have a folder but barely any content - "
+            "a download that failed part way and was never retried. The server lists them "
+            "on the launch line and they do nothing in game, with no error anywhere. Use "
+            "redownload_mod to clear and refetch." % ", ".join(stubs))
+
     order_list = running or want
     stackers = [m for m in order_list if m in STACKING_MODS]
     if stackers and order_list and order_list[0] not in STACKING_MODS:
@@ -342,6 +387,43 @@ def a_verify_mods(args, cfg):
                                     % len(order_list)])
 
 
+def a_redownload_mod(args, cfg):
+    """Clear one mod's install so the server fetches it again on next start.
+
+    Deleting a mod folder is safe - the server re-downloads it - but it is still a
+    delete inside the operator's appdata, so it refuses while the cluster is running
+    rather than yanking files from under a live server.
+    """
+    mod = str(args.get("mod", "")).strip()
+    if not mod.isdigit():
+        return False, "give a numeric mod id"
+    # Safety first: whether the cluster is running matters more than whether the path
+    # resolves, so it is the answer the operator gets when both are true.
+    rc, out = run(["docker", "ps", "--format", "{{.Names}}"], timeout=30)
+    if any(n.startswith("asa_") for n in out.split()):
+        return False, ("stop the cluster first - removing mod files while servers are "
+                       "running gets you a half-deleted install, not a clean refetch")
+
+    appdata = APPDATA
+    root = os.path.join(appdata, "ServerFiles", "arkserver", "ShooterGame", "Binaries",
+                        "Win64", "ShooterGame", "Mods")
+    if not os.path.isdir(root):
+        return False, "mods folder not found under %s - check the appdata path" % appdata
+
+    removed = []
+    for dirpath, dirnames, _ in os.walk(root):
+        for d in list(dirnames):
+            if d.split("_", 1)[0] == mod:
+                target = os.path.join(dirpath, d)
+                shutil.rmtree(target, ignore_errors=True)
+                removed.append(target)
+    if not removed:
+        return False, "no install found for mod %s - nothing to clear" % mod
+    return True, ("cleared %s. Start the cluster and the server will download it again; "
+                  "run verify_mods afterwards to confirm it came back a sensible size."
+                  % ", ".join(removed))
+
+
 ACTIONS = {
     "ping":            a_ping,
     "validate_share":  a_validate_share,
@@ -349,6 +431,7 @@ ACTIONS = {
     "settings_pull":   a_settings_pull,
     "list_snapshots":  a_list_snapshots,
     "verify_mods":     a_verify_mods,
+    "redownload_mod":  a_redownload_mod,
     "restart_map":     a_restart_map,
     "recreate_all":    a_recreate_all,
     "update_core":     a_update_core,

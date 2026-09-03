@@ -19,6 +19,7 @@ spec = importlib.util.spec_from_file_location("runner", os.path.join(HERE, "ark-
 r = importlib.util.module_from_spec(spec); spec.loader.exec_module(r)
 
 base = tempfile.mkdtemp()
+r.APPDATA   = os.path.join(base, "appdata")
 r.SHARED    = os.path.join(base, "Shared")
 r.CMD_DIR   = os.path.join(r.SHARED, "commands")
 r.RES_DIR   = os.path.join(r.SHARED, "results")
@@ -114,15 +115,14 @@ check("recreate_all blocked when count unknown", not result(c)["ok"], result(c)[
 # actually launched with, and what made it onto disk.
 
 def fake_docker(ps_names, env_mods, disk_ids):
+    """Installs of a normal, healthy size - the stub case has its own fake below."""
     def _run(args, timeout=300):
         if args[:3] == ["docker", "ps", "--format"]:
             return 0, " ".join(ps_names)
         if len(args) > 4 and args[1] == "exec" and args[3:] == ["printenv", "MOD_IDS"]:
             return 0, env_mods + "\n"
         if len(args) > 3 and args[1] == "exec" and args[3] == "sh":
-            return 0, "\n".join("/home/pok/arkserver/ShooterGame/Binaries/Win64/"
-                                 "ShooterGame/Mods/83374/%s_555%d" % (m, n)
-                                 for n, m in enumerate(disk_ids))
+            return 0, "\n".join("%s_555%d 7 3000" % (m, n) for n, m in enumerate(disk_ids))
         return 0, ""
     return _run
 
@@ -171,6 +171,68 @@ r.run = fake_docker(["obelisk"], "", [])
 c = queue("verify_mods"); r.main()
 check("no false all-clear when nothing is running",
       not result(c)["ok"] and "no map containers" in result(c)["output"], result(c)["output"])
+
+# ---- presence is not health: a stub install must be caught
+def fake_docker_sized(ps_names, env_mods, sized):
+    """sized: {mod_id: (files, kb)}"""
+    def _run(args, timeout=300):
+        if args[:3] == ["docker", "ps", "--format"]:
+            return 0, " ".join(ps_names)
+        if len(args) > 4 and args[1] == "exec" and args[3:] == ["printenv", "MOD_IDS"]:
+            return 0, env_mods + "\n"
+        if len(args) > 3 and args[1] == "exec" and args[3] == "sh":
+            return 0, "\n".join("%s_555%d %d %d" % (m, i, f, kb)
+                                 for i, (m, (f, kb)) in enumerate(sized.items()))
+        return 0, ""
+    return _run
+
+healthy = {"929110": (6, 3000), "222222": (8, 4000), "333333": (8, 2000),
+           "444444": (6, 1500)}
+set_env_mods("929110,222222,333333,444444")
+r.run = fake_docker_sized(["asa_island"], "929110,222222,333333,444444", healthy)
+c = queue("verify_mods"); r.main()
+check("healthy installs pass", result(c)["ok"], result(c)["output"])
+check("sizes are reported", "install sizes:" in result(c)["output"])
+
+stub = dict(healthy); stub["333333"] = (2, 900)          # folder there, content isn't
+r.run = fake_docker_sized(["asa_island"], "929110,222222,333333,444444", stub)
+c = queue("verify_mods"); r.main()
+out = result(c)["output"]
+check("a stub install is caught even though the folder exists",
+      not result(c)["ok"] and "LOOKS INSTALLED BUT ISN'T: 333333" in out, out)
+check("and it is flagged in the size table", "suspiciously small" in out, out)
+check("the message explains the silent-failure shape", "no error anywhere" in out)
+
+# with too few mods to compare against, don't cry wolf
+few = {"929110": (6, 3000), "222222": (2, 900)}
+set_env_mods("929110,222222")
+r.run = fake_docker_sized(["asa_island"], "929110,222222", few)
+c = queue("verify_mods"); r.main()
+check("no stub guesswork with too small a sample", result(c)["ok"], result(c)["output"])
+
+# ---- redownload_mod
+r.run = fake_docker_sized(["asa_island"], "929110", healthy)
+c = queue("redownload_mod", {"mod": "222222"}); r.main()
+check("refuses to delete while servers are running",
+      not result(c)["ok"] and "stop the cluster first" in result(c)["output"], result(c)["output"])
+r.run = fake_docker_sized(["obelisk"], "929110", healthy)
+c = queue("redownload_mod", {"mod": "not-a-number"}); r.main()
+check("refuses a non-numeric mod id", not result(c)["ok"], result(c)["output"])
+import os as _os
+modroot = _os.path.join(r.APPDATA, "ServerFiles", "arkserver", "ShooterGame", "Binaries",
+                        "Win64", "ShooterGame", "Mods", "83374")
+_os.makedirs(modroot, exist_ok=True)
+
+c = queue("redownload_mod", {"mod": "999999"}); r.main()
+check("says so when there is nothing to clear",
+      not result(c)["ok"] and "nothing to clear" in result(c)["output"], result(c)["output"])
+
+_os.makedirs(_os.path.join(modroot, "222222_5551"), exist_ok=True)
+open(_os.path.join(modroot, "222222_5551", "x.pak"), "w").write("x")
+c = queue("redownload_mod", {"mod": "222222"}); r.main()
+check("clears the install when the cluster is stopped", result(c)["ok"], result(c)["output"])
+check("the folder is actually gone", not _os.path.isdir(_os.path.join(modroot, "222222_5551")))
+check("and it says what to do next", "download it again" in result(c)["output"])
 
 r.run = _real_run
 
