@@ -183,10 +183,13 @@ web UI after it is running.
 |---|---|---|---|---|---|
 | RAM cap per map | `mem_limit` | memory | `20g` | UI | recreate |
 | Cluster data folder | `appdata` | text | `/mnt/user/appdata/ark` | container template | recreate |
+| RAM budget for this host | `host_ram_gb` | int | `0` | UI | none |
 
 **RAM cap per map** - A cap, not a reservation - unused headroom costs nothing. If a map is OOM-killed you'll see it restart repeatedly with the container itself reporting a clean exit, because only the game process is killed. Override per map for the heavy ones.
 
 **Cluster data folder** - Where server files, saves and the shared config live on the host. Put this on an SSD or NVMe pool, never the spinning array - ASA is very I/O hungry. Changing it moves the whole cluster and needs a recreate.
+
+**RAM budget for this host** - How much memory this machine can give to ARK, in GB. Obelisk refuses to launch a cluster whose caps exceed it, rather than letting the host start killing servers under load. 0 turns the check off.
 
 
 ## Advanced

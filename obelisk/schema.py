@@ -265,6 +265,13 @@ SETTINGS = [
          target="obelisk:restart_notice_minutes", apply="recreate",
          help="Minutes of in-game warning before a scheduled restart or update."),
 
+    dict(key="host_ram_gb", label="RAM budget for this host", group="Resources",
+         type="int", default=0, min=0, max=4096, target="obelisk:host_ram_gb",
+         apply="none",
+         help="How much memory this machine can give to ARK, in GB. Obelisk refuses to "
+              "launch a cluster whose caps exceed it, rather than letting the host "
+              "start killing servers under load. 0 turns the check off."),
+
     # ---------------------------------------------------------------- Advanced
     dict(key="extra_gameusersettings", label="Extra GameUserSettings.ini",
          group="Advanced", type="longtext", default="", max_len=20000,
