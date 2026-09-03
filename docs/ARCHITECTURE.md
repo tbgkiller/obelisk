@@ -46,11 +46,18 @@ shim that fetches settings from Obelisk, exports them as env, and execs POK's or
 entrypoint. We consume POK rather than forking it; the pin means an upstream change
 can't surprise ten servers at once.
 
-**Config changes need no Docker access.** Obelisk signals a map to reload, the shim exits
-cleanly, `restart: unless-stopped` brings the container back, and it re-fetches config on
-the way up. Docker access is only needed to add/remove a map or pull a new ARK image -
-which stays on the whitelisted host runner (`unraid/ark-runner.py`), or moves to a docker
-socket proxy later if Obelisk should be fully self-contained.
+**Docker access: the direct socket, decided deliberately.** Obelisk mounts the host
+socket. A filtered proxy was the earlier plan and was dropped on inspection: Obelisk has
+to *create* containers with bind mounts, so any proxy permitting that already permits
+host-root-equivalent access. The proxy would have added a container and a config surface
+while leaving the actual risk in place. Reducing exposure means keeping untrusted input
+away from the socket-holding process - splitting the Discord relay out - not filtering
+the socket.
+
+One consequence worth keeping: config changes still do not need Docker. Obelisk signals
+a map to reload, the shim exits cleanly, `restart: unless-stopped` brings it back, and it
+re-fetches config on the way up. Docker is for creating, destroying and pulling - the
+rarer operations - so a broken socket degrades the product rather than stopping it.
 
 **Generate compose, don't drive the container API.** Slightly less pure, but the stack
 stays inspectable and recoverable by hand when Obelisk is broken or stopped. Keep a

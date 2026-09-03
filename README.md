@@ -12,6 +12,28 @@ admin controls in the browser.
 > built and tested. The admin UI and the packaged image are not finished yet. Nothing
 > here is ready for someone else's live cluster.
 
+## What Obelisk is trusted with
+
+Obelisk creates and manages your map containers, so it needs the host's Docker socket
+mounted in. Be clear about what that means: **anything that can create a container with
+a bind mount can read and write any file on the host.** Obelisk is trusted
+infrastructure on your server, not just another app, and a serious bug in it is a
+serious bug on the host.
+
+That is the same deal Portainer, Dockge and Watchtower ask for, and there is no way to
+run containers without it. A filtered socket proxy sounds like the safer answer, but it
+would still have to permit container creation — which is the powerful part — so it adds
+moving parts without meaningfully shrinking the blast radius. Not worth pretending
+otherwise.
+
+What that buys in return: no compose file to hand-write, no port arithmetic, and
+add-a-map as a checkbox rather than an editing session.
+
+If you want to reduce exposure, the useful move is not a proxy — it is keeping
+untrusted input away from the process that holds the socket. Today the only such input
+is Discord chat. Splitting that into its own socket-less container is a real
+improvement and is on the roadmap; a proxy is not.
+
 ## Installing
 
 Two phases, because Docker has to know a few things before Obelisk exists.

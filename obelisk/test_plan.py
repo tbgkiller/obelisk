@@ -120,5 +120,52 @@ try:
 except ValueError as e:
     check("a bad plan is never written out", "budget" in str(e), str(e))
 
+# ---- reading host port usage from docker
+from . import dockerctl
+_real = dockerctl._run
+
+dockerctl._run = lambda a, timeout=60: (0,
+    "0.0.0.0:8088->8088/tcp, :::8088->8088/tcp\n"
+    "0.0.0.0:7777->7777/udp, :::7777->7777/udp\n"
+    "7779/udp\n"                       # exposed but not published - not in use on the host
+    "0.0.0.0:27020->27020/tcp\n")
+got = dockerctl.ports_in_use()
+check("reads published host ports", got == {8088, 7777, 27020}, got)
+check("ignores a port that is only exposed", 7779 not in got, got)
+
+dockerctl._run = lambda a, timeout=60: (1, "Cannot connect to the Docker daemon")
+check("returns None when docker is unreachable", dockerctl.ports_in_use() is None)
+# available() has three distinct failure modes and each should name its own cause
+import shutil as _sh
+_real_which = dockerctl.shutil.which
+
+dockerctl.shutil.which = lambda n: None
+ok, msg = dockerctl.available()
+check("names a missing docker CLI", not ok and "CLI is missing" in msg, msg)
+
+dockerctl.shutil.which = lambda n: "/usr/bin/docker"
+dockerctl._run = lambda a, timeout=60: (1, "Cannot connect to the Docker daemon")
+ok, msg = dockerctl.available()
+check("names an unmounted socket", not ok and "/var/run/docker.sock" in msg, msg)
+
+def _no_compose(a, timeout=60):
+    return (0, "27.0.0") if a[1] == "version" else (1, "unknown command")
+dockerctl._run = _no_compose
+ok, msg = dockerctl.available()
+check("names a missing compose plugin", not ok and "compose plugin" in msg, msg)
+
+dockerctl._run = lambda a, timeout=60: (0, "27.0.0")
+ok, msg = dockerctl.available()
+check("reports the server version when all is well", ok and "27.0.0" in msg, msg)
+
+dockerctl.shutil.which = _real_which
+
+dockerctl._run = _real
+
+# a plan built from real host usage skips those ports
+p = build_plan(store(), in_use_ports={7777, 27020})
+check("planning around live host ports", p["maps"][0]["game_port"] == 7778
+      and p["maps"][0]["rcon_port"] == 27021, p["maps"][0])
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
