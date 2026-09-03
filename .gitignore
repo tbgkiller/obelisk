@@ -1,0 +1,21 @@
+# ---------------------------------------------------------------------------
+# This repo is the product. Nothing specific to one person's cluster is in it.
+# ---------------------------------------------------------------------------
+
+# Your cluster: runbook, current config, snapshots, notes. Kept on disk,
+# never published. Obelisk's own settings store lives on the server, not here.
+local/
+
+# Secrets and generated output - Obelisk writes these, they are never source.
+.env
+*.env
+settings.json
+compose.generated.yml
+
+# Scratch
+__pycache__/
+*.pyc
+*.bak
+*.bak.*
+Claude outputs/
+_to_delete*/
