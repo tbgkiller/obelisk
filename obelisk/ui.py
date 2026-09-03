@@ -15,6 +15,7 @@ import html
 from .schema import SETTINGS, GROUPS, INSTALL_KEYS
 from . import maps as mapcat
 from .presets import PRESETS
+from . import mods as modlib
 
 CSS = """
 :root{color-scheme:dark}
@@ -64,7 +65,8 @@ def _e(v):
 
 
 def page(title, body, nav_on=""):
-    tabs = [("/", "Status"), ("/admin", "Settings"), ("/admin/cluster", "Cluster")]
+    tabs = [("/", "Status"), ("/admin", "Settings"), ("/admin/cluster", "Cluster"),
+            ("/admin/mods", "Mods")]
     nav = "".join('<a href="%s"%s>%s</a>' % (h, ' class=on' if h == nav_on else "", _e(t))
                   for h, t in tabs)
     return ("<!doctype html><html><head><meta charset=utf-8>"
@@ -188,3 +190,67 @@ def render_setup(setup_needed=True, error=""):
             '<div class=help>Printed to the container log when Obelisk first started. '
             'Run <code>docker logs obelisk</code> to see it.</div></div></fieldset>'
             % err)
+
+
+STATUS_STYLE = {"ok": ("ok", "installed"),
+                "stub": ("bad", "BROKEN INSTALL"),
+                "missing": ("bad", "not downloaded"),
+                "orphan": ("warn", "leftover")}
+
+
+def render_mods(store, health=None):
+    """The mod list, in load order, with what is actually on disk beside each one.
+
+    Order is the first thing people get wrong and install health is the second, so both
+    are on the same screen: a mod can be listed, present, and still not installed.
+    """
+    ids = modlib.parse(store.get("mod_ids"))
+    health = health or {}
+    rows = []
+    for i, m in enumerate(ids):
+        h = health.get(m, {})
+        cls, label = STATUS_STYLE.get(h.get("status", ""), ("", "not checked"))
+        detail = ("%d files, %s MB" % (h["files"], h["mb"])) if h.get("files") else "-"
+        note = ('<div class=help>%s</div>' % _e(h["note"])) if h.get("note") else ""
+        first = ' <span class=tag title="loads first, so it wins conflicts">first</span>' if i == 0 else ""
+        rows.append(
+            "<tr><td class=num>%d</td><td><code>%s</code>%s</td>"
+            "<td class=%s>%s%s</td><td class=num>%s</td><td class=num>"
+            '<button class=ghost name=up value="%s"%s>&uarr;</button> '
+            '<button class=ghost name=down value="%s"%s>&darr;</button> '
+            '<button class=ghost name=drop value="%s">Remove</button>'
+            "%s</td></tr>"
+            % (i + 1, _e(m), first, cls, _e(label), note, _e(detail),
+               _e(m), " disabled" if i == 0 else "",
+               _e(m), " disabled" if i == len(ids) - 1 else "",
+               _e(m),
+               ' <button name=refetch value="%s" title="clear it so the server '
+               'downloads it again">Re-download</button>' % _e(m)
+               if h.get("status") in ("stub", "missing") else ""))
+
+    if not rows:
+        rows = ['<tr><td colspan=5 class=help>No mods. The cluster runs vanilla.</td></tr>']
+
+    broken = [m for m, h in health.items() if h.get("status") in ("stub", "missing")]
+    banner = ""
+    if broken:
+        banner = ('<div class=problem>%s looks installed but is not - a download that '
+                  'failed part way. It loads nothing and reports no error. Re-download '
+                  'it rather than changing the order; order only decides which of two '
+                  '<em>loaded</em> mods wins.</div>' % _e(", ".join(sorted(broken))))
+
+    return ('<form method=post action="/admin/mods">%s'
+            '<fieldset><legend>Mods, in load order</legend>'
+            '<table><tr><th class=num>#</th><th>Mod</th><th>On disk</th>'
+            '<th class=num>Size</th><th class=num>Order</th></tr>%s</table>'
+            '<div class=help style="margin-top:10px">A mod earlier in the list wins '
+            'conflicting changes, which is why stacking mods have to be first. '
+            'Reordering takes effect on the next cluster recreate.</div>'
+            '</fieldset>'
+            '<fieldset><legend>Add a mod</legend><div class=f>'
+            '<label>CurseForge mod ID</label>'
+            '<input type=text name=addmod placeholder="e.g. 929110" inputmode=numeric> '
+            '<button type=submit name=action value=add>Add</button>'
+            '<div class=help>The number in the mod\u2019s CurseForge URL. New mods are '
+            'added last so they cannot silently outrank something that already works.'
+            '</div></div></fieldset></form>' % (banner, "".join(rows)))
