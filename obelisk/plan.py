@@ -51,6 +51,13 @@ def build_plan(store, in_use_ports=None, host_ram_gb=None):
     in_use = set(in_use_ports or ())
     known_usage = in_use_ports is not None
 
+    # Default the budget from the store rather than requiring every caller to pass it.
+    # A safety check that silently switches itself off when someone forgets an argument
+    # is worse than no check at all - the UI did exactly that and offered a Launch
+    # button for a cluster that would have overcommitted the host.
+    if host_ram_gb is None:
+        host_ram_gb = store.get("host_ram_gb") or None
+
     raw = store.get("maps")
     keys = [k.strip() for k in str(raw).split(",") if k.strip()] if isinstance(raw, str) else list(raw)
     chosen = mapcat.resolve(keys)

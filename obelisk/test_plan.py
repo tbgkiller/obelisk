@@ -73,7 +73,14 @@ p = build_plan(store(maps="island,center", mem_limit="20g"), in_use_ports=[], ho
 check("warns when close to the budget without refusing",
       p["ok"] and any("close enough to watch" in n for n in p["notes"]), p)
 p = build_plan(store(maps="island,center", mem_limit="20g"), in_use_ports=[], host_ram_gb=0)
-check("budget of 0 turns the check off", p["ok"] and not p["notes"] or p["ok"])
+check("budget of 0 turns the check off", p["ok"])
+
+# The budget must apply even when the caller says nothing - a safety check that turns
+# itself off when an argument is forgotten is worse than no check at all.
+p = build_plan(store(maps="island,center,scorched", mem_limit="90g", host_ram_gb=32),
+               in_use_ports=[])
+check("the budget applies without being passed explicitly",
+      not p["ok"] and any("budget" in x for x in p["problems"]), p["problems"])
 
 # ---- unfinished setup shows up as a plan problem, not a crash later
 st = Store(os.path.join(tempfile.mkdtemp(), "s.json"))

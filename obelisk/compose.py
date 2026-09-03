@@ -36,8 +36,7 @@ def generate_compose(store, project="ark", in_use_ports=None):
         raise ValueError("no maps selected - pick at least one")
 
     # One source of truth for ports and memory: if the plan won't boot, nothing is written.
-    plan = build_plan(store, in_use_ports=in_use_ports,
-                      host_ram_gb=store.get("host_ram_gb") or None)
+    plan = build_plan(store, in_use_ports=in_use_ports)
     if not plan["ok"]:
         raise ValueError("can't generate this cluster: " + "; ".join(plan["problems"]))
     by_key = {r["map"]: r for r in plan["maps"]}
