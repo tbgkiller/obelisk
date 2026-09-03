@@ -70,7 +70,7 @@ _Generated from the schema - do not edit by hand._
 
 **Join password** - Leave blank for an open server. Anyone with this can join.
 
-**Admin / RCON password** - Grants in-game admin AND is the RCON password Obelisk uses. Treat it like a root password.
+**Admin / RCON password** - Grants in-game admin AND is the RCON password Obelisk uses. Treat it like a root password. You can save settings without it, but the cluster won't start until it's set.
 
 **Require BattlEye** - Turn off only if you add a mod that isn't BattlEye-compatible.
 

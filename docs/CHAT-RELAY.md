@@ -1,33 +1,39 @@
 # Chat relay
 
-Tiny RCON-based relay: global chat on any map shows up on every other map as
-`SERVER: [Map] Name: message`, and (optionally) in a Discord channel. Messages
-typed in that Discord channel are pushed to all maps as `[Discord] Name: message`.
+Global chat on any map shows up on every other map as `SERVER: [Map] Name: message`,
+and optionally in a Discord channel. Messages typed in that Discord channel are pushed
+to every map as `[Discord] Name: message`.
 
-Runs as the `obelisk` service in the generated stack. Configure it through the settings
-store (or the `.env` Obelisk generates):
+Runs inside Obelisk itself - there is no separate container and nothing to configure
+before it starts. Chat between maps works out of the box. Discord is opt-in, and every
+value below is entered in **Obelisk → Settings → Discord**; you never edit a file.
 
-```
-DISCORD_TOKEN=          # from https://discord.com/developers/applications -> Bot -> Reset Token
-DISCORD_CHANNEL_ID=     # right-click the channel -> Copy Channel ID (enable Developer Mode in Discord settings)
-```
+## Connecting Discord (one-time)
 
-Discord bot checklist (one-time):
-1. https://discord.com/developers/applications -> New Application -> name it (e.g. ACME Ark Chat).
-2. Bot tab -> Reset Token -> copy it into DISCORD_TOKEN. Turn ON "Message Content Intent".
-3. OAuth2 -> URL Generator: scope `bot`, permissions `View Channels`, `Send Messages`,
-   `Read Message History`. Open the generated URL and invite the bot to the ACME server.
-4. Create/pick the relay channel, copy its ID into DISCORD_CHANNEL_ID.
-5. Compose Down/Up the stack (or just restart the `obelisk` container).
+1. Go to <https://discord.com/developers/applications> → **New Application** and name it.
+2. **Bot** tab → **Reset Token** → copy it. Turn **Message Content Intent** ON, or the
+   bot can see that messages arrived but not what they say.
+3. **OAuth2 → URL Generator**: scope `bot`, permissions `View Channels`, `Send Messages`,
+   `Read Message History`. Open the generated URL and invite the bot to your server.
+4. In Discord, enable **Developer Mode** (Settings → Advanced), then right-click your
+   relay channel → **Copy Channel ID**.
+5. In Obelisk, paste the token into **Discord bot token** and the ID into
+   **Chat relay channel ID**, then save. The relay reconnects on its own.
 
-Optional extras (all in the stack's `.env`):
+## Optional channels
 
-```
-DISCORD_TRIBELOG_CHANNEL_ID=   # tribe logs (tames, deaths, structures) -> this channel, prefixed [Map]
-DISCORD_ADMIN_CHANNEL_ID=      # AdminCmd lines + "map down/back" alerts -> this channel; accepts commands
-DISCORD_ADMIN_ROLE_ID=         # if set, only members with this role may run commands (keep the channel private!)
-JOIN_LEAVE=TRUE                # "-> Name joined The Island" / "<- Name left Ragnarok" in the relay channel
-```
+Set these in the same place. Each is independent - leave any of them blank.
+
+| Setting | What it does |
+|---|---|
+| Tribe log channel ID | Tames, deaths and structure events, prefixed with the map |
+| Admin channel ID | Admin commands and "map down / back" alerts, and accepts commands |
+| Admin role ID | If set, only members with this role may run admin commands |
+| Discord invite link | What the in-game `!discord` command replies with |
+| Announce joins and leaves | `-> Name joined The Island` / `<- Name left Ragnarok` |
+
+Keep the admin channel private. Anyone who can post in it can run admin commands
+against your cluster, and the role gate is a second lock rather than the only one.
 
 Admin channel commands: `!maps`, `!players`, `!broadcast <msg>`, `!save [map|all]`,
 `!rcon <map|all> <command>` (e.g. `!rcon island ListPlayers`, `!rcon all SaveWorld`).
@@ -47,21 +53,26 @@ Any player can type these in normal in-game chat on any map; the bot replies int
 
 When a player joins a map they get a welcome line pointing them at `!help` and `!discord`.
 
-Configure without touching code via the stack `.env` (all optional – sensible defaults are baked in):
+All of these live in **Obelisk → Settings**, and all are optional:
 
-```
-DISCORD_INVITE=                         # your own invite; blank disables !discord
-PLAYER_HELP_MSG=ACME commands: !help (list), !discord (invite)
-WELCOME_ENABLED=TRUE                            # set FALSE to turn off the join greeting
-WELCOME_MSG=Welcome {name} to ACME Cluster - {label}! Type !help in chat for commands, or !discord for our Discord.
-```
-
-To add more commands, edit `player_command()` in `bot.py` and redeploy (rebuild the `obelisk` service).
+| Setting | What it does |
+|---|---|
+| Discord invite link | What `!discord` replies with. Blank disables the command. |
+| Welcome new arrivals | Whispers a greeting to the joining player instead of broadcasting it |
+| Welcome message | The greeting itself. `{name}`, `{label}` and `{cluster}` are filled in. |
+| Player help message | What `!help` lists |
 
 ## Multi-line chat messages
 
-`say()` splits on `|` (and newline), sending each piece as its own in-game chat row, so long messages never wrap mid-word. Put `|` where you want a break. The welcome default is:
+In-game chat wraps badly mid-word, so Obelisk splits on `|` (and on newlines) and sends
+each piece as its own chat row. Put a `|` wherever you want a line break:
 
-`Welcome {name} to ACME Cluster - {label}!|Type !help in chat for commands,|or !discord for our Discord.`
+`Welcome {name} to {cluster} - {label}!|Type !help in chat for commands.`
 
--> three clean lines in-game. Edit `WELCOME_MSG` / `PLAYER_HELP_MSG` (in `.env` or the bot.py defaults) and add `|` wherever a new line should start.
+becomes two clean lines in game.
+
+## Adding commands
+
+New chat commands mean a code change - `player_command()` in `obelisk/bot.py` - rather
+than a setting. That is deliberate: a command runs code, so it belongs in the image
+that gets built and reviewed, not in configuration anyone with the admin page can edit.

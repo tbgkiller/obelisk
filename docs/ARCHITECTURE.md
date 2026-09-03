@@ -63,12 +63,15 @@ be able to take ten maps down with no way back.
 |---|---|---|
 | Code, Dockerfiles, compose templates, scripts | git ► Actions ► GHCR | reviewable, versioned, and the update notification |
 | Cluster settings (rates, mods, names, ports, wipe times) | Obelisk's own store | one writer, no drift |
-| Secrets (Discord token, admin password) | Obelisk's store, never git | `.gitignore` + `.env.example` |
+| Secrets (Discord token, admin password) | Obelisk’s store, entered in the UI, never git | never templated, never committed |
 | Settings backup / profile sharing | push/pull to a user-chosen share | portable, and a way back |
 
 ## Staging
 
-1. Settings store + generation of `.env` / `compose.yaml` / INIs from it.
+1. Settings store + generation of `.env` / `compose.yaml` / INIs from it, and a
+   first run that needs nothing but starting the container: Obelisk creates its own
+   store, prints a one-time setup code to the log, and collects the rest in the UI.
+   Nothing ships with blank slots for an operator's data.
 2. Thin ARK image with the fetch-on-start shim; move one map onto it before all ten.
 3. Admin UI: share path, push/pull, restart, update, schedule editing.
 4. Packaging: image, template, docs. Community Applications only if we decide to publish.

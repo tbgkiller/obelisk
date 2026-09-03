@@ -135,7 +135,7 @@ def validate(key, value):
         out = []
         for x in [str(i).strip() for i in raw if str(i).strip()]:
             if not re.match(r"^([01]\d|2[0-3]):[0-5]\d$", x):
-                raise Invalid("%r isn't a 24-hour time like 04:30" % x)
+                raise Invalid("%r isn't a 24-hour time like 06:00" % x)
             out.append(x)
         return ",".join(out)
 
@@ -219,6 +219,24 @@ class Store:
                 target[k] = v
                 applied.add(BY_KEY[k].get("apply", "none"))
         return applied
+
+    def readiness(self):
+        """What still needs setting before this cluster can start.
+
+        Deliberately separate from validate(): a fresh install has to be able to
+        save its own untouched defaults, so 'you must set this eventually' can't
+        be the same rule as 'this value is invalid'.
+
+        Returns [] when the cluster is ready to generate.
+        """
+        blocking = []
+        for s in SETTINGS:
+            if not s.get("required_before_start"):
+                continue
+            if not str(self.get(s["key"])).strip():
+                blocking.append({"key": s["key"], "label": s["label"],
+                                 "why": s.get("help", "").split(".")[0] + "."})
+        return blocking
 
     def validate_all(self):
         """Re-check a hand-edited store. Returns {key: reason} for anything wrong."""

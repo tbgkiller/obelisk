@@ -34,6 +34,11 @@ def generate_compose(store, project="ark"):
     if not chosen:
         raise ValueError("no maps selected - pick at least one")
 
+    blocking = store.readiness()
+    if blocking:
+        raise ValueError("can't generate a cluster yet - still to set: "
+                         + "; ".join("%s (%s)" % (b["label"], b["why"]) for b in blocking))
+
     appdata   = store.get("appdata").rstrip("/")
     image     = store.get("ark_image")
     game_base = int(store.get("game_port_base"))

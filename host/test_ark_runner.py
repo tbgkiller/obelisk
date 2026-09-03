@@ -8,6 +8,10 @@ no cluster. Redirects every path at a temp dir and stubs the player count.
 Exits non-zero if anything fails. Worth re-running before any change to the
 whitelist or the share-path validation, since that is the security boundary.
 """
+# Fixture values here are deliberately synthetic - no real cluster's ids, times or
+# timezone belong in a public repo. The one exception is mod id 929110: the product
+# checks that specific public id to enforce stacking-mod load order, so a test of
+# that rule has to use the real one.
 import importlib.util, json, os, shutil, sys, tempfile, time
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -24,7 +28,8 @@ r.COMPOSE_DIR = os.path.join(base, "project")
 r.PROJECT    = "ark"
 r.ENV_FILE  = os.path.join(r.COMPOSE_DIR, ".env")
 share       = os.path.join(base, "mnt", "user", "backups")
-r.SHARE_ROOTS = (os.path.join(base, "mnt", "user") + "/",)
+r.SHARE_PREFIX = os.path.join(base, "mnt") + "/"
+r.SHARE_DENY = (os.path.join(base, "mnt", "user0"),)
 r.SETTINGS = [("env", r.ENV_FILE, 0o600),
               ("GameUserSettings.ini", os.path.join(r.CFG_DIR, "GameUserSettings.ini"), 0o644),
               ("Game.ini", os.path.join(r.CFG_DIR, "Game.ini"), 0o644)]
@@ -42,6 +47,17 @@ for bad, why in [("", "empty"), ("/etc", "outside allowlist"),
                  (os.path.join(base, "mnt", "user", "nope"), "missing dir")]:
     ok, msg = r.check_share(bad); check("reject share (%s)" % why, not ok, msg)
 ok, msg = r.check_share(share); check("accept real share", ok, msg)
+
+# a pool can be called anything, so the rule is "under /mnt", not a fixed list
+for name in ("cache", "zfs", "nvme_fast", "tank"):
+    d2 = os.path.join(base, "mnt", name, "obelisk"); os.makedirs(d2, exist_ok=True)
+    ok2, m2 = r.check_share(d2)
+    check("accepts a pool named %r" % name, ok2, m2)
+os.makedirs(os.path.join(base, "mnt", "user0", "x"), exist_ok=True)
+ok3, m3 = r.check_share(os.path.join(base, "mnt", "user0", "x"))
+check("refuses /mnt/user0 (bypasses the share layer)", not ok3, m3)
+ok4, m4 = r.check_share(os.path.join(base, "mnt", "user"))
+check("refuses a bare share root", not ok4, m4)
 
 def queue(action, args=None, ts=None, cid=None):
     os.makedirs(r.CMD_DIR, exist_ok=True)
@@ -116,29 +132,29 @@ def set_env_mods(ids):
 
 _real_run = r.run
 
-set_env_mods("929110,940003,929420")
-r.run = fake_docker(["asa_island", "obelisk"], "929110,940003,929420", ["929110", "940003", "929420"])
+set_env_mods("929110,222222,444444")
+r.run = fake_docker(["asa_island", "obelisk"], "929110,222222,444444", ["929110", "222222", "444444"])
 c = queue("verify_mods"); r.main()
 check("verify_mods passes when everything agrees", result(c)["ok"], result(c)["output"])
 check("verify_mods reports what it compared", "settings ask for" in result(c)["output"])
 
 # the exact failure this cluster hit: order changed in settings but never applied
-r.run = fake_docker(["asa_island"], "929110,931607,940003", ["929110", "931607", "940003"])
-set_env_mods("929110,940003,931607")
+r.run = fake_docker(["asa_island"], "929110,333333,222222", ["929110", "333333", "222222"])
+set_env_mods("929110,222222,333333")
 c = queue("verify_mods"); r.main()
 out = result(c)["output"]
 check("catches an unapplied order change", not result(c)["ok"] and "ORDER DIFFERS" in out, out)
 
 # a mod that never finished downloading - loaded on the launch line, absent on disk
-set_env_mods("929110,940003")
-r.run = fake_docker(["asa_island"], "929110,940003", ["929110"])
+set_env_mods("929110,222222")
+r.run = fake_docker(["asa_island"], "929110,222222", ["929110"])
 c = queue("verify_mods"); r.main()
 out = result(c)["output"]
-check("catches a mod missing from disk", not result(c)["ok"] and "MISSING FROM DISK: 940003" in out, out)
+check("catches a mod missing from disk", not result(c)["ok"] and "MISSING FROM DISK: 222222" in out, out)
 
 # stacking mod demoted - silently stops working
-set_env_mods("940003,929110")
-r.run = fake_docker(["asa_island"], "940003,929110", ["940003", "929110"])
+set_env_mods("222222,929110")
+r.run = fake_docker(["asa_island"], "222222,929110", ["222222", "929110"])
 c = queue("verify_mods"); r.main()
 out = result(c)["output"]
 check("catches a demoted stacking mod", not result(c)["ok"] and "LOAD ORDER" in out, out)

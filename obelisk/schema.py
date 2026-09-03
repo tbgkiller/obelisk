@@ -75,9 +75,10 @@ SETTINGS = [
 
     dict(key="admin_password", label="Admin / RCON password", group="Access",
          type="password", default="", target="env:SERVER_ADMIN_PASSWORD",
-         apply="recreate", required=True,
+         apply="recreate", required_before_start=True,
          help="Grants in-game admin AND is the RCON password Obelisk uses. "
-              "Treat it like a root password."),
+              "Treat it like a root password. You can save settings without it, "
+              "but the cluster won't start until it's set."),
 
     dict(key="battleye", label="Require BattlEye", group="Access",
          type="bool", default=True, target="env:BATTLEEYE", apply="recreate",

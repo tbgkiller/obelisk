@@ -39,8 +39,15 @@ SETTINGS = [
     ("Game.ini",              os.path.join(CFG_DIR, "Game.ini"),        0o644),
 ]
 
-# A share path must sit under one of these. Anything else is refused outright.
-SHARE_ROOTS = ("/mnt/user/", "/mnt/remotes/", "/mnt/disks/", "/mnt/zfs/")
+# A share path must sit somewhere under /mnt - that covers Unraid shares
+# (/mnt/user), remote mounts (/mnt/remotes), unassigned disks (/mnt/disks) and any
+# named cache or ZFS pool, which is whatever the operator called it rather than
+# something we can list up front. Everything outside /mnt is refused outright.
+SHARE_PREFIX = "/mnt/"
+
+# /mnt/user0 bypasses Unraid's share layer. Writing there is a well-known way to
+# lose data, so it is refused even though it is under /mnt.
+SHARE_DENY = ("/mnt/user0",)
 
 def known_maps():
     """Whatever this cluster actually runs, read from the running containers -
@@ -94,9 +101,19 @@ def check_share(path):
     if "\x00" in path or ".." in path.split("/"):
         return False, "path contains .. or a null byte"
     path = os.path.normpath(path)
-    if not path.startswith(SHARE_ROOTS):
-        return False, ("must be under one of: " + ", ".join(SHARE_ROOTS) +
-                       " - mount a remote share with Unassigned Devices first")
+    if path == SHARE_PREFIX.rstrip("/") or not path.startswith(SHARE_PREFIX):
+        return False, ("must be a folder under /mnt - an Unraid share (/mnt/user/...), "
+                       "a named pool, or a remote you have mounted with Unassigned "
+                       "Devices (/mnt/remotes/...)")
+    if path == SHARE_DENY[0] or path.startswith(SHARE_DENY[0] + "/"):
+        return False, ("/mnt/user0 bypasses Unraid's share layer and writing there can "
+                       "lose data - use /mnt/user instead")
+    # Depth is measured from the prefix, not from /, so this holds however
+    # SHARE_PREFIX is configured: <pool>/<folder> is the shallowest we accept.
+    rel = path[len(SHARE_PREFIX):].strip("/")
+    if "/" not in rel:
+        return False, ("point at a folder inside the share, not the share root itself "
+                       "- e.g. /mnt/user/backups/obelisk")
     if not os.path.isdir(path):
         return False, "not a directory (or the remote share isn't mounted right now)"
     probe = os.path.join(path, ".ark_write_test")
