@@ -180,6 +180,7 @@ SETTINGS = [
     # ---------------------------------------------------------------- Obelisk
     dict(key="status_port", label="Status page port", group="Obelisk",
          type="port", default=8088, target="env:STATUS_PORT", apply="recreate",
+         phase="install",
          help="The read-only status page and the admin UI. 0 turns both off."),
 
     dict(key="admin_token", label="Admin token", group="Obelisk",
@@ -193,6 +194,7 @@ SETTINGS = [
 
     dict(key="timezone", label="Time zone", group="Obelisk",
          type="text", default="UTC", target="env:TZ", apply="recreate",
+         phase="install",
          pattern=r"^[A-Za-z_]+(/[A-Za-z_+-]+){0,2}$",
          help="Drives wipe times, restart windows and log timestamps."),
 
@@ -212,7 +214,7 @@ SETTINGS = [
 
     dict(key="appdata", label="Cluster data folder", group="Resources",
          type="text", default="/mnt/user/appdata/ark", target="env:APPDATA",
-         apply="recreate", pattern=r"^/[A-Za-z0-9._/-]{3,120}$",
+         apply="recreate", phase="install", pattern=r"^/[A-Za-z0-9._/-]{3,120}$",
          help="Where server files, saves and the shared config live on the host. Put "
               "this on an SSD or NVMe pool, never the spinning array - ASA is very "
               "I/O hungry. Changing it moves the whole cluster and needs a recreate."),
@@ -285,21 +287,39 @@ GROUPS = ["Cluster", "Identity", "Access", "Mods", "Rates", "Upkeep",
 
 BY_KEY = {s["key"]: s for s in SETTINGS}
 
+# Two phases, because Docker needs some answers before the app exists.
+#
+#   phase="install"  a bind mount or a published port - Docker has to know it at
+#                    container-create time, so it comes from the container template
+#                    (Unraid fields, or compose) and the UI shows it read-only.
+#   phase="ui"       everything else. Not needed to boot, so it is set in Obelisk
+#                    after the container is running. This is the default.
+#
+# Adding phase="install" to a setting is a promise that changing it requires
+# recreating the container - keep the list as short as it honestly needs to be.
+INSTALL_KEYS = [s["key"] for s in SETTINGS if s.get("phase") == "install"]
+
+
 
 def markdown():
-    out = ["# Obelisk settings\n", "_Generated from the schema - do not edit by hand._\n"]
+    out = ["# Obelisk settings\n", "_Generated from the schema - do not edit by hand._\n",
+       "\nA handful of settings are marked **container template**: bind mounts and the\n"
+       "published port, which Docker needs before Obelisk exists. Those are set when you\n"
+       "create the container and are read-only in the UI. Everything else is set in the\n"
+       "web UI after it is running.\n"]
     for g in GROUPS:
         rows = [s for s in SETTINGS if s["group"] == g]
         if not rows:
             continue
         out.append("\n## %s\n" % g)
-        out.append("| Setting | Key | Type | Default | Takes effect |")
-        out.append("|---|---|---|---|---|")
+        out.append("| Setting | Key | Type | Default | Set in | Takes effect |")
+        out.append("|---|---|---|---|---|---|")
         for s in rows:
             d = "" if s.get("type") == "password" else str(s.get("default", ""))
             d = d.replace("|", "\\|")          # pipes would break the table row
-            out.append("| %s | `%s` | %s | `%s` | %s |"
-                       % (s["label"], s["key"], s["type"], d, s.get("apply", "none")))
+            where = "container template" if s.get("phase") == "install" else "UI"
+            out.append("| %s | `%s` | %s | `%s` | %s | %s |"
+                       % (s["label"], s["key"], s["type"], d, where, s.get("apply", "none")))
         out.append("")
         for s in rows:
             out.append("**%s** - %s\n" % (s["label"], s.get("help", "").replace("|", "\\|")))

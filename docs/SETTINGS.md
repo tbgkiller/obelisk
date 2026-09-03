@@ -3,18 +3,24 @@
 _Generated from the schema - do not edit by hand._
 
 
+A handful of settings are marked **container template**: bind mounts and the
+published port, which Docker needs before Obelisk exists. Those are set when you
+create the container and are read-only in the UI. Everything else is set in the
+web UI after it is running.
+
+
 ## Cluster
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| Maps to run | `maps` | maps | `island` | recreate |
-| First game port | `game_port_base` | port | `7777` | recreate |
-| First RCON port | `rcon_port_base` | port | `27020` | recreate |
-| ARK server image | `ark_image` | text | `acekorneya/asa_server:2_1_latest` | recreate |
-| Obelisk image | `obelisk_image` | text | `ghcr.io/obelisk-ark/obelisk:latest` | recreate |
-| Update window opens | `update_window_start` | text | `4:00 AM` | recreate |
-| Update window closes | `update_window_end` | text | `6:00 AM` | recreate |
-| Restart warning | `restart_notice_minutes` | int | `30` | recreate |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| Maps to run | `maps` | maps | `island` | UI | recreate |
+| First game port | `game_port_base` | port | `7777` | UI | recreate |
+| First RCON port | `rcon_port_base` | port | `27020` | UI | recreate |
+| ARK server image | `ark_image` | text | `acekorneya/asa_server:2_1_latest` | UI | recreate |
+| Obelisk image | `obelisk_image` | text | `ghcr.io/obelisk-ark/obelisk:latest` | UI | recreate |
+| Update window opens | `update_window_start` | text | `4:00 AM` | UI | recreate |
+| Update window closes | `update_window_end` | text | `6:00 AM` | UI | recreate |
+| Restart warning | `restart_notice_minutes` | int | `30` | UI | recreate |
 
 **Maps to run** - Which maps this cluster runs, in order. The first one is the update master: it downloads the ~30 GB of server files once and the others wait for it, instead of every map fetching the same thing at once. Ports are assigned in this order, so reordering a live cluster moves everyone's ports - add to the end instead.
 
@@ -35,14 +41,14 @@ _Generated from the schema - do not edit by hand._
 
 ## Identity
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| Server name prefix | `session_prefix` | text | `` | recreate |
-| Server name tag line | `session_tags` | text | `` | recreate |
-| Cluster ID | `cluster_id` | text | `arkcluster` | recreate |
-| Cluster display name | `cluster_name` | text | `ARK Cluster` | reload |
-| Show a message of the day | `motd_enabled` | bool | `True` | recreate |
-| Message of the day | `motd` | longtext | `` | recreate |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| Server name prefix | `session_prefix` | text | `` | UI | recreate |
+| Server name tag line | `session_tags` | text | `` | UI | recreate |
+| Cluster ID | `cluster_id` | text | `arkcluster` | UI | recreate |
+| Cluster display name | `cluster_name` | text | `ARK Cluster` | UI | reload |
+| Show a message of the day | `motd_enabled` | bool | `True` | UI | recreate |
+| Message of the day | `motd` | longtext | `` | UI | recreate |
 
 **Server name prefix** - Shown at the start of every map's name in the in-game browser, e.g. "MYCLUSTER 01 \| The Island". Keep it short so the map name stays visible.
 
@@ -59,12 +65,12 @@ _Generated from the schema - do not edit by hand._
 
 ## Access
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| Players per map | `max_players` | int | `70` | recreate |
-| Join password | `server_password` | password | `` | recreate |
-| Admin / RCON password | `admin_password` | password | `` | recreate |
-| Require BattlEye | `battleye` | bool | `True` | recreate |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| Players per map | `max_players` | int | `70` | UI | recreate |
+| Join password | `server_password` | password | `` | UI | recreate |
+| Admin / RCON password | `admin_password` | password | `` | UI | recreate |
+| Require BattlEye | `battleye` | bool | `True` | UI | recreate |
 
 **Players per map** - Per map, not cluster-wide. Higher values need more RAM per container.
 
@@ -77,11 +83,11 @@ _Generated from the schema - do not edit by hand._
 
 ## Mods
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| Mods (CurseForge IDs) | `mod_ids` | csv | `` | recreate |
-| Passive mods | `passive_mods` | csv | `` | recreate |
-| Extra launch flags | `custom_server_args` | text | `` | recreate |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| Mods (CurseForge IDs) | `mod_ids` | csv | `` | UI | recreate |
+| Passive mods | `passive_mods` | csv | `` | UI | recreate |
+| Extra launch flags | `custom_server_args` | text | `` | UI | recreate |
 
 **Mods (CurseForge IDs)** - Comma-separated CurseForge project IDs, applied to all ten maps. ORDER MATTERS: a mod earlier in the list wins conflicting remaps, which is why stacking mods go first. Blank means vanilla.
 
@@ -92,12 +98,12 @@ _Generated from the schema - do not edit by hand._
 
 ## Rates
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| XP rate | `xp_multiplier` | float | `1.0` | reload |
-| Harvest rate | `harvest_multiplier` | float | `1.0` | reload |
-| Taming speed | `taming_multiplier` | float | `1.0` | reload |
-| Baby maturation speed | `maturation_multiplier` | float | `1.0` | reload |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| XP rate | `xp_multiplier` | float | `1.0` | UI | reload |
+| Harvest rate | `harvest_multiplier` | float | `1.0` | UI | reload |
+| Taming speed | `taming_multiplier` | float | `1.0` | UI | reload |
+| Baby maturation speed | `maturation_multiplier` | float | `1.0` | UI | reload |
 
 **XP rate** - 1.0 is vanilla.
 
@@ -110,11 +116,11 @@ _Generated from the schema - do not edit by hand._
 
 ## Upkeep
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| Decay abandoned structures | `structure_decay` | bool | `True` | reload |
-| Wild dino wipe times | `wipe_times` | times | `` | none |
-| Wipe warnings | `wipe_warn_minutes` | minutes | `10,5,1` | none |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| Decay abandoned structures | `structure_decay` | bool | `True` | UI | reload |
+| Wild dino wipe times | `wipe_times` | times | `` | UI | none |
+| Wipe warnings | `wipe_warn_minutes` | minutes | `10,5,1` | UI | none |
 
 **Decay abandoned structures** - On means abandoned bases decay by material over time so the map doesn't fill with junk. Active bases refresh their own timer, so this doesn't threaten anyone who still plays.
 
@@ -125,16 +131,16 @@ _Generated from the schema - do not edit by hand._
 
 ## Discord
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| Discord bot token | `discord_token` | password | `` | reload |
-| Chat relay channel ID | `discord_channel_id` | text | `` | reload |
-| Tribe log channel ID | `discord_tribelog_channel_id` | text | `` | reload |
-| Admin channel ID | `discord_admin_channel_id` | text | `` | reload |
-| Discord invite link | `discord_invite` | text | `` | reload |
-| Announce joins and leaves | `join_leave` | bool | `True` | reload |
-| Welcome new arrivals | `welcome_enabled` | bool | `True` | reload |
-| Admin role ID | `discord_admin_role_id` | text | `` | reload |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| Discord bot token | `discord_token` | password | `` | UI | reload |
+| Chat relay channel ID | `discord_channel_id` | text | `` | UI | reload |
+| Tribe log channel ID | `discord_tribelog_channel_id` | text | `` | UI | reload |
+| Admin channel ID | `discord_admin_channel_id` | text | `` | UI | reload |
+| Discord invite link | `discord_invite` | text | `` | UI | reload |
+| Announce joins and leaves | `join_leave` | bool | `True` | UI | reload |
+| Welcome new arrivals | `welcome_enabled` | bool | `True` | UI | reload |
+| Admin role ID | `discord_admin_role_id` | text | `` | UI | reload |
 
 **Discord bot token** - Leave blank to relay chat between maps only, with no Discord.
 
@@ -155,12 +161,12 @@ _Generated from the schema - do not edit by hand._
 
 ## Obelisk
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| Status page port | `status_port` | port | `8088` | recreate |
-| Admin token | `admin_token` | password | `` | reload |
-| Player count refresh | `online_poll_seconds` | int | `60` | reload |
-| Time zone | `timezone` | text | `UTC` | recreate |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| Status page port | `status_port` | port | `8088` | container template | recreate |
+| Admin token | `admin_token` | password | `` | UI | reload |
+| Player count refresh | `online_poll_seconds` | int | `60` | UI | reload |
+| Time zone | `timezone` | text | `UTC` | container template | recreate |
 
 **Status page port** - The read-only status page and the admin UI. 0 turns both off.
 
@@ -173,10 +179,10 @@ _Generated from the schema - do not edit by hand._
 
 ## Resources
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| RAM cap per map | `mem_limit` | memory | `20g` | recreate |
-| Cluster data folder | `appdata` | text | `/mnt/user/appdata/ark` | recreate |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| RAM cap per map | `mem_limit` | memory | `20g` | UI | recreate |
+| Cluster data folder | `appdata` | text | `/mnt/user/appdata/ark` | container template | recreate |
 
 **RAM cap per map** - A cap, not a reservation - unused headroom costs nothing. If a map is OOM-killed you'll see it restart repeatedly with the container itself reporting a clean exit, because only the game process is killed. Override per map for the heavy ones.
 
@@ -185,10 +191,10 @@ _Generated from the schema - do not edit by hand._
 
 ## Advanced
 
-| Setting | Key | Type | Default | Takes effect |
-|---|---|---|---|---|
-| Extra GameUserSettings.ini | `extra_gameusersettings` | longtext | `` | reload |
-| Extra Game.ini | `extra_game` | longtext | `` | reload |
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| Extra GameUserSettings.ini | `extra_gameusersettings` | longtext | `` | UI | reload |
+| Extra Game.ini | `extra_game` | longtext | `` | UI | reload |
 
 **Extra GameUserSettings.ini** - Appended verbatim to the generated GameUserSettings.ini. Obelisk only models the settings above, so anything it doesn't know about - mod config blocks, rarely-used options - goes here and is passed through untouched. Full INI syntax, [Sections] and all.
 

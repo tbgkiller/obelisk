@@ -12,6 +12,32 @@ admin controls in the browser.
 > built and tested. The admin UI and the packaged image are not finished yet. Nothing
 > here is ready for someone else's live cluster.
 
+## Installing
+
+Two phases, because Docker has to know a few things before Obelisk exists.
+
+**1. Create the container.** Three answers, all of them infrastructure: where the
+cluster's data lives, where Obelisk keeps its own store, and which port serves the UI.
+Two are bind mounts and one is a published port, so Docker needs them at create time —
+there is no app running yet to ask. On Unraid these are the template fields; otherwise
+see [`docker/compose.example.yml`](docker/compose.example.yml).
+
+**2. Everything else in the browser.** Start the container and check its log:
+
+```
+docker logs obelisk
+```
+
+It prints a one-time setup code. Open `http://<host>:8088/setup`, enter it, and set the
+rest there — maps, mods, rates, Discord, wipe schedules, passwords. None of that is
+needed to boot, so none of it belongs in a template field, and nothing ships with a
+blank waiting to be filled in.
+
+Those first three stay read-only in the UI on purpose. Showing an editable box for a
+bind mount would let you change a value that isn't real until somebody recreates the
+container — so instead the UI shows what Docker actually created it with, and tells you
+where to change it.
+
 ## Why
 
 Running a multi-map ASA cluster today means hand-maintaining a compose file with a dozen

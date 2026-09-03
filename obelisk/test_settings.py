@@ -156,6 +156,29 @@ try:
 except ValueError as e:
     check("cluster generation refuses when not ready", "Admin / RCON password" in str(e), str(e))
 
+# ---- two phases: Docker owns the mounts and ports, the UI owns everything else
+from .schema import INSTALL_KEYS
+st_p = new_store()
+try:
+    st_p.patch({"appdata": "/mnt/user/somewhere"})
+    check("the UI cannot change a bind mount", False)
+except Invalid as e:
+    check("the UI cannot change a bind mount", "container" in str(e).lower(), str(e))
+try:
+    st_p.patch({"status_port": 9000})
+    check("the UI cannot change the published port", False)
+except Invalid:
+    check("the UI cannot change the published port", True)
+st_p.patch({"appdata": "/mnt/user/somewhere", "status_port": 9000}, source="install")
+check("the container can set them at boot", st_p.get("appdata") == "/mnt/user/somewhere"
+      and st_p.get("status_port") == 9000)
+check("the UI can still change everything else", st_p.patch({"max_players": 30}) != set())
+check("install list is short and honest", sorted(INSTALL_KEYS) ==
+      ["appdata", "status_port", "timezone"], INSTALL_KEYS)
+rows = st_p.install_settings()
+check("install settings are exposed for a read-only panel",
+      {r["key"] for r in rows} == set(INSTALL_KEYS) and all(r["help"] for r in rows), rows)
+
 # ---- map selection
 rejects("rejects an unknown map", "maps", "island,atlantis")
 rejects("rejects a duplicated map", "maps", "island,island")
@@ -166,7 +189,8 @@ check("accepts a map list", validate("maps", "Island, Center") == "island,center
 from .compose import generate_compose
 st = new_store()
 st.patch({"admin_password": "pw", "maps": "island,center,scorched",
-          "session_prefix": "TEST", "appdata": "/mnt/user/appdata/ark"})
+          "session_prefix": "TEST"})
+st.patch({"appdata": "/mnt/user/appdata/ark"}, source="install")   # as the container would
 st.patch({"mem_limit": "32g"}, map_name="center")
 yml = generate_compose(st, project="ark")
 check("compose names every chosen map", all(("container_name: asa_%s" % m) in yml

@@ -1,0 +1,53 @@
+<?xml version="1.0"?>
+<Container version="2">
+  <Name>Obelisk</Name>
+  <Repository>ghcr.io/tbgkiller/obelisk:latest</Repository>
+  <Registry>https://github.com/tbgkiller/obelisk/pkgs/container/obelisk</Registry>
+  <Network>bridge</Network>
+  <Privileged>false</Privileged>
+  <Support>https://github.com/tbgkiller/obelisk/issues</Support>
+  <Project>https://github.com/tbgkiller/obelisk</Project>
+  <Overview>
+    One container to run and manage an ARK: Survival Ascended cluster. Pick your maps
+    and Obelisk builds the rest - generating the compose, assigning ports, keeping one
+    shared settings file across every map, relaying chat between them and to Discord,
+    and giving you a status page and admin controls in the browser.
+
+    Only the fields below are needed to start. Everything else - maps, mods, rates,
+    Discord, wipe schedules - is set in the web UI once it is running. After starting,
+    check the container log for a one-time setup code, then open the WebUI.
+  </Overview>
+  <Category>GameServers:</Category>
+  <WebUI>http://[IP]:[PORT:8088]/</WebUI>
+  <Icon>https://raw.githubusercontent.com/tbgkiller/obelisk/main/docs/icon.png</Icon>
+
+  <Config Name="Obelisk data" Target="/data" Default="/mnt/user/appdata/obelisk"
+          Mode="rw" Description="Obelisk's own settings store and snapshots. Small."
+          Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="Cluster data" Target="/mnt/user/appdata/ark" Default="/mnt/user/appdata/ark"
+          Mode="rw" Description="Where the ARK server files, saves and shared config live.
+          Put this on an SSD or NVMe pool, NOT the spinning array - ASA is very I/O hungry.
+          Set the APPDATA variable below to this same path."
+          Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="Docker socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock"
+          Mode="rw" Description="Lets Obelisk create and manage the map containers."
+          Type="Path" Display="advanced" Required="true" Mask="false"/>
+
+  <Config Name="WebUI port" Target="8088" Default="8088" Mode="tcp"
+          Description="Status page and admin UI."
+          Type="Port" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="APPDATA" Target="APPDATA" Default="/mnt/user/appdata/ark"
+          Description="Must match the Cluster data path above."
+          Type="Variable" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="STATUS_PORT" Target="STATUS_PORT" Default="8088"
+          Description="Must match the WebUI port above."
+          Type="Variable" Display="advanced" Required="true" Mask="false"/>
+
+  <Config Name="TZ" Target="TZ" Default="UTC"
+          Description="Drives wipe times, restart windows and log timestamps."
+          Type="Variable" Display="always" Required="false" Mask="false"/>
+</Container>

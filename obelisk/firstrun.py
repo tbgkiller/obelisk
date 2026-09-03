@@ -13,6 +13,7 @@ cluster carries its settings across instead of starting blank.
 
 import logging, os, secrets, stat
 
+from .schema import BY_KEY, INSTALL_KEYS
 from .settings import Store, Invalid
 from .import_env import ENV_TO_KEY
 
@@ -63,6 +64,24 @@ def bootstrap(data_dir=None, environ=None):
                      "existing stack", len(imported))
         else:
             log.info("first run: starting from defaults - nothing to import")
+
+    # Install-phase settings are re-read from the environment on every boot, not just
+    # the first: they mirror what Docker actually created the container with, so
+    # editing the template and recreating is how they change. Anything absent keeps
+    # the schema default rather than being blanked.
+    from_env = {}
+    for key in INSTALL_KEYS:
+        target = BY_KEY[key]["target"]
+        if not target.startswith("env:"):
+            continue
+        raw = environ.get(target.split(":", 1)[1])
+        if raw not in (None, ""):
+            from_env[key] = raw
+    if from_env:
+        try:
+            store.patch(from_env, source="install")
+        except Invalid as e:
+            log.warning("container environment has an unusable install setting: %s", e)
 
     setup_code = None
     if not str(store.get("admin_token")).strip():

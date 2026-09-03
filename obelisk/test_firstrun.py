@@ -62,5 +62,18 @@ store, created, code = bootstrap(d, environ={})
 check("an existing admin token is left alone", store.get("admin_token") == "mine" and code is None)
 shutil.rmtree(d)
 
+# ---- install settings follow the container, not the store
+d = tempfile.mkdtemp()
+store, _, _ = bootstrap(d, environ={"APPDATA": "/mnt/tank/ark", "STATUS_PORT": "9090"})
+check("boot takes install settings from the container", store.get("appdata") == "/mnt/tank/ark"
+      and store.get("status_port") == 9090)
+# recreate the container with a different mount - the store must follow it
+store2, _, _ = bootstrap(d, environ={"APPDATA": "/mnt/cache/ark", "STATUS_PORT": "9090"})
+check("re-creating the container moves the stored path", store2.get("appdata") == "/mnt/cache/ark")
+# ...but a boot with nothing set must not blank what was there
+store3, _, _ = bootstrap(d, environ={})
+check("a boot with no env keeps the last known mount", store3.get("appdata") == "/mnt/cache/ark")
+shutil.rmtree(d)
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

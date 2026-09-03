@@ -11,7 +11,7 @@ the store is the thing worth backing up and the generated files are disposable.
 
 import json, os, re, tempfile
 
-from .schema import SETTINGS, BY_KEY, GROUPS
+from .schema import SETTINGS, BY_KEY, GROUPS, INSTALL_KEYS
 
 MAPS = ["island", "center", "scorched", "ragnarok", "aberration",
         "extinction", "valguero", "astraeos", "lostcolony", "genesis"]
@@ -191,8 +191,14 @@ class Store:
         return {k: self.get(k, map_name) for k in BY_KEY}
 
     # ------------------------------------------------------------ writing
-    def patch(self, changes, map_name=None):
+    def patch(self, changes, map_name=None, source="ui"):
         """Validate everything first, then apply. A bad value changes nothing.
+
+        `source` is "ui" for anything a person or the API is changing at runtime, and
+        "install" for the container's own environment at boot. Install-phase settings
+        are bind mounts and published ports: Docker fixed them when the container was
+        created, so letting the UI edit them would show a value that isn't real until
+        somebody recreates the container. They are writable only from "install".
 
         Returns the set of apply levels touched, so the caller knows whether this
         needs a reload, a recreate, or nothing at all.
@@ -204,6 +210,11 @@ class Store:
                 continue
             if map_name and not BY_KEY[k].get("per_map"):
                 errors[k] = "%s is cluster-wide - it can't be set per map" % BY_KEY[k]["label"]
+                continue
+            if source != "install" and k in INSTALL_KEYS:
+                errors[k] = ("%s is set when the container is created, not from here. "
+                             "Change it in the container's template (or compose) and "
+                             "recreate the container." % BY_KEY[k]["label"])
                 continue
             try:
                 coerced[k] = validate(k, v)
@@ -219,6 +230,11 @@ class Store:
                 target[k] = v
                 applied.add(BY_KEY[k].get("apply", "none"))
         return applied
+
+    def install_settings(self):
+        """What the container template controls. Read-only in the UI."""
+        return [{"key": k, "label": BY_KEY[k]["label"], "value": self.get(k),
+                 "help": BY_KEY[k].get("help", "")} for k in INSTALL_KEYS]
 
     def readiness(self):
         """What still needs setting before this cluster can start.
