@@ -100,9 +100,42 @@ Options, in the order they should be evaluated:
 Whichever is chosen, the check that a backup actually contains one save per instance
 needs to follow it - the current check counts saves per map type.
 
+## Above the clusters, not inside one: many clusters, one Obelisk
+
+Obelisk is deliberately not a service in the stack it generates. That started as a bug
+fix - a manager that wrote itself into its own compose collided with itself on its own
+port - but the shape it forced is the right one, and the owner has confirmed the
+direction it implies: **one Obelisk manages several clusters.**
+
+The manager sits above the clusters. It has to be up before any of them, it is not
+restarted by recreating one, and it may run and manage more than one at a time. Each
+cluster is its own registered Compose Manager stack, with its own project name, data
+root, ports, instances and mod list.
+
+That is also what makes a migration expressible: the old cluster and the new one are two
+stacks under one manager, both visible, cut over map by map. A manager that could only
+ever describe one cluster would have to become two managers to do that, which is exactly
+the situation that produces a collision.
+
+What it means for the work already done:
+
+- container names, ports, save folders and stack project names are already namespaced per
+  cluster, so two clusters coexisting is a UI problem now rather than a data problem;
+- the store currently holds one cluster's settings at its top level, and would grow a
+  clusters list with the existing values becoming the first entry;
+- the data root is per cluster, so a second cluster means a second Ark folder, and the
+  headroom check in the migration design is the same arithmetic;
+- the UI assumes one cluster everywhere - it should list clusters and let you pick one,
+  with a single-cluster install still landing straight on it rather than paying for a
+  chooser it does not need.
+
+Not scoped yet; captured so the pieces keep being built in a shape that allows it.
+
 ## Order of work
 
 1. Instance list in the store, replacing the map checklist, with a migration from it.
 2. Save isolation - the problem above - before duplicates are allowed through validation.
 3. The uniform-mods toggle and per-instance overrides.
 4. Add / duplicate / rename in the Cluster page, with presets still adding one per map.
+5. Multiple clusters under one manager: a clusters list in the store, a chooser in the UI,
+   and each cluster its own stack - the shape migration already assumes.
