@@ -19,7 +19,7 @@ a button here does by accident.
 
 import logging, os
 
-from . import dockerctl, layout
+from . import dockerctl, layout, stack
 from . import naming
 from .compose import generate_compose
 from .plan import build_plan
@@ -37,6 +37,14 @@ def project(store):
 
 
 def compose_path(store):
+    """Where this cluster's compose file lives.
+
+    Inside Compose Manager's project folder when that is mounted, so the plugin and
+    Obelisk are looking at one file and driving one stack. Otherwise beside the settings
+    it was generated from, which is the plain install and works exactly as before.
+    """
+    if stack.available():
+        return stack.compose_file(project(store))
     return "%s/%s" % (layout.root_of(store), COMPOSE_NAME)
 
 
@@ -111,6 +119,12 @@ def launch(store, in_use_ports=None):
         path, _text = write_compose(store, in_use_ports=in_use_ports)
     except ValueError as e:
         return False, str(e)
+
+    # Register before bringing it up, so the stack exists in the UI from the first
+    # moment its containers do.
+    ok_s, detail_s = stack.register(store, project(store), _text)
+    if not ok_s:
+        log.info("stack not registered (%s) - the cluster still runs", detail_s)
 
     rc, out = _compose(store, "up", "-d", "--remove-orphans")
     if rc != 0:

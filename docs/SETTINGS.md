@@ -13,6 +13,7 @@ web UI after it is running.
 
 | Setting | Key | Type | Default | Set in | Takes effect |
 |---|---|---|---|---|---|
+| Start with the server | `cluster_autostart` | bool | `True` | UI | none |
 | Maps to run | `maps` | maps | `island` | UI | recreate |
 | First game port | `game_port_base` | port | `7777` | UI | recreate |
 | First RCON port | `rcon_port_base` | port | `27020` | UI | recreate |
@@ -21,6 +22,8 @@ web UI after it is running.
 | Update window opens | `update_window_start` | text | `4:00 AM` | UI | recreate |
 | Update window closes | `update_window_end` | text | `6:00 AM` | UI | recreate |
 | Restart warning | `restart_notice_minutes` | int | `30` | UI | recreate |
+
+**Start with the server** - Bring the cluster back automatically when the array starts, the way a cluster you rely on should. Turn it off for a throwaway or test cluster you would rather start by hand. Only has an effect when Unraid's Compose Manager folder is mounted, which is what makes the cluster a stack.
 
 **Maps to run** - Which maps this cluster runs, in order. The first one is the update master: it downloads the ~30 GB of server files once and the others wait for it, instead of every map fetching the same thing at once. Ports are assigned in this order, so reordering a live cluster moves everyone's ports - add to the end instead.
 

@@ -209,6 +209,13 @@ SETTINGS = [
          help="Whispers a greeting privately to the joining player rather than "
               "broadcasting it, so a busy server doesn't fill with welcome spam."),
 
+    dict(key="cluster_autostart", label="Start with the server", group="Cluster",
+         type="bool", default=True, target="obelisk:cluster_autostart", apply="none",
+         help="Bring the cluster back automatically when the array starts, the way a "
+              "cluster you rely on should. Turn it off for a throwaway or test cluster "
+              "you would rather start by hand. Only has an effect when Unraid's Compose "
+              "Manager folder is mounted, which is what makes the cluster a stack."),
+
     # ---------------------------------------------------------------- Backups
     dict(key="backup_times", label="Backup schedule", group="Backups",
          type="times", default="", target="obelisk:backup_times", apply="none",

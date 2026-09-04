@@ -13,9 +13,10 @@
     shared settings file across every map, relaying chat between them and to Discord,
     and giving you a status page and admin controls in the browser.
 
-    Only the fields below are needed to start: two folders, the socket and a port.
-    They hold different things - settings in one, the big game files in the other -
-    so read the descriptions before picking where each goes.
+    Only the first four fields are needed to start: two data folders, the Docker socket
+    and a port. They hold different things - settings in one, the big game files in the
+    other - so read the descriptions before picking where each goes. The last two are
+    optional and can be left exactly as they come.
     Everything else - maps, mods, rates, Discord, wipe schedules, time zone - is set in
     the web UI once it is running. After starting, check the container log for a
     one-time setup code: left-click this container's icon and choose Logs. The code is
@@ -46,6 +47,17 @@
   <Config Name="Docker socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock"
           Mode="rw" Description="Lets Obelisk create and manage the map containers."
           Type="Path" Display="advanced" Required="true" Mask="false"/>
+
+  <Config Name="Unraid Compose projects" Target="/boot/config/plugins/compose.manager/projects"
+          Default="/boot/config/plugins/compose.manager/projects" Mode="rw"
+          Description="Optional but recommended. Lets Obelisk register the cluster it
+          builds as a proper Unraid stack, so it appears grouped in the Docker page with
+          the Compose Manager's own start, stop and update controls - the same way a
+          hand-built stack does.
+          Obelisk only ever writes the one project folder it creates for your cluster,
+          and refuses to touch any project it did not make. Leave this out and everything
+          still works; the cluster just shows as individual containers."
+          Type="Path" Display="always" Required="false" Mask="false"/>
 
   <Config Name="Server address" Target="OBELISK_HOST" Default=""
           Description="Optional. The LAN IP or hostname players and admins use to reach
