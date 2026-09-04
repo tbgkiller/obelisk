@@ -375,11 +375,16 @@ async def main():
     tasks.append(asyncio.create_task(backup_scheduler(store)))
 
     from . import bot
-    if bot.CLUSTER_CONFIGURED:
-        log.info("cluster configured - starting the chat relay")
+    # The relay used to learn its maps from a SERVERS environment variable, which only
+    # ever existed when Obelisk wrote itself into the stack it generated. It no longer
+    # does, so on a normally-installed Obelisk the relay was permanently inert. It reads
+    # the cluster from the store instead - the same place everything else does.
+    wired = _wire_relay(store, bot)
+    if wired:
+        log.info("relay covering %d map(s): %s", len(bot.SERVERS), ", ".join(bot.SERVERS))
         tasks.append(asyncio.create_task(bot.main()))
     else:
-        log.info("no cluster yet - relay idle until maps are launched")
+        log.info("no cluster running yet - relay idle until maps are launched")
 
     if not tasks:
         log.error("nothing to run: web UI is off and no cluster is configured")
@@ -389,3 +394,22 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
+
+def _wire_relay(store, bot):
+    """Point the chat relay at this cluster's maps. Returns True if there are any.
+
+    Addresses each map by container name on the cluster network, which is the same route
+    the save-flush uses and the reason the manager joins that network after a launch.
+    """
+    try:
+        targets = clusterctl.running_instances(store)
+    except Exception as e:
+        log.warning("could not work out which maps are running: %s", e)
+        return False
+    if not targets:
+        return False
+    bot.SERVERS = {label: (host, port) for label, host, port in targets}
+    bot.RCON_PASSWORD = str(store.get("admin_password") or "")
+    bot.CLUSTER_NAME = str(store.get("cluster_name") or bot.CLUSTER_NAME)
+    bot.CLUSTER_CONFIGURED = bool(bot.SERVERS and bot.RCON_PASSWORD)
+    return bot.CLUSTER_CONFIGURED
