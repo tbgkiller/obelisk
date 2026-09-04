@@ -319,7 +319,7 @@ check("a failed join is reported but does not fail the launch", ok_j is False)
 # is the only reason this was an aborted launch and not a replaced game server - after
 # it had already created a network. Names are namespaced by cluster now, and a launch
 # that would still collide is refused before anything is created.
-from .compose import container_name
+from .naming import container_name
 
 check("container names carry the cluster id",
       container_name("arkcluster", "island") == "asa-arkcluster-island",

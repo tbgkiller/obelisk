@@ -38,6 +38,33 @@ into ten different configurations nobody remembers choosing.
 The preset checklist stays as the fast path - ticking maps adds one instance each.
 Adding, duplicating and naming instances is the power-user route to the same model.
 
+## Names: two of them, with different rules
+
+Each instance carries a **display name** (what players see) and a **container name**
+(what Docker sees). They are sanitised separately, because a good one of the first is
+usually an illegal one of the second - `Nate's Island (PvP!)` reads well in the browser
+and is not a valid container name.
+
+**Display name → session name.** ARK obtains the unofficial server list over Valve's
+Master Server Query Protocol, and the game limits the name field to 63 characters
+(ARK Official Community Wiki, *Server Browser*). Exceed it and the name is cut short;
+certain characters do something worse and leave the server running, reachable by direct
+connect, and absent from the browser entirely. Known offenders: a leading `#`, and
+non-ASCII characters. Those two are reported behaviour rather than published rule, so
+Obelisk refuses them with a reason rather than claiming a specification.
+
+The limit applies to the **finished** string - prefix, number, map, tag line - which is
+why it cannot be enforced field by field. Assembly drops the least important part first:
+tag line, then prefix, never the map name, because the map is what a player is scanning
+for.
+
+Per instance, the display name defaults to the map's name and inherits the cluster
+prefix and tag line. Overriding it is how an events island announces itself as one.
+
+**Container name.** `asa-<cluster>-<instance>`, each half folded to Docker's charset
+independently of anything a player sees. A display name never determines a container
+name directly; the instance id does.
+
 ## What is already done
 
 Identity is per instance, because it had to be for the safety fix:

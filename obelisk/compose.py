@@ -10,7 +10,7 @@ The output is deliberately plain YAML with no anchors: it is meant to be read
 and, if Obelisk is ever broken or stopped, run by hand with `docker compose up`.
 """
 
-from . import install, layout
+from . import install, layout, naming
 from . import maps as mapcat
 from .plan import build_plan
 
@@ -59,7 +59,7 @@ def generate_compose(store, project="ark", in_use_ports=None):
         L += [
             "  %s:" % instance,
             "    image: %s" % image,
-            "    container_name: %s" % container_name(project, instance),
+            "    container_name: %s" % naming.container_name(project, instance),
             "    restart: unless-stopped",
             "    stop_grace_period: 210s",
             "    mem_limit: %s" % mem,
@@ -148,18 +148,14 @@ def generate_compose(store, project="ark", in_use_ports=None):
 
 
 def _session_name(store, index, m):
-    """e.g. "MYCLUSTER 03 | Scorched Earth | PvE". Numbering keeps the cluster
-    together alphabetically in the browser without a leading character that
-    would stop it being listed at all."""
-    bits = []
-    prefix = str(store.get("session_prefix")).strip()
-    if prefix:
-        bits.append("%s %02d" % (prefix, index + 1))
-    bits.append(m["name"])
-    tags = str(store.get("session_tags")).strip()
-    if tags:
-        bits.append(tags)
-    return " | ".join(bits)
+    """e.g. "MYCLUSTER 03 | Scorched Earth | PvE".
+
+    Numbering keeps the cluster together alphabetically in the browser. Assembly and the
+    63-character limit live in naming.py, because the limit applies to the finished
+    string and not to any one field that goes into it.
+    """
+    return naming.assemble_session(store.get("session_prefix"), index, m["name"],
+                                   store.get("session_tags"))
 
 def _obelisk_host(store):
     """Host path of Obelisk's own data folder, for the stack it regenerates itself into.
@@ -172,15 +168,3 @@ def _obelisk_host(store):
     if host:
         return host
     return str(store.get("appdata")).rstrip("/") + "-obelisk"
-
-def container_name(project, instance):
-    """The container name for one map of one cluster.
-
-    Keyed on cluster *and instance*, because both halves matter. A bare `asa_island` is
-    a name any other cluster on the host would also pick - a generated stack once tried
-    to claim exactly that from a live hand-built cluster, and Docker refusing is the only
-    reason it was a failed launch rather than a clobbered game server. And keying on the
-    map type alone would collide all over again the moment a cluster runs the same map
-    twice, which is a thing clusters do: an events island beside the normal one.
-    """
-    return "asa-%s-%s" % (project, instance)

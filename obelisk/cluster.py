@@ -20,7 +20,8 @@ a button here does by accident.
 import logging, os
 
 from . import dockerctl, layout
-from .compose import container_name, generate_compose
+from . import naming
+from .compose import generate_compose
 from .plan import build_plan
 
 log = logging.getLogger("obelisk.cluster")
@@ -208,7 +209,7 @@ def target_names(store):
     """The container names this cluster would create - one per instance."""
     from . import maps as mapcat
     proj = project(store)
-    return [container_name(proj, i) for i in mapcat.instance_ids(_map_keys(store))]
+    return [naming.container_name(proj, i) for i in mapcat.instance_ids(_map_keys(store))]
 
 
 def name_conflicts(store, existing=None):

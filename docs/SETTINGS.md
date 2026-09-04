@@ -52,7 +52,7 @@ web UI after it is running.
 
 **Server name prefix** - Shown at the start of every map's name in the in-game browser, e.g. "MYCLUSTER 01 \| The Island". Keep it short so the map name stays visible.
 
-**Server name tag line** - Appended to every map's name. Edit once, applies to all ten. Pipes and spaces are safe.
+**Server name tag line** - Appended to every map's name. Edit once, applies to all ten. Pipes and spaces are safe. The finished name - prefix, number, map, this - has to fit the 63 characters the game shows in the browser; Obelisk drops this part first if it does not.
 
 **Cluster ID** - Every map must share this exact value or character transfers between maps stop working. Lowercase letters, digits, - and _ only.
 

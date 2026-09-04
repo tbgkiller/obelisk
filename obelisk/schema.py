@@ -62,13 +62,15 @@ SETTINGS = [
          type="text", default="", target="env:SESSION_PREFIX", apply="recreate",
          help="Shown at the start of every map's name in the in-game browser, "
               "e.g. \"MYCLUSTER 01 | The Island\". Keep it short so the map name stays visible.",
-         max_len=24, ascii_only=True, no_leading_hash=True),
+         max_len=24, ascii_only=True, no_leading_hash=True, session_safe=True),
 
     dict(key="session_tags", label="Server name tag line", group="Identity",
          type="text", default="", target="env:SESSION_TAGS",
-         apply="recreate", max_len=64, ascii_only=True,
-         help="Appended to every map's name. Edit once, applies to all ten. "
-              "Pipes and spaces are safe."),
+         apply="recreate", max_len=64, ascii_only=True, session_safe=True,
+         help="Appended to every map's name. Edit once, applies to all ten. Pipes and "
+              "spaces are safe. The finished name - prefix, number, map, this - has to "
+              "fit the 63 characters the game shows in the browser; Obelisk drops this "
+              "part first if it does not."),
 
     dict(key="cluster_id", label="Cluster ID", group="Identity",
          type="text", default="arkcluster", target="env:CLUSTER_ID", apply="recreate",

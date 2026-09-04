@@ -48,6 +48,15 @@ def validate(key, value):
             raise Invalid("can't be empty")
         if "max_len" in s and len(v) > s["max_len"]:
             raise Invalid("too long - %d characters, limit is %d" % (len(v), s["max_len"]))
+        # Anything that ends up in the in-game server name is checked by the rules that
+        # own that field, so the message a person sees is about the browser rather than
+        # about a regex.
+        if s.get("session_safe") and v.strip():
+            from .naming import session_problems
+            trouble = [p for p in session_problems(v)
+                       if "server name field holds" not in p]   # length is checked whole
+            if trouble:
+                raise Invalid(trouble[0])
         if s.get("ascii_only") and any(ord(c) > 127 for c in v):
             raise Invalid("use plain ASCII only - accented or fancy characters can stop "
                           "the server appearing in the browser")

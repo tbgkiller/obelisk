@@ -126,6 +126,23 @@ def build_plan(store, in_use_ports=None, host_ram_gb=None):
         notes.append("RAM caps total %s against a %dg budget - close enough to watch."
                      % (_mb_to_mem(total_mb), host_ram_gb))
 
+    # The browser name is assembled from several fields, so the only place its length
+    # can honestly be judged is here, on the finished string.
+    from . import naming
+    trimmed = []
+    for i, r in enumerate(rows):
+        full = " | ".join(x for x in [
+            ("%s %02d" % (str(store.get("session_prefix")).strip(), i + 1)
+             if str(store.get("session_prefix")).strip() else ""),
+            r["name"], str(store.get("session_tags")).strip()] if x)
+        if len(full) > naming.SESSION_MAX:
+            trimmed.append(r["name"])
+    if trimmed:
+        notes.append("The server name is longer than the %d characters the browser "
+                     "shows, so the tag line is dropped from %s. Shorten the prefix or "
+                     "the tag line to keep it."
+                     % (naming.SESSION_MAX, ", ".join(trimmed[:3])))
+
     for b in store.readiness():
         problems.append("%s still needs setting" % b["label"])
 
