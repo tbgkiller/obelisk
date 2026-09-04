@@ -355,9 +355,10 @@ def render_backups(store, rows, message="", problem=""):
 
     body = []
     for r in rows:
-        body.append("<tr><td><code>%s</code></td><td class=num>%.1f MB</td>"
+        from .backup import human_size
+        body.append("<tr><td><code>%s</code></td><td class=num>%s</td>"
                     "<td>%s</td></tr>"
-                    % (_e(r["name"]), r["bytes"] / 1048576.0, _e(r["when"])))
+                    % (_e(r["name"]), _e(human_size(r["bytes"])), _e(r["when"])))
     if not body:
         body = ['<tr><td colspan=3 class=help>No backups yet.</td></tr>']
 

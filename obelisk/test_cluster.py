@@ -527,5 +527,58 @@ class WorldWritable:
 check("world-writable folders are fine too",
       layout.not_writable_by_server("/ark", stat=lambda p: WorldWritable()) == [])
 
+
+# ---- the flush has to find the maps that are actually running
+# It read a SERVERS environment variable that only exists when Obelisk writes itself
+# into the generated stack. On a normally-installed Obelisk it was always empty, so
+# every backup reported "no running maps to save" while the island was up and healthy.
+st_f, _df = fresh(maps="island", cluster_id="flush")
+st_f.patch({"game_port_base": 7877, "rcon_port_base": 27920,
+            "admin_password": "synthetic-pw"})
+
+targets = clusterctl.rcon_targets(st_f)
+check("targets are addressed by container name",
+      targets == [("The Island", "asa-flush-island", 27920)], targets)
+
+
+class RunningDocker(FakeDocker):
+    def container_details(self, names, timeout=30):
+        return {n: {"state": "running", "health": "healthy", "restarts": 0,
+                    "uptime_seconds": 600} for n in names}
+
+
+clusterctl.dockerctl = RunningDocker()
+check("a running instance is found", clusterctl.running_instances(st_f) == targets)
+
+asked = []
+ok_f, detail_f = clusterctl.save_world(
+    st_f, rcon=lambda h, p, c: asked.append((h, p, c)))
+check("SaveWorld reaches the real container",
+      asked == [("asa-flush-island", 27920, "SaveWorld")], asked)
+check("and it reports success", ok_f and "saved 1" in detail_f, detail_f)
+
+
+class StoppedDocker(FakeDocker):
+    def container_details(self, names, timeout=30):
+        return {n: {"state": "exited", "health": "", "restarts": 0,
+                    "uptime_seconds": 0} for n in names}
+
+
+clusterctl.dockerctl = StoppedDocker()
+ok_s, detail_s = clusterctl.save_world(st_f, rcon=lambda h, p, c: None)
+check("a stopped cluster still reports nothing to save",
+      not ok_s and "no running maps" in detail_s, detail_s)
+
+clusterctl.dockerctl = RunningDocker()
+
+
+def _boom(h, p, c):
+    raise OSError("connection refused")
+
+
+ok_b, detail_b = clusterctl.save_world(st_f, rcon=_boom)
+check("a map that will not answer is reported, not hidden",
+      not ok_b and "did not answer" in detail_b or "no map accepted" in detail_b, detail_b)
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

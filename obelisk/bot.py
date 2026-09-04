@@ -85,7 +85,18 @@ CLUSTER_CONFIGURED = bool(SERVERS and RCON_PASSWORD)
 SERVERDATA_AUTH, SERVERDATA_EXECCOMMAND, SERVERDATA_RESPONSE_VALUE = 3, 2, 0
 
 async def rcon(host, port, command, timeout=6.0):
-    """Open a connection, auth, run one command, return the response text."""
+    """Open a connection, auth with the environment's password, run one command."""
+    return await rcon_with(host, port, RCON_PASSWORD, command, timeout)
+
+
+async def rcon_with(host, port, password, command, timeout=6.0):
+    """The same, with the password passed in.
+
+    Obelisk knows the admin password from its own store; the module global is only set
+    when the relay is running from a generated stack's environment. Anything driving
+    RCON from the manager has to supply it, or it authenticates with an empty string
+    and every command fails while the maps look fine.
+    """
     reader, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout)
     try:
         async def send(pid, ptype, body):
@@ -98,7 +109,7 @@ async def rcon(host, port, command, timeout=6.0):
             data = await asyncio.wait_for(reader.readexactly(size), timeout)
             pid, ptype = struct.unpack("<ii", data[:8])
             return pid, ptype, data[8:-2].decode("utf-8", "replace")
-        await send(1, SERVERDATA_AUTH, RCON_PASSWORD)
+        await send(1, SERVERDATA_AUTH, password)
         pid, ptype, _ = await recv()
         if ptype == SERVERDATA_RESPONSE_VALUE:      # some servers send an empty value packet first
             pid, ptype, _ = await recv()

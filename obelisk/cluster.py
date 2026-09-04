@@ -199,24 +199,53 @@ def _enrich(services):
         s["level"], s["says"] = progress.describe(s)
     return services
 
+def rcon_targets(store):
+    """(label, host, port) for every instance in this cluster.
+
+    Addressed by container name on the cluster's own network, which is why the manager
+    joins that network after a launch. The old version read a SERVERS environment
+    variable that only ever existed when Obelisk wrote itself into the stack - so on a
+    normally-installed Obelisk it was always empty, and every flush reported "no running
+    maps to save" while the maps were up and healthy.
+    """
+    from . import naming
+    plan = build_plan(store)
+    proj = project(store)
+    return [(r["name"], naming.container_name(proj, r["instance"]), r["rcon_port"])
+            for r in plan["maps"]]
+
+
+def running_instances(store):
+    """The subset of this cluster's containers Docker says are running."""
+    targets = rcon_targets(store)
+    try:
+        details = dockerctl.container_details([t[1] for t in targets])
+    except Exception:
+        details = {}
+    return [t for t in targets if (details.get(t[1], {}).get("state") == "running")]
+
+
 def save_world(store, rcon=None):
     """Ask every running map to write its world to disk. Returns (ok, detail).
 
-    A copy taken mid-session captures the last autosave, which can be fifteen minutes
-    of lost progress. This closes that window. It is best-effort on purpose: a map that
-    is down or slow must not stop a backup from happening at all - a slightly older
-    archive beats no archive.
+    A copy taken mid-session captures the last autosave, which can be fifteen minutes of
+    lost progress. This closes that window. Best-effort on purpose: a map that is down or
+    slow must not stop a backup happening at all - a slightly older archive beats none.
     """
     from . import bot
-    servers = bot.SERVERS or {}
-    if not servers:
+    targets = running_instances(store)
+    if not targets:
         return False, "no running maps to save"
+
+    password = str(store.get("admin_password") or "")
     if rcon is None:
         import asyncio
-        rcon = lambda host, port, cmd: asyncio.run(
-            bot.rcon(host, port, cmd, timeout=30))
+
+        def rcon(host, port, cmd):
+            return asyncio.run(bot.rcon_with(host, port, password, cmd, timeout=30))
+
     done, failed = [], []
-    for label, (host, port) in servers.items():
+    for label, host, port in targets:
         try:
             rcon(host, port, "SaveWorld")
             done.append(label)
@@ -226,8 +255,9 @@ def save_world(store, rcon=None):
         return False, "no map accepted SaveWorld: " + ", ".join(failed)
     if failed:
         return True, "saved %d of %d maps; %s did not answer" % (
-            len(done), len(servers), ", ".join(failed))
+            len(done), len(targets), ", ".join(failed))
     return True, "saved %d map(s)" % len(done)
+
 
 def _join_network(store, environ=None):
     """Put this container on the cluster's network so the maps are reachable by name.

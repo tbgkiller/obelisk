@@ -233,5 +233,25 @@ st10.data = {"version": 1, "cluster": {"maps": "island"}, "maps": {}}
 ok10, msg10, _p = backupctl.create(st10)
 check("a missing data root is a clear refusal", not ok10 and "nothing to back up" in msg10, msg10)
 
+
+# ---- sizes have to mean something
+# A 40 KB archive shown as "0.0 MB" reads as "it captured nothing", which is the one
+# doubt a backup feature cannot afford - especially when it is correct.
+from .backup import human_size
+check("bytes stay bytes", human_size(512) == "512 bytes", human_size(512))
+check("a real save is KB, not 0.0 MB", human_size(40960) == "40 KB", human_size(40960))
+check("the archive we actually wrote is legible", human_size(14897) == "15 KB")
+check("megabytes still work", human_size(5 * 1048576) == "5.0 MB")
+check("gigabytes still work", human_size(2 * 1073741824) == "2.00 GB")
+check("no size ever collapses to zero",
+      all(not human_size(n).startswith("0.0") for n in (1, 512, 40960, 900 * 1024)))
+
+# and the message a person reads says it
+st_h, root_h = fresh(maps="island")
+populate(root_h, map_ids=("TheIsland_WP",))
+ok_h, msg_h, path_h = backupctl.create(st_h)
+check("the banner reports a legible size", ok_h and "0.0 MB" not in msg_h, msg_h)
+check("and names a unit", any(u in msg_h for u in ("KB", "MB", "bytes")), msg_h)
+
 print("\nFAILURES: %s" % fails if fails else "\nall backup tests passed")
 sys.exit(1 if fails else 0)

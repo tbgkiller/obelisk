@@ -171,11 +171,11 @@ def create(store, when=None, flush=None):
         pass
 
     size = os.path.getsize(path)
-    log.info("backup ok: %s (%.1f MB, %d entries)", os.path.basename(path),
-             size / 1048576.0, len(members))
-    return True, ("Backed up %d map%s and the cluster definition - %.1f MB, verified "
+    log.info("backup ok: %s (%s, %d entries)", os.path.basename(path),
+             human_size(size), len(members))
+    return True, ("Backed up %d map%s and the cluster definition - %s, verified "
                   "readable.%s" % (len(maps_expected), "" if len(maps_expected) == 1 else "s",
-                                   size / 1048576.0, flushed)), path
+                                   human_size(size), flushed)), path
 
 
 def _unique(path):
@@ -368,3 +368,19 @@ def _times(raw):
         if 0 <= int(h) < 24 and 0 <= int(m) < 60:
             out.append(int(h) * 60 + int(m))
     return sorted(set(out))
+
+def human_size(n):
+    """A size a person can sanity-check.
+
+    "0.0 MB" for a 40 KB archive is technically true and reads as "it captured nothing",
+    which is exactly the doubt a backup feature cannot afford. Small things are shown in
+    the unit they are actually big in.
+    """
+    n = int(n or 0)
+    if n < 1024:
+        return "%d bytes" % n
+    if n < 1024 * 1024:
+        return "%.0f KB" % (n / 1024.0)
+    if n < 1024 * 1024 * 1024:
+        return "%.1f MB" % (n / 1048576.0)
+    return "%.2f GB" % (n / 1073741824.0)
