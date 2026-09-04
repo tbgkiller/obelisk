@@ -121,8 +121,12 @@ def derive_ports(environ=None, inspect=None):
         except ValueError:
             pass
 
+    # A separator between bindings matters: Docker publishes on IPv4 and IPv6, so a
+    # port mapped once appears twice. Without the space the two host ports ran together
+    # and 18091 came back as 1809118091 - a number the validator threw out, leaving the
+    # container quietly claiming it was published on the port it merely listens on.
     fmt = ("{{range $p, $conf := .NetworkSettings.Ports}}{{$p}} "
-           "{{range $conf}}{{.HostPort}}{{end}}" + chr(10) + "{{end}}")
+           "{{range $conf}}{{.HostPort}} {{end}}" + chr(10) + "{{end}}")
     run = inspect or _inspector(fmt)
     for name in _self_names(environ):
         rc, out = run(name)
@@ -135,8 +139,10 @@ def derive_ports(environ=None, inspect=None):
                 continue
             try:
                 container_port = int(bits[0].split("/")[0])
-                host_port = int(bits[1])
-            except ValueError:
+                host_port = int(bits[1])          # first binding; the rest are the
+            except ValueError:                    # same port on another address family
+                continue
+            if not (0 < host_port < 65536):
                 continue
             found.append((container_port, host_port))
         if not found:
@@ -242,3 +248,26 @@ def apply_timezone(tz):
         return True
     except AttributeError:
         return False
+
+def host_address(environ=None):
+    """Something a person can actually click, from inside a container.
+
+    A container cannot see the LAN address its host is reached on - the only addresses
+    visible in here are its own and the bridge gateway, and neither is what someone
+    types in a browser. Unraid does pass the host's name, which resolves on the same
+    network, so that is the best honest answer. OBELISK_HOST overrides it for anyone
+    whose setup needs something else.
+    """
+    environ = os.environ if environ is None else environ
+    for key in ("OBELISK_HOST", "HOST_HOSTNAME"):
+        v = (environ.get(key) or "").strip()
+        if v:
+            return v
+    return "<this-host>"
+
+
+def setup_url(environ=None, published=None):
+    """The full URL of the setup page, for the container log."""
+    if published is None:
+        _listen, published, _how = derive_ports(environ)
+    return "http://%s:%s/setup" % (host_address(environ), published)

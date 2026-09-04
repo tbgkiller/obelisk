@@ -18,7 +18,8 @@
     so read the descriptions before picking where each goes.
     Everything else - maps, mods, rates, Discord, wipe schedules, time zone - is set in
     the web UI once it is running. After starting, check the container log for a
-    one-time setup code, then open the WebUI.
+    one-time setup code: left-click this container's icon and choose Logs. The code is
+    near the top, with the address of the setup page beside it.
   </Overview>
   <Category>GameServers:</Category>
   <WebUI>http://[IP]:[PORT:8088]/</WebUI>

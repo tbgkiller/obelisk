@@ -89,7 +89,7 @@ p = page("Obelisk", "<p>x</p>", nav_on="/admin")
 check("page has one html document", p.count("<html>") == 1 and p.startswith("<!doctype html>"))
 check("nav marks the current tab", 'href="/admin" class=on' in p, p[:600])
 check("setup page asks for the code and says where to find it",
-      "Setup code" in render_setup() and "docker logs obelisk" in render_setup())
+      "Setup code" in render_setup() and "Logs" in render_setup())
 check("setup shows an error when given one", "wrong code" in render_setup(error="wrong code"))
 
 # ---- no stray format slots anywhere
@@ -98,6 +98,20 @@ for name, doc in (("settings", html_settings), ("cluster", h), ("setup", render_
           or True)
     check("%s page balances its form tags" % name, doc.count("<form") == doc.count("</form>"),
           (doc.count("<form"), doc.count("</form>")))
+
+
+# ---- the setup page is a first-run instruction, not a password box
+setup = render_setup()
+check("the instruction comes before the input",
+      setup.index("First time?") < setup.index("name=code"))
+check("it points at Unraid's Logs, not a terminal",
+      "left-click" in setup and "Logs" in setup and "docker logs" not in setup)
+check("it says where in the log to look", "Setup code:" in setup)
+check("it says the address is there too", "address of this page" in setup)
+check("it explains how to get the code back", "restarting the container" in setup)
+check("an error still renders above it",
+      render_setup(error="nope").index("nope") <
+      render_setup(error="nope").index("First time?"))
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

@@ -327,9 +327,7 @@ async def main():
     listen, published, _how = install.derive_ports()
     tasks = []
     if listen > 0:
-        if listen != published:
-            log.info("open http://<this-host>:%s/ - published from container port %s",
-                     published, listen)
+        log.info("web UI: %s", install.setup_url(published=published))
         tasks.append(asyncio.create_task(serve(store, listen)))
     else:
         log.warning("web UI disabled (port 0)")

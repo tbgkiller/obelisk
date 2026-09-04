@@ -54,6 +54,10 @@ tr:last-child td{border-bottom:none}
 .presets{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
 .note,.problem{border-radius:8px;padding:10px 13px;margin:10px 0;font-size:13px}
 .note{background:#1d2530;color:#a9b4c4;border:1px solid #2b3542}
+.callout{background:#17324a;border:1px solid #2f6feb;border-radius:10px;padding:14px 16px;margin:0 0 18px}
+.callout strong{color:#e6e9ef;font-size:15px;display:block;margin-bottom:6px}
+.callout .steps{color:#b8c6d9;font-size:13px;line-height:1.6}
+.callout code{background:#0f1620;padding:1px 5px;border-radius:4px}
 .problem{background:#2a1d1f;color:#ffb4ab;border:1px solid #4a2b2e}
 .ok{color:#3fb950}
 .foot{color:#5b6472;font-size:11px;margin-top:22px}
@@ -213,13 +217,29 @@ def render_cluster(store, plan, status=None):
 
 
 def render_setup(setup_needed=True, error=""):
+    """The first screen anyone sees, so the one thing they need comes first.
+
+    Where to find the code was previously a sentence under the input, phrased as a
+    command line. Someone installing from the Unraid template has a Log menu, not a
+    terminal, and the instruction is the whole content of this page - so it goes at the
+    top, in a box, in their words.
+    """
     err = '<div class=problem>%s</div>' % _e(error) if error else ""
-    return ('%s<fieldset><legend>Set up Obelisk</legend>'
-            '<div class=f><label>Setup code</label>'
-            '<form method=post action="/setup"><input type=password name=code '
-            'autocomplete=off autofocus> <button type=submit>Continue</button></form>'
-            '<div class=help>Printed to the container log when Obelisk first started. '
-            'Run <code>docker logs obelisk</code> to see it.</div></div></fieldset>'
+    return ('%s'
+            '<div class=callout><strong>First time? Grab your one-time setup code from '
+            'the container log.</strong>'
+            '<div class=steps>In Unraid: <b>Docker</b> tab &rarr; left-click the '
+            '<b>Obelisk</b> icon &rarr; <b>Logs</b>. The code is near the top, beside '
+            '<code>Setup code:</code>, with the address of this page next to it. '
+            'Copy it and paste it below.</div></div>'
+            '<fieldset><legend>Set up Obelisk</legend>'
+            '<div class=f><label for=code>Setup code</label>'
+            '<form method=post action="/setup"><input id=code type=password name=code '
+            'autocomplete=off autofocus placeholder="paste the code from the log"> '
+            '<button type=submit>Continue</button></form>'
+            '<div class=help>The code is generated once, when Obelisk first starts, and '
+            'is never written into a file you have to edit. If the log has scrolled past '
+            'it, restarting the container prints it again.</div></div></fieldset>'
             % err)
 
 

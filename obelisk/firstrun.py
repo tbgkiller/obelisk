@@ -138,14 +138,19 @@ def bootstrap(data_dir=None, environ=None):
 
     if setup_code:
         blocking = ", ".join(b["label"] for b in store.readiness()) or "nothing"
+        # The whole first-run instruction in one place, with a URL that can be copied
+        # straight out of the container log rather than reassembled by the reader.
+        url = install.setup_url(environ, published=store.get("status_port"))
         log.warning(
             "\n"
-            "  +----------------------------------------------------------+\n"
-            "  |  Obelisk is ready to set up.                             |\n"
-            "  |  Open  http://<this-host>:%-5s/setup                     |\n"
-            "  |  Setup code:  %-42s |\n"
-            "  +----------------------------------------------------------+\n"
-            "  Still to configure: %s",
-            store.get("status_port"), setup_code, blocking)
+            "  +--------------------------------------------------------------+\n"
+            "  |  Obelisk is up and ready to set up.                          |\n"
+            "  +--------------------------------------------------------------+\n"
+            "     Setup code:  %s\n"
+            "     Open:        %s\n"
+            "\n"
+            "     Paste the code into that page.\n"
+            "     Still to configure after that: %s\n",
+            setup_code, url, blocking)
 
     return store, created, setup_code

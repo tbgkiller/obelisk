@@ -215,5 +215,39 @@ check("no STATUS_PORT is passed to the generated container",
 check("so nothing has to be hand-added to make the two agree",
       yml3.count("18091") == 1, [l for l in yml3.splitlines() if "18091" in l])
 
+
+# ---- dual-stack publishing: the same port, twice
+# Docker publishes on IPv4 and IPv6, so one mapping is reported as two bindings. With no
+# separator between them 18091 came back as 1809118091 - rejected by the validator,
+# leaving the container claiming it was published on the port it merely listens on, and
+# a generated stack that would collide on 8088.
+_real_dual = lambda n: (0, "8088/tcp 18091 18091 " + chr(10))
+check("a port published on both stacks reads as one port",
+      derive_ports({"HOSTNAME": "a"}, inspect=_real_dual) == (8088, 18091, "docker"),
+      derive_ports({"HOSTNAME": "a"}, inspect=_real_dual))
+check("a single binding still works",
+      derive_ports({"HOSTNAME": "a"},
+                   inspect=lambda n: (0, "8088/tcp 18091 " + chr(10)))[1] == 18091)
+check("an unpublished port falls back rather than inventing one",
+      derive_ports({"HOSTNAME": "a"},
+                   inspect=lambda n: (0, "8088/tcp " + chr(10)))[2] == "assumed")
+check("a nonsense host port is ignored, not stored",
+      derive_ports({"HOSTNAME": "a"},
+                   inspect=lambda n: (0, "8088/tcp 1809118091 " + chr(10)))[2] == "assumed",
+      derive_ports({"HOSTNAME": "a"}, inspect=lambda n: (0, "8088/tcp 1809118091 " + chr(10))))
+
+# ---- the log has to hand someone a URL, not a puzzle
+from .install import host_address, setup_url
+check("the host name Unraid passes is used",
+      host_address({"HOST_HOSTNAME": "tower"}) == "tower")
+check("an explicit host wins", host_address({"OBELISK_HOST": "10.0.0.5",
+                                             "HOST_HOSTNAME": "tower"}) == "10.0.0.5")
+check("with neither, it says so rather than guessing wrong",
+      host_address({}) == "<this-host>")
+check("the logged URL carries the published port, not the listening one",
+      setup_url({"HOST_HOSTNAME": "tower"}, published=18091) ==
+      "http://tower:18091/setup",
+      setup_url({"HOST_HOSTNAME": "tower"}, published=18091))
+
 print("\nFAILURES: %s" % fails if fails else "\nall install tests passed")
 sys.exit(1 if fails else 0)
