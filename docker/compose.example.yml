@@ -1,9 +1,10 @@
 # Obelisk - the only container you install by hand. It generates and runs the rest.
 #
 # The three values below are the whole install-time configuration. Docker needs them
-# before Obelisk exists: two are bind mounts and one is a published port. Everything
-# else - maps, mods, rates, Discord, wipe schedules - is set in the web UI after this
-# is running. There is nothing else to fill in here.
+# before Obelisk exists: two are bind mounts and one is a published port. Obelisk reads
+# the cluster path off the mount and its port off the published one, so neither is
+# repeated as an environment variable. Everything else - maps, mods, rates, Discord,
+# wipe schedules, time zone - is set in the web UI after this is running.
 #
 #   docker compose -f compose.example.yml up -d
 #   docker logs obelisk        # prints the one-time setup code
@@ -14,13 +15,6 @@ services:
     image: ghcr.io/tbgkiller/obelisk:latest
     container_name: obelisk
     restart: unless-stopped
-    environment:
-      # Where the ARK cluster's data lives on the host. Put it on an SSD or NVMe
-      # pool, never a spinning array - ASA is very I/O hungry. Must match the
-      # second bind mount below.
-      APPDATA: /mnt/user/appdata/ark
-      STATUS_PORT: "8088"
-      TZ: UTC
     ports:
       - "8088:8088"
     volumes:
@@ -28,6 +22,7 @@ services:
       - /mnt/user/appdata/obelisk:/data
       # The cluster's data, mounted at the same path inside and out so the paths
       # Obelisk writes into the generated compose resolve correctly on the host.
+      # This mount is also how Obelisk knows where the cluster lives.
       - /mnt/user/appdata/ark:/mnt/user/appdata/ark
       # Lets Obelisk create and manage the map containers. See docs/ARCHITECTURE.md
       # for why this is the trade-off it is.

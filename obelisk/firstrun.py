@@ -16,6 +16,7 @@ import logging, os, secrets, stat
 from .schema import BY_KEY, INSTALL_KEYS
 from .settings import Store, Invalid
 from .import_env import ENV_TO_KEY
+from . import install
 
 log = logging.getLogger("obelisk.firstrun")
 
@@ -65,23 +66,44 @@ def bootstrap(data_dir=None, environ=None):
         else:
             log.info("first run: starting from defaults - nothing to import")
 
-    # Install-phase settings are re-read from the environment on every boot, not just
-    # the first: they mirror what Docker actually created the container with, so
-    # editing the template and recreating is how they change. Anything absent keeps
-    # the schema default rather than being blanked.
+    # Install-phase settings mirror what Docker actually created the container with, so
+    # they are re-read on every boot rather than only the first: editing the template
+    # and recreating is how they change.
+    #
+    # They are derived, not asked for twice. The cluster's data path is whatever was
+    # bind-mounted and the listening port is the one the image exposes, so the operator
+    # sets each of them once, in the place Docker already needed them. An explicit
+    # environment variable still wins, which is what keeps an upgraded hand-built stack
+    # working.
     from_env = {}
-    for key in INSTALL_KEYS:
-        target = BY_KEY[key]["target"]
-        if not target.startswith("env:"):
-            continue
-        raw = environ.get(target.split(":", 1)[1])
-        if raw not in (None, ""):
-            from_env[key] = raw
-    if from_env:
+
+    appdata, how = install.derive_appdata(environ, data_dir=data_dir)
+    if appdata:
+        from_env["appdata"] = appdata
+        log.info("cluster data: %s (from the %s)", appdata, how)
+    else:
+        log.warning("no cluster data mount found - falling back to %s. Bind-mount the "
+                    "cluster's folder at the same path inside and out.",
+                    BY_KEY["appdata"]["default"])
+
+    port, how = install.derive_status_port(environ)
+    from_env["status_port"] = port
+    log.info("web UI port: %s (from the %s)", port, how)
+
+    # One at a time, deliberately. store.patch() is all-or-nothing so a half-applied
+    # change can never happen, which is right for a form submission and wrong here: a
+    # single unusable value would silently discard the good ones beside it, and the
+    # container would come up listening on a different port than it just announced.
+    for key, value in from_env.items():
         try:
-            store.patch(from_env, source="install")
+            store.patch({key: value}, source="install")
         except Invalid as e:
-            log.warning("container environment has an unusable install setting: %s", e)
+            log.warning("ignoring unusable %s (%s) - keeping %r",
+                        key, e, store.get(key))
+
+    # Timezone is a UI setting, so it has to take effect on the process without a
+    # recreate - otherwise wipe times and log stamps would lag a setting change.
+    install.apply_timezone(store.get("timezone"))
 
     setup_code = None
     if not str(store.get("admin_token")).strip():
@@ -98,11 +120,11 @@ def bootstrap(data_dir=None, environ=None):
         blocking = ", ".join(b["label"] for b in store.readiness()) or "nothing"
         log.warning(
             "\n"
-            "  ┌──────────────────────────────────────────────────────────┐\n"
-            "  │  Obelisk is ready to set up.                             │\n"
-            "  │  Open  http://<this-host>:%-5s/setup                     │\n"
-            "  │  Setup code:  %-42s │\n"
-            "  └──────────────────────────────────────────────────────────┘\n"
+            "  +----------------------------------------------------------+\n"
+            "  |  Obelisk is ready to set up.                             |\n"
+            "  |  Open  http://<this-host>:%-5s/setup                     |\n"
+            "  |  Setup code:  %-42s |\n"
+            "  +----------------------------------------------------------+\n"
             "  Still to configure: %s",
             store.get("status_port"), setup_code, blocking)
 

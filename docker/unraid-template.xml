@@ -13,9 +13,10 @@
     shared settings file across every map, relaying chat between them and to Discord,
     and giving you a status page and admin controls in the browser.
 
-    Only the fields below are needed to start. Everything else - maps, mods, rates,
-    Discord, wipe schedules - is set in the web UI once it is running. After starting,
-    check the container log for a one-time setup code, then open the WebUI.
+    Only the fields below are needed to start: two folders, the socket and a port.
+    Everything else - maps, mods, rates, Discord, wipe schedules, time zone - is set in
+    the web UI once it is running. After starting, check the container log for a
+    one-time setup code, then open the WebUI.
   </Overview>
   <Category>GameServers:</Category>
   <WebUI>http://[IP]:[PORT:8088]/</WebUI>
@@ -28,7 +29,7 @@
   <Config Name="Cluster data" Target="/mnt/user/appdata/ark" Default="/mnt/user/appdata/ark"
           Mode="rw" Description="Where the ARK server files, saves and shared config live.
           Put this on an SSD or NVMe pool, NOT the spinning array - ASA is very I/O hungry.
-          Set the APPDATA variable below to this same path."
+          Obelisk reads this path from the mount itself - there is nothing else to set."
           Type="Path" Display="always" Required="true" Mask="false"/>
 
   <Config Name="Docker socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock"
@@ -36,18 +37,7 @@
           Type="Path" Display="advanced" Required="true" Mask="false"/>
 
   <Config Name="WebUI port" Target="8088" Default="8088" Mode="tcp"
-          Description="Status page and admin UI."
+          Description="Status page and admin UI. Change the host side here and Obelisk
+          follows it - there is no second port to keep in sync."
           Type="Port" Display="always" Required="true" Mask="false"/>
-
-  <Config Name="APPDATA" Target="APPDATA" Default="/mnt/user/appdata/ark"
-          Description="Must match the Cluster data path above."
-          Type="Variable" Display="always" Required="true" Mask="false"/>
-
-  <Config Name="STATUS_PORT" Target="STATUS_PORT" Default="8088"
-          Description="Must match the WebUI port above."
-          Type="Variable" Display="advanced" Required="true" Mask="false"/>
-
-  <Config Name="TZ" Target="TZ" Default="UTC"
-          Description="Drives wipe times, restart windows and log timestamps."
-          Type="Variable" Display="always" Required="false" Mask="false"/>
 </Container>
