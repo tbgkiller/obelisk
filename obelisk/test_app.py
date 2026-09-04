@@ -305,6 +305,7 @@ class _Bot:
     DISCORD_TOKEN, DISCORD_INVITE = "", ""
     DISCORD_CHANNEL_ID = TRIBELOG_CHANNEL_ID = ADMIN_CHANNEL_ID = ADMIN_ROLE_ID = 0
     JOIN_LEAVE = WELCOME_ENABLED = False
+    STATUS_PORT = 8088
     CLUSTER_CONFIGURED = False
 
 
@@ -340,6 +341,11 @@ check("and the admin channel, likewise renamed",
 check("the invite reaches the in-game !discord command",
       _b.DISCORD_INVITE == "https://discord.gg/synthetic", _b.DISCORD_INVITE)
 check("join/leave announcements follow the setting", _b.JOIN_LEAVE is True)
+# Inside Obelisk the web UI serves the status page, on the port the relay's own copy of
+# it would otherwise bind. Two servers, one socket, and the process dies the first time
+# the relay runs at all.
+check("the relay's standalone status page stands down inside Obelisk",
+      _b.STATUS_PORT == 0, _b.STATUS_PORT)
 
 # Blank is the ordinary case - no Discord, map-to-map only - and must not raise.
 _st.patch({"discord_token": "", "discord_channel_id": "", "discord_admin_channel_id": ""})

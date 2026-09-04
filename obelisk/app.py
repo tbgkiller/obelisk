@@ -420,6 +420,13 @@ def _wire_relay(store, bot):
         except (TypeError, ValueError):
             log.warning("ignoring unusable value for %s", key)
 
+    # The relay still carries the standalone status page from when it was its own
+    # container, and it binds the same port the web UI is already serving on - so the
+    # two collided and the process died on "address already in use" the first time the
+    # relay actually got as far as starting. Inside Obelisk that page is redundant; the
+    # relay has always had a switch for turning it off.
+    bot.STATUS_PORT = 0
+
     bot.CLUSTER_CONFIGURED = bool(bot.SERVERS and bot.RCON_PASSWORD)
     return bot.CLUSTER_CONFIGURED
 
