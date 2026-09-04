@@ -174,3 +174,42 @@ def adopt(store, live):
         store.patch({"mem_limit": mem}, map_name=map_key)
     log.info("adopted the live cluster's identity: %s", ", ".join(sorted(changes)))
     return changes
+
+
+def master_instance(order, last=LAST):
+    """Which map holds the update master's job *while a migration is running*.
+
+    In a settled cluster the master is the first map, and the first map is the island.
+    But the island is deliberately the last thing to move, so for the whole of a rolling
+    migration the master does not exist yet - and a follower that finds a new build
+    published waits for it, forever, looking exactly like a slow start. That cost a map
+    twenty minutes of silence before anyone learned it was never going to come up.
+
+    So during a migration the job belongs to the first map that actually moved. It is
+    already running by the time the second one starts, which is the only property the
+    role needs.
+    """
+    order = [k for k in order]
+    return order[0] if order else last
+
+
+def build_gate(installed, available, master_running):
+    """(ok, message) - may a cutover start with these two build ids?
+
+    Matching builds are the ordinary case and pass. When they differ, whether this is
+    safe turns entirely on whether the master is up: with a master, the cluster updates
+    the way it is designed to; without one, every follower stalls. Refusing here costs
+    seconds. Finding out from a health check costs twenty minutes per map, and says
+    "never became healthy" rather than why.
+    """
+    if not installed or not available or str(installed) == str(available):
+        return True, "the installed build is current"
+    if master_running:
+        return True, ("build %s is out and %s is installed; the update master is running "
+                      "and will fetch it" % (available, installed))
+    return False, (
+        "A new server build is out (%s installed, %s available) and the update master "
+        "is not running, so this map would wait for it and never start. Either pre-stage "
+        "the new build before cutting over, or pin this run to the installed build and "
+        "update the whole cluster together once the master has migrated."
+        % (installed, available))
