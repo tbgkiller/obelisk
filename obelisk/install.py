@@ -72,6 +72,47 @@ def candidate_mounts(mountinfo_text, data_dir="/data"):
     return out
 
 
+def container_root(environ=None):
+    """The data root as this container sees it - one mount, nothing else needed."""
+    environ = os.environ if environ is None else environ
+    return (environ.get("OBELISK_DATA") or "/data").rstrip("/")
+
+
+def host_path_of(container_path, environ=None, inspect=None):
+    """Where a path inside this container comes from on the host.
+
+    Asking Docker is the only way to know. /proc/self/mountinfo reports the mount point
+    *in here*, which is a different string from the folder the operator picked - and
+    the generated compose has to name the host one or the map containers mount nothing.
+
+    Getting this from Docker is what lets the install form ask for the folder once
+    instead of twice: the two paths no longer have to be the same string.
+    """
+    environ = os.environ if environ is None else environ
+    if inspect is None:
+        from . import dockerctl
+
+        def inspect(name):
+            fmt = ("{{range .Mounts}}{{.Source}}" + chr(9) +
+                   "{{.Destination}}" + chr(10) + "{{end}}")
+            return dockerctl._run(["docker", "inspect", "-f", fmt, name], timeout=20)
+
+    me = (environ.get("HOSTNAME") or "").strip()
+    names = [n for n in (me, environ.get("HOST_CONTAINERNAME", "").strip()) if n]
+    want = container_path.rstrip("/")
+    for name in names:
+        rc, out = inspect(name)
+        if rc != 0:
+            continue
+        for line in out.splitlines():
+            if chr(9) not in line:
+                continue
+            source, dest = line.split(chr(9), 1)
+            if dest.strip().rstrip("/") == want:
+                return source.strip(), "docker"
+    return None, "unknown"
+
+
 def derive_appdata(environ=None, mountinfo_text=None, data_dir=None):
     """(path, how) - where the cluster's data lives on the host.
 
@@ -86,6 +127,16 @@ def derive_appdata(environ=None, mountinfo_text=None, data_dir=None):
     if explicit:
         return explicit, "environment"
 
+    # Ask Docker where our own data mount comes from. This is the path that has to go
+    # into the generated compose, and it is not the path we see it at.
+    root = container_root(environ)
+    host, how = host_path_of(root, environ=environ)
+    if host:
+        return host, "docker"
+
+    # Without a socket, fall back to the mount table. That reports container-side
+    # paths, so it is only right when the folder is mounted at the same path in and
+    # out - true of the stack Obelisk generates, not of a hand-made container.
     text = mountinfo_text if mountinfo_text is not None else _read(MOUNTINFO)
     for mp in candidate_mounts(text, data_dir):
         return mp, "bind mount"

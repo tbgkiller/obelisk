@@ -36,14 +36,15 @@ def project(store):
 
 
 def compose_path(store):
-    return "%s/%s" % (layout.paths(store.get("appdata"))["obelisk"], COMPOSE_NAME)
+    return "%s/%s" % (layout.paths(layout.root_of(store))["obelisk"], COMPOSE_NAME)
 
 
 def prepare(store, run=None):
     """Create the data root layout for the selected maps. Safe to repeat."""
     keys = _map_keys(store)
-    made = layout.ensure(store.get("appdata"), keys)
-    log.info("data root ready: %s (%d directories)", store.get("appdata"), len(made))
+    made = layout.ensure(layout.root_of(store), keys)
+    log.info("data root ready: %s (host path %s, %d directories)",
+             layout.root_of(store), store.get("appdata"), len(made))
     return made
 
 

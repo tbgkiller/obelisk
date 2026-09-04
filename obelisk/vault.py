@@ -31,7 +31,7 @@ EXCLUDED_FROM_BACKUP = (KEY_NAME, VAULT_NAME)
 
 
 def _dir(store):
-    return layout.paths(store.get("appdata"))["obelisk"]
+    return layout.paths(layout.root_of(store))["obelisk"]
 
 
 def key_path(store):

@@ -127,12 +127,16 @@ check("nothing mounts a ServerFiles dir inside the root",
       not any(v.startswith(root + "/ServerFiles") for v in vols), vols)
 
 ob = doc["services"]["obelisk"]
-check("Obelisk mounts the whole root, same path in and out",
-      "%s:%s" % (root, root) in ob["volumes"], ob["volumes"])
+# One mount, and the two sides no longer have to be the same string: Obelisk asks
+# Docker where /data comes from, which is what lets the install form ask once.
+check("Obelisk mounts the whole root as its single data mount",
+      "%s:/data" % root in ob["volumes"], ob["volumes"])
+check("and nothing is mounted twice",
+      len([v for v in ob["volumes"] if v.startswith(root + ":")]) == 1, ob["volumes"])
 check("Obelisk gets the socket",
       any("docker.sock" in v for v in ob["volumes"]), ob["volumes"])
-check("Obelisk's store is inside the root",
-      ob["environment"]["OBELISK_DATA"] == root + "/obelisk",
+check("Obelisk's store is inside its one mount",
+      ob["environment"]["OBELISK_DATA"] == "/data",
       ob["environment"]["OBELISK_DATA"])
 
 # mods and ordering survive into the stack
@@ -177,8 +181,14 @@ clusterctl.dockerctl = fake
 
 # Where the compose file goes is asserted against the POSIX root (a pure derivation);
 # the writes themselves are redirected into a temp dir so this runs anywhere.
+# The compose file is written where Obelisk can see it - the container-side root,
+# which the store locates itself from - not the host path that goes inside the file.
+import os as _os
+from . import layout as _layout
 check("compose file lands inside the data root",
-      clusterctl.compose_path(st) == st.get("appdata") + "/obelisk/compose.yaml",
+      clusterctl.compose_path(st) ==
+      _os.path.join(_layout.root_of(st), "obelisk", "compose.yaml").replace("\\", "/")
+      or clusterctl.compose_path(st).endswith("/obelisk/compose.yaml"),
       clusterctl.compose_path(st))
 check("project name follows the cluster id", clusterctl.project(st) == "testcluster")
 
@@ -197,8 +207,8 @@ check("launch used the file in the data root",
       calls[-1][0] == clusterctl.compose_path(st), calls[-1])
 check("launch used the cluster's own project", calls[-1][1] == "testcluster")
 check("the compose file is on disk afterwards", os.path.isfile(clusterctl.compose_path(st)))
-check("launch laid out the data root first", prepared and prepared[0][0] == st.get("appdata"),
-      prepared)
+check("launch laid out the data root first",
+      prepared and prepared[0][0] == layout.root_of(st), prepared)
 check("it laid out a dir for every selected map",
       prepared and prepared[0][1] == ["island", "ragnarok"], prepared)
 check("the real save trees exist", os.path.isdir(launch_root + "/shared/SavedArks"))

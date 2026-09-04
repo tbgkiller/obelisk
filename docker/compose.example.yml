@@ -1,10 +1,10 @@
 # Obelisk - the only container you install by hand. It generates and runs the rest.
 #
-# The three values below are the whole install-time configuration. Docker needs them
-# before Obelisk exists: two are bind mounts and one is a published port. Obelisk reads
-# the cluster path off the mount and its port off the published one, so neither is
-# repeated as an environment variable. Everything else - maps, mods, rates, Discord,
-# wipe schedules, time zone - is set in the web UI after this is running.
+# The three values below are the whole install-time configuration: one data folder, the
+# Docker socket, and a published port. Obelisk asks Docker where its own data mount
+# comes from on the host, so the folder is named once here and nowhere else. Everything
+# else - maps, mods, rates, Discord, wipe schedules, time zone - is set in the web UI
+# after this is running.
 #
 #   docker compose -f compose.example.yml up -d
 #   docker logs obelisk        # prints the one-time setup code
@@ -18,12 +18,11 @@ services:
     ports:
       - "8088:8088"
     volumes:
-      # Obelisk's own store: settings, snapshots, its setup code. Small.
+      # One folder is the whole cluster: Obelisk's settings, every map's saves, the
+      # shared config and the transfer data. Copy it and you have moved the cluster.
+      # The ~20 GB game install goes in a sibling folder outside it, so a backup of
+      # this one stays portable.
       - /mnt/user/appdata/obelisk:/data
-      # The cluster's data, mounted at the same path inside and out so the paths
-      # Obelisk writes into the generated compose resolve correctly on the host.
-      # This mount is also how Obelisk knows where the cluster lives.
-      - /mnt/user/appdata/ark:/mnt/user/appdata/ark
       # Lets Obelisk create and manage the map containers. See docs/ARCHITECTURE.md
       # for why this is the trade-off it is.
       - /var/run/docker.sock:/var/run/docker.sock

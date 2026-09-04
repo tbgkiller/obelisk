@@ -13,7 +13,7 @@
     shared settings file across every map, relaying chat between them and to Discord,
     and giving you a status page and admin controls in the browser.
 
-    Only the fields below are needed to start: two folders, the socket and a port.
+    Only the fields below are needed to start: one folder, the socket and a port.
     Everything else - maps, mods, rates, Discord, wipe schedules, time zone - is set in
     the web UI once it is running. After starting, check the container log for a
     one-time setup code, then open the WebUI.
@@ -22,14 +22,13 @@
   <WebUI>http://[IP]:[PORT:8088]/</WebUI>
   <Icon>https://raw.githubusercontent.com/tbgkiller/obelisk/main/docs/icon.png</Icon>
 
-  <Config Name="Obelisk data" Target="/data" Default="/mnt/user/appdata/obelisk"
-          Mode="rw" Description="Obelisk's own settings store and snapshots. Small."
-          Type="Path" Display="always" Required="true" Mask="false"/>
-
-  <Config Name="Cluster data" Target="/mnt/user/appdata/ark" Default="/mnt/user/appdata/ark"
-          Mode="rw" Description="Where the ARK server files, saves and shared config live.
-          Put this on an SSD or NVMe pool, NOT the spinning array - ASA is very I/O hungry.
-          Obelisk reads this path from the mount itself - there is nothing else to set."
+  <Config Name="Data root" Target="/data" Default="/mnt/user/appdata/obelisk"
+          Mode="rw" Description="One folder holding everything the cluster is: Obelisk's
+          settings, every map's saves, the shared config and the cross-map transfer data.
+          Copy this folder and you have moved the cluster. Put it on an SSD or NVMe pool,
+          NOT the spinning array - ASA is very I/O hungry.
+          The ~20 GB game install is kept in a sibling folder outside this one, because
+          it re-downloads for free and keeping it out is what makes a backup portable."
           Type="Path" Display="always" Required="true" Mask="false"/>
 
   <Config Name="Docker socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock"

@@ -7,8 +7,9 @@ Fixture values here are synthetic. The one real value anywhere in the suites is 
 
 import os, sys, tempfile
 
-from .install import (CONTAINER_PORT, candidate_mounts, derive_appdata,
-                      derive_status_port, mount_points, apply_timezone)
+from .install import (CONTAINER_PORT, candidate_mounts, container_root,
+                      derive_appdata, derive_status_port, host_path_of,
+                      mount_points, apply_timezone)
 from .firstrun import bootstrap
 
 fails = []
@@ -109,6 +110,50 @@ for bad in ("chicago", "CST", "Mars/Olympus"):
 applied = apply_timezone("Europe/London")
 check("timezone reaches the environment", os.environ.get("TZ") == "Europe/London")
 check("tzset applied where the platform has it", applied or not hasattr(__import__("time"), "tzset"))
+
+
+# ---- ONE mount is a complete install
+# The install form used to ask for the data folder twice - a store mount and a saves
+# mount - and the workaround was pointing both at the same folder. One mount now has to
+# be genuinely sufficient: store, saves and everything else live inside it.
+from . import layout as layoutmod
+from .compose import generate_compose
+from .settings import Store
+
+one_root = os.path.join(tempfile.mkdtemp(), "data")
+st_one, created_one, code_one = bootstrap(os.path.join(one_root, "obelisk"), environ={})
+check("a fresh install boots from one folder", created_one and code_one)
+check("the store landed inside that folder",
+      os.path.isfile(os.path.join(one_root, "obelisk", "settings.json")))
+check("the root is worked out from where the store is",
+      layoutmod.root_of(st_one) == os.path.abspath(one_root), layoutmod.root_of(st_one))
+
+layoutmod.ensure(layoutmod.root_of(st_one), ["island"])
+for sub in ("obelisk", "shared", "shared/SavedArks", "cluster", "instances/island/Saved"):
+    check("the layout has %s inside the one folder" % sub,
+          os.path.isdir(os.path.join(one_root, *sub.split("/"))))
+
+# the host path is a separate fact, asked of Docker rather than assumed equal
+def _fake_inspect(name):
+    return 0, "/mnt/user/appdata/obelisk-testcluster" + chr(9) + "/data" + chr(10)
+
+host, how = host_path_of("/data", environ={"HOSTNAME": "abc123"}, inspect=_fake_inspect)
+check("the host path comes back from Docker, not the mount table",
+      host == "/mnt/user/appdata/obelisk-testcluster", host)
+check("and it is allowed to differ from the container path", host != "/data")
+
+st_l = Store(os.path.join(one_root, "obelisk", "settings.json")).load()
+st_l.patch({"appdata": "/mnt/user/appdata/obelisk-testcluster"}, source="install")
+st_l.patch({"maps": "island", "admin_password": "synthetic-pw", "cluster_id": "onemount"})
+yml = generate_compose(st_l, project="onemount")
+check("the compose names the HOST path for map saves",
+      "/mnt/user/appdata/obelisk-testcluster/instances/island/Saved" in yml)
+check("Obelisk itself gets one mount at /data",
+      '"/mnt/user/appdata/obelisk-testcluster:/data"' in yml)
+check("and there is no second data bind",
+      yml.count("/mnt/user/appdata/obelisk-testcluster:/") == 1, yml[-600:])
+check("the game install is still a sibling outside the root",
+      "/mnt/user/appdata/obelisk-testcluster-serverfiles:/home/pok/arkserver" in yml)
 
 print("\nFAILURES: %s" % fails if fails else "\nall install tests passed")
 sys.exit(1 if fails else 0)

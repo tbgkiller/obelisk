@@ -31,13 +31,14 @@ def check(name, cond, detail=""):
 
 
 def fresh(**over):
-    d = tempfile.mkdtemp()
-    st = Store(os.path.join(d, "settings.json")).load()
+    root = os.path.join(tempfile.mkdtemp(), "data")
+    os.makedirs(os.path.join(root, "obelisk"), exist_ok=True)
+    st = Store(os.path.join(root, "obelisk", "settings.json")).load()
     st.patch({"status_port": 8088}, source="install")
     st.patch(dict({"maps": "island", "admin_password": "synthetic-pw",
                    "cluster_id": "testcluster", "backup_keep": 5}, **over))
-    st.data["cluster"]["appdata"] = os.path.join(d, "data")
-    return st, st.get("appdata")
+    st.data["cluster"]["appdata"] = "/mnt/user/appdata/obelisk"
+    return st, root
 
 
 def populate(root):

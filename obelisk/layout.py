@@ -119,3 +119,16 @@ def verify(root, walker=None, readlink=None, exists=None):
             elif not exists(dest):
                 problems.append("%s is a broken link (-> %s)." % (full, target))
     return problems
+
+def root_of(store):
+    """The data root as *this* container sees it.
+
+    Two different paths describe the same folder: the host path, which is what has to
+    go into a generated compose file, and the path it is mounted at in here, which is
+    what Obelisk actually reads and writes. Conflating them is what forced the install
+    form to ask for the folder twice.
+
+    The store always lives at <root>/obelisk/settings.json, so the store knows where the
+    root is without being told - and without depending on the two paths being equal.
+    """
+    return os.path.dirname(os.path.dirname(os.path.abspath(store.path)))

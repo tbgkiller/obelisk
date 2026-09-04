@@ -30,14 +30,15 @@ def fresh(maps="island,ragnarok", **over):
     backup.py works on the root as a path, so unlike compose generation it does not
     need the POSIX-only validator - which lets these tests use a genuine filesystem.
     """
-    d = tempfile.mkdtemp()
-    st = Store(os.path.join(d, "settings.json")).load()
+    root = os.path.join(tempfile.mkdtemp(), "data")
+    os.makedirs(os.path.join(root, "obelisk"), exist_ok=True)
+    st = Store(os.path.join(root, "obelisk", "settings.json")).load()
     st.patch({"status_port": 8088}, source="install")
     st.patch(dict({"maps": maps, "admin_password": "synthetic-pw",
                    "discord_token": "synthetic-token", "cluster_id": "testcluster",
                    "mod_ids": "929110,940003", "backup_keep": 3}, **over))
-    root = os.path.join(d, "data")
-    st.data["cluster"]["appdata"] = root          # bypass the POSIX-path validator
+    # The host path is a separate fact from where we see it; only compose uses it.
+    st.data["cluster"]["appdata"] = "/mnt/user/appdata/obelisk"
     return st, root
 
 
@@ -200,8 +201,11 @@ check("and leaves exactly the retention limit", len(backupctl.listing(st9)) == 2
       len(backupctl.listing(st9)))
 
 # ---------------------------------------------------------------- missing root
-st10, _r = fresh()
-st10.data["cluster"]["appdata"] = os.path.join(tempfile.mkdtemp(), "nope")
+# A store pointing at a root that does not exist: the container-side root now comes
+# from where the store file is, so this is built by putting the store somewhere gone.
+gone = os.path.join(tempfile.mkdtemp(), "nope", "obelisk")
+st10 = Store(os.path.join(gone, "settings.json"))
+st10.data = {"version": 1, "cluster": {"maps": "island"}, "maps": {}}
 ok10, msg10, _p = backupctl.create(st10)
 check("a missing data root is a clear refusal", not ok10 and "nothing to back up" in msg10, msg10)
 

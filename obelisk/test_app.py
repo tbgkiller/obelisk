@@ -29,8 +29,10 @@ DOCKER_UP = (True, "Docker 27.0.0, compose plugin present")
 
 
 async def run():
-    d = tempfile.mkdtemp()
-    store, _created, code = bootstrap(d, environ={})
+    # The store lives at <data root>/obelisk/settings.json, which is how the rest of
+    # Obelisk locates the root from one mount.
+    d = os.path.join(tempfile.mkdtemp(), "data")
+    store, _created, code = bootstrap(os.path.join(d, "obelisk"), environ={})
 
     # ---- Docker unreachable: the UI still serves, and says why
     client = TestClient(TestServer(build_app(store, docker=DOCKER_DOWN)))
@@ -69,7 +71,8 @@ async def run():
     await client.close()
 
     # ---- Docker present: no banner
-    store2, _c, code2 = bootstrap(tempfile.mkdtemp(), environ={})
+    store2, _c, code2 = bootstrap(
+        os.path.join(tempfile.mkdtemp(), "data", "obelisk"), environ={})
     client = TestClient(TestServer(build_app(store2, docker=DOCKER_UP)))
     await client.start_server()
     body = await (await client.get("/setup")).text()
@@ -147,8 +150,8 @@ async def run():
     # ---- backups from the UI
     from . import backup as backupctl
     from . import layout as layoutmod
-    broot = os.path.join(tempfile.mkdtemp(), "data")
-    store.data["cluster"]["appdata"] = broot
+    # Backups work on the root the store sits in - one mount, no second path to set.
+    broot = layoutmod.root_of(store)
     layoutmod.ensure(broot, ["island"])
     sd = os.path.join(broot, "shared", "SavedArks", "TheIsland_WP")
     os.makedirs(sd, exist_ok=True)

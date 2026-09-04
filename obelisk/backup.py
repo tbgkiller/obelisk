@@ -37,7 +37,7 @@ SECRET_KEYS = ("admin_password", "server_password", "discord_token", "admin_toke
 
 def backups_dir(store):
     """Where archives live: inside the data root, so they move with it."""
-    return "%s/backups" % layout.paths(store.get("appdata"))["obelisk"]
+    return "%s/backups" % layout.paths(layout.root_of(store))["obelisk"]
 
 
 def archive_name(when=None):
@@ -105,7 +105,7 @@ def create(store, when=None, flush=None):
     `flush` is an optional callable run before the copy - Phase 2's RCON SaveWorld -
     so the archive catches the world as of now rather than the last autosave.
     """
-    root = str(store.get("appdata")).rstrip("/")
+    root = layout.root_of(store)
     if not os.path.isdir(root):
         return False, "No data root at %s yet - nothing to back up." % root, None
 

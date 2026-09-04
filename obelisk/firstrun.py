@@ -20,8 +20,18 @@ from . import install
 
 log = logging.getLogger("obelisk.firstrun")
 
-DATA_DIR   = os.environ.get("OBELISK_DATA", "/data")
 STORE_NAME = "settings.json"
+
+
+def store_dir(environ=None):
+    """<data root>/obelisk - one mount, and the store is a folder inside it.
+
+    Keeping the store under the same root as the saves is what lets the install form
+    ask for one folder instead of two, and lets the store tell the rest of Obelisk
+    where the root is without being told twice.
+    """
+    from . import layout
+    return layout.paths(install.container_root(environ))["obelisk"]
 
 
 def _import_legacy_env(store, environ):
@@ -48,8 +58,8 @@ def bootstrap(data_dir=None, environ=None):
     one-time code that lets you claim a fresh instance, and it is printed to the
     container log rather than baked into any file you have to edit.
     """
-    data_dir = data_dir or DATA_DIR
     environ = environ if environ is not None else os.environ
+    data_dir = data_dir or store_dir(environ)
     os.makedirs(data_dir, exist_ok=True)
     path = os.path.join(data_dir, STORE_NAME)
     created = not os.path.isfile(path)
@@ -104,6 +114,15 @@ def bootstrap(data_dir=None, environ=None):
     # Timezone is a UI setting, so it has to take effect on the process without a
     # recreate - otherwise wipe times and log stamps would lag a setting change.
     install.apply_timezone(store.get("timezone"))
+
+    # Lay out the root at boot rather than waiting for a launch, so the one folder the
+    # operator picked immediately describes itself: obelisk/, shared/, cluster/,
+    # instances/. An empty folder gives no clue that it is the whole cluster.
+    try:
+        from . import layout
+        layout.ensure(layout.root_of(store))
+    except OSError as e:
+        log.warning("could not create the data layout: %s", e)
 
     setup_code = None
     if not str(store.get("admin_token")).strip():

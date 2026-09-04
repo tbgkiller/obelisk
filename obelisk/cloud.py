@@ -66,7 +66,7 @@ def available():
 
 def conf_path(store):
     from . import layout
-    return os.path.join(layout.paths(store.get("appdata"))["obelisk"], CONF_NAME)
+    return os.path.join(layout.paths(layout.root_of(store))["obelisk"], CONF_NAME)
 
 
 def authorize_command(provider):

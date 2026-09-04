@@ -145,14 +145,14 @@ def generate_compose(store, project="ark", in_use_ports=None):
         "      DISCORD_TOKEN: %s" % _q(store.get("discord_token")),
         "      DISCORD_CHANNEL_ID: %s" % _q(store.get("discord_channel_id")),
         "      STATUS_PORT: %s" % _q(store.get("status_port")),
-        "      OBELISK_DATA: %s" % _q(paths["obelisk"]),
+        "      OBELISK_DATA: \"/data\"",
         "    ports:",
         '      - "%s:%s"' % (store.get("status_port"), store.get("status_port")),
         "    volumes:",
-        # The whole data root, at the same path inside and out, so the paths Obelisk
-        # writes into this file resolve identically on the host. One mount, so a
-        # backup of "what Obelisk can see" is exactly the portable set.
-        '      - "%s:%s"' % (paths["root"], paths["root"]),
+        # One mount: the whole data root. Obelisk finds the host path back out of
+        # Docker, so the two sides do not have to be the same string - which is what
+        # lets the install form ask for one folder instead of two.
+        '      - "%s:/data"' % paths["root"],
         '      - "/var/run/docker.sock:/var/run/docker.sock"',
         "",
         "networks:",
