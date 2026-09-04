@@ -36,8 +36,8 @@ SECRET_KEYS = ("admin_password", "server_password", "discord_token", "admin_toke
 
 
 def backups_dir(store):
-    """Where archives live: inside the data root, so they move with it."""
-    return "%s/backups" % layout.paths(layout.root_of(store))["obelisk"]
+    """Where archives live: in Obelisk's own folder, beside the definition."""
+    return layout.obelisk_paths(layout.root_of(store))["backups"]
 
 
 def archive_name(when=None):
@@ -81,9 +81,10 @@ def _manifest(store, members, maps_expected):
     return {
         "version": 1,
         "created": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "data_root": store.get("appdata"),
-        "portable": list(layout.PORTABLE),
-        "excluded": ["the game install (re-downloads on restore)"],
+        "ark_root": store.get("appdata"),
+        "portable": ["obelisk (all of it)"] + ["ark/" + t for t in layout.ARK_PORTABLE],
+        "excluded": ["ark/%s - the game install, re-downloaded on restore" % layout.SERVERFILES,
+                     "ark/%s - re-downloaded from the mod ids in the definition" % layout.MODS],
         "maps_expected": list(maps_expected),
         "entries": len(members),
         "contains_secrets": bool(definition(store)["secrets_required"]),
@@ -106,8 +107,9 @@ def create(store, when=None, flush=None):
     so the archive catches the world as of now rather than the last autosave.
     """
     root = layout.root_of(store)
+    ark = layout.ark_root_of(store)
     if not os.path.isdir(root):
-        return False, "No data root at %s yet - nothing to back up." % root, None
+        return False, "No Obelisk data folder at %s yet - nothing to back up." % root, None
 
     flushed = ""
     if flush:
@@ -129,12 +131,19 @@ def create(store, when=None, flush=None):
 
     try:
         with tarfile.open(tmp, "w:gz") as tar:
-            for tree in layout.PORTABLE:
-                src = os.path.join(root, tree)
+            # All of Obelisk data: the definition is small and none of it can be
+            # fetched again from anywhere.
+            for name in sorted(os.listdir(root)):
+                tar.add(os.path.join(root, name), arcname="obelisk/" + name,
+                        filter=_skip_backups)
+            # Only the irreplaceable part of Ark data. The server install and the mods
+            # are left out on purpose: they are tens of gigabytes and they come back
+            # from the mod ids stored above.
+            for tree in layout.ARK_PORTABLE:
+                src = os.path.join(ark, tree)
                 if not os.path.exists(src):
                     continue
-                # The backups folder must not recurse into itself.
-                tar.add(src, arcname=tree, filter=_skip_backups)
+                tar.add(src, arcname="ark/" + tree, filter=_skip_backups)
             _add_bytes(tar, "cluster-definition.json",
                        json.dumps(defn, indent=2, sort_keys=True).encode("utf-8"))
     except Exception as e:
@@ -237,7 +246,7 @@ def _read_back(path, maps_expected):
                       "which mods to load", members
     missing = []
     for map_id in maps_expected:
-        want = "%s/SavedArks/%s" % (layout.SHARED, map_id)
+        want = "ark/%s/SavedArks/%s" % (layout.SHARED, map_id)
         if not any(m == want or m.startswith(want + "/") for m in members):
             missing.append(map_id)
     if missing and maps_expected:

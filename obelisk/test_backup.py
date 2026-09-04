@@ -30,20 +30,33 @@ def fresh(maps="island,ragnarok", **over):
     backup.py works on the root as a path, so unlike compose generation it does not
     need the POSIX-only validator - which lets these tests use a genuine filesystem.
     """
-    root = os.path.join(tempfile.mkdtemp(), "data")
-    os.makedirs(os.path.join(root, "obelisk"), exist_ok=True)
-    st = Store(os.path.join(root, "obelisk", "settings.json")).load()
+    base = tempfile.mkdtemp()
+    root = os.path.join(base, "obelisk")          # Obelisk data: the definition
+    ark = os.path.join(base, "ark")               # Ark data: the bulk
+    os.makedirs(root, exist_ok=True)
+    os.makedirs(ark, exist_ok=True)
+    os.environ["OBELISK_ARK"] = ark
+    st = Store(os.path.join(root, "settings.json")).load()
     st.patch({"status_port": 8088}, source="install")
     st.patch(dict({"maps": maps, "admin_password": "synthetic-pw",
                    "discord_token": "synthetic-token", "cluster_id": "testcluster",
                    "mod_ids": "929110,940003", "backup_keep": 3}, **over))
     # The host path is a separate fact from where we see it; only compose uses it.
-    st.data["cluster"]["appdata"] = "/mnt/user/appdata/obelisk"
-    return st, root
+    st.data["cluster"]["appdata"] = "/mnt/user/appdata/ark"
+    st.save()            # the definition has to exist on disk to be backed up
+    return st, ark
 
 
 def populate(root, map_ids=("TheIsland_WP", "Ragnarok_WP"), size=2048):
-    layout.ensure(root, ["island", "ragnarok"])
+    """Fill the Ark folder: saves, config, transfer data - and bulk that must NOT be
+    backed up, so the exclusion is proved against something real."""
+    layout.ensure_ark(root, ["island", "ragnarok"])
+    os.makedirs(os.path.join(root, layout.SERVERFILES, "ShooterGame"), exist_ok=True)
+    with open(os.path.join(root, layout.SERVERFILES, "ShooterGame", "big.bin"), "wb") as fh:
+        fh.write(bytes(8192))
+    os.makedirs(os.path.join(root, layout.MODS, "929110"), exist_ok=True)
+    with open(os.path.join(root, layout.MODS, "929110", "mod.bin"), "wb") as fh:
+        fh.write(bytes(4096))
     for mid in map_ids:
         d = os.path.join(root, "shared", "SavedArks", mid)
         os.makedirs(d, exist_ok=True)
@@ -70,12 +83,23 @@ names = tarfile.open(path, "r:gz").getnames()
 check("both worlds are inside",
       any(n.endswith("shared/SavedArks/TheIsland_WP/TheIsland_WP.ark") for n in names) and
       any(n.endswith("shared/SavedArks/Ragnarok_WP/Ragnarok_WP.ark") for n in names), names[:8])
+check("saves come from the Ark folder", any(n.startswith("ark/shared/") for n in names))
+check("the definition comes from the Obelisk folder",
+      any(n.startswith("obelisk/") for n in names), names[:8])
 check("player data is inside", any(n.endswith(".arkprofile") for n in names))
 check("the shared config is inside", any(n.endswith("GameUserSettings.ini") for n in names))
 check("transfer data is inside", any("cluster/testcluster" in n for n in names))
-check("Obelisk's own store is inside", any(n.startswith("obelisk") for n in names))
+check("Obelisk's own settings are inside",
+      any(n.endswith("obelisk/settings.json") for n in names), names[:8])
 check("the game install is NOT inside",
-      not any("serverfiles" in n.lower() or "ServerFiles" in n for n in names))
+      not any(layout.SERVERFILES in n for n in names),
+      [n for n in names if layout.SERVERFILES in n][:3])
+check("the downloaded mods are NOT inside",
+      not any(("/" + layout.MODS + "/") in n or n.endswith("/" + layout.MODS) for n in names),
+      [n for n in names if layout.MODS in n][:3])
+check("but the mod IDs that rebuild them are",
+      json.loads(tarfile.open(path, "r:gz").extractfile("cluster-definition.json").read())
+      ["mod_ids"] == "929110,940003")
 
 # ---- the cluster definition: what the .ark files cannot tell you
 defn = json.loads(tarfile.open(path, "r:gz").extractfile("cluster-definition.json").read())
@@ -108,7 +132,7 @@ check("the manifest says what was excluded", any("game install" in x for x in ma
 
 # ---------------------------------------------------------------- the empty-backup bug
 st2, root2 = fresh()
-layout.ensure(root2, ["island", "ragnarok"])          # layout exists, no worlds in it
+layout.ensure_ark(root2, ["island", "ragnarok"])      # layout exists, no worlds in it
 ok2, msg2, path2 = backupctl.create(st2)
 check("a root with no worlds is REFUSED, not filed as success", not ok2, msg2)
 check("and says why in plain terms", "restore nothing" in msg2, msg2)

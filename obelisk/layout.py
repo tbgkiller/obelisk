@@ -1,42 +1,66 @@
 """
-The portable data root.
+Two folders, because they hold two different kinds of thing.
 
-One folder is the cluster: Obelisk's own store, every map's saves, the shared config
-and the cross-map transfer data. Copy that folder and you have moved the cluster.
+**Obelisk data** is the definition: settings, the map selection, the mod list and its
+order, ports, RAM, credentials, snapshots. Kilobytes. All of it is backed up, because
+none of it can be fetched again from anywhere.
 
-The game install is deliberately *not* in it. That is 20+ GB the update process will
-fetch again for free, and leaving it out is the difference between a backup you can
-actually move somewhere else and one you never will.
+**Ark data** is the bulk: the server install, the mods it downloads, and the worlds.
+Tens of gigabytes, and it belongs on fast storage - ASA is very I/O hungry. Only part
+of it is worth backing up. The saves are irreplaceable; the server install and the mods
+are not, because the mod *ids* live in Obelisk data and the files come back from those.
 
-The layout this replaces put each map's real saves behind a symlink inside the map's
-own instance folder, pointing at a path that only exists inside a running container.
-Back up the instance folder and you got a dangling link and no world - a backup that
-looks fine until the day it has to work. Here every path that matters lives inside the
-root, so "copy the root" is complete by construction, and `verify()` says so out loud
-if anything ever points outside it again.
+That asymmetry is the whole reason for the split. Backing up the pair as one folder
+would mean carrying 20+ GB of re-downloadable files to protect a few hundred megabytes
+that actually matter, and a backup that large is one nobody moves off the machine.
+
+This is not the duplicate-field trap that APPDATA was. That asked for one folder twice
+and let the two answers disagree silently. These are two paths because they are two
+places, with different contents and different storage needs.
+
+The one rule inherited from the old layout: every path a save lives at is inside the
+Ark root, so "copy the portable part of the root" is complete by construction, and
+verify() says so out loud if a link ever points out of it again.
 """
 
 import os
 
-# Everything below is relative to the data root.
-OBELISK   = "obelisk"        # Obelisk's own store: settings.json, snapshots
-SHARED    = "shared"         # the shared config and the real per-map saves
-CLUSTER   = "cluster"        # cross-map transfer data (survivors, tames, items)
-INSTANCES = "instances"      # per-map Saved: that map's config, logs, crash reports
+# ---- Obelisk data: the definition. Small, and entirely worth keeping.
+STORE_NAME = "settings.json"
+BACKUPS = "backups"
+
+# ---- Ark data: the bulk.
+SERVERFILES = "ServerFiles"   # the game install - re-downloads
+MODS = "Mods"                 # downloaded mods - re-download from the ids in the store
+SHARED = "shared"             # the shared config and the real per-map saves
+CLUSTER = "cluster"           # cross-map transfer data (survivors, tames, items)
+INSTANCES = "instances"       # per-map Saved: that map's config, logs, crash reports
 
 SAVED_ARKS = SHARED + "/SavedArks"
 SHARED_CFG = SHARED + "/Config"
 
-# What a portable copy contains. ServerFiles is absent on purpose.
-PORTABLE = (OBELISK, SHARED, CLUSTER, INSTANCES)
+# What a backup takes from the Ark root, and what it deliberately leaves behind.
+ARK_PORTABLE = (SHARED, CLUSTER, INSTANCES)
+ARK_EXCLUDED = (SERVERFILES, MODS)
+
+# Where each folder is mounted inside the container.
+OBELISK_MOUNT = "/data"
+ARK_MOUNT = "/ark"
 
 
-def paths(root):
-    """Every directory the layout defines, as absolute paths."""
+def obelisk_paths(root):
+    root = str(root).rstrip("/")
+    return {"root": root,
+            "store": "%s/%s" % (root, STORE_NAME),
+            "backups": "%s/%s" % (root, BACKUPS)}
+
+
+def ark_paths(root):
     root = str(root).rstrip("/")
     return {
         "root": root,
-        "obelisk": "%s/%s" % (root, OBELISK),
+        "serverfiles": "%s/%s" % (root, SERVERFILES),
+        "mods": "%s/%s" % (root, MODS),
         "shared": "%s/%s" % (root, SHARED),
         "saved_arks": "%s/%s" % (root, SAVED_ARKS),
         "shared_config": "%s/%s" % (root, SHARED_CFG),
@@ -46,32 +70,53 @@ def paths(root):
 
 
 def instance_dir(root, map_key):
-    """Where one map's own Saved folder lives."""
+    """Where one map's own Saved folder lives, under the Ark root."""
     return "%s/%s/%s/Saved" % (str(root).rstrip("/"), INSTANCES, map_key)
 
 
+def root_of(store):
+    """The Obelisk data folder, as this container sees it.
+
+    The store sits at the top of it, so the store knows where it is without being told.
+    """
+    return os.path.dirname(os.path.abspath(store.path))
+
+
+def ark_root_of(store, environ=None):
+    """The Ark data folder, as this container sees it.
+
+    A fixed mount point rather than the host path: the host path is a different string
+    and only matters when writing a compose file.
+    """
+    environ = os.environ if environ is None else environ
+    return (environ.get("OBELISK_ARK") or ARK_MOUNT).rstrip("/")
+
+
 def serverfiles_dir(store):
-    """The game install - outside the portable root.
-
-    Blank means "beside the root", which keeps a default install to one decision while
-    still putting the big re-downloadable tree where a backup will not pick it up.
-    """
-    explicit = str(store.get("serverfiles") or "").strip()
-    if explicit:
-        return explicit.rstrip("/")
-    return str(store.get("appdata")).rstrip("/") + "-serverfiles"
+    """The game install, inside the Ark folder with the other large files."""
+    return ark_paths(store.get("appdata"))["serverfiles"]
 
 
-def ensure(root, map_keys=(), makedirs=None):
-    """Create the layout. Returns the directories it made (or would make).
+def mods_dir(store):
+    return ark_paths(store.get("appdata"))["mods"]
 
-    `makedirs` is injectable so tests can run without a filesystem; the default is
-    os.makedirs with exist_ok, so calling this on a live root is a no-op.
-    """
+
+def ensure_obelisk(root, makedirs=None):
     makedirs = makedirs or (lambda p: os.makedirs(p, exist_ok=True))
+    p = obelisk_paths(root)
     made = []
-    p = paths(root)
-    for d in (p["root"], p["obelisk"], p["shared"], p["saved_arks"],
+    for d in (p["root"], p["backups"]):
+        makedirs(d)
+        made.append(d)
+    return made
+
+
+def ensure_ark(root, map_keys=(), makedirs=None):
+    """Create the Ark layout. Safe to repeat."""
+    makedirs = makedirs or (lambda p: os.makedirs(p, exist_ok=True))
+    p = ark_paths(root)
+    made = []
+    for d in (p["root"], p["serverfiles"], p["mods"], p["shared"], p["saved_arks"],
               p["shared_config"], p["cluster"], p["instances"]):
         makedirs(d)
         made.append(d)
@@ -83,7 +128,6 @@ def ensure(root, map_keys=(), makedirs=None):
 
 
 def _resolve(link, target, root):
-    """Where a symlink actually lands, as an absolute path."""
     if os.path.isabs(target):
         return os.path.normpath(target)
     return os.path.normpath(os.path.join(os.path.dirname(link), target))
@@ -119,16 +163,3 @@ def verify(root, walker=None, readlink=None, exists=None):
             elif not exists(dest):
                 problems.append("%s is a broken link (-> %s)." % (full, target))
     return problems
-
-def root_of(store):
-    """The data root as *this* container sees it.
-
-    Two different paths describe the same folder: the host path, which is what has to
-    go into a generated compose file, and the path it is mounted at in here, which is
-    what Obelisk actually reads and writes. Conflating them is what forced the install
-    form to ask for the folder twice.
-
-    The store always lives at <root>/obelisk/settings.json, so the store knows where the
-    root is without being told - and without depending on the two paths being equal.
-    """
-    return os.path.dirname(os.path.dirname(os.path.abspath(store.path)))

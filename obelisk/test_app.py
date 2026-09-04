@@ -31,8 +31,9 @@ DOCKER_UP = (True, "Docker 27.0.0, compose plugin present")
 async def run():
     # The store lives at <data root>/obelisk/settings.json, which is how the rest of
     # Obelisk locates the root from one mount.
-    d = os.path.join(tempfile.mkdtemp(), "data")
-    store, _created, code = bootstrap(os.path.join(d, "obelisk"), environ={})
+    base = tempfile.mkdtemp()
+    os.environ["OBELISK_ARK"] = os.path.join(base, "ark")
+    store, _created, code = bootstrap(os.path.join(base, "obelisk"), environ={})
 
     # ---- Docker unreachable: the UI still serves, and says why
     client = TestClient(TestServer(build_app(store, docker=DOCKER_DOWN)))
@@ -72,7 +73,7 @@ async def run():
 
     # ---- Docker present: no banner
     store2, _c, code2 = bootstrap(
-        os.path.join(tempfile.mkdtemp(), "data", "obelisk"), environ={})
+        os.path.join(tempfile.mkdtemp(), "obelisk"), environ={})
     client = TestClient(TestServer(build_app(store2, docker=DOCKER_UP)))
     await client.start_server()
     body = await (await client.get("/setup")).text()
@@ -128,9 +129,11 @@ async def run():
 
     tmp_compose = os.path.join(tempfile.mkdtemp(), "compose.yaml")
     _rp = clusterctl.compose_path
-    _re = clusterctl.layout.ensure
+    _re = clusterctl.layout.ensure_ark
+    _ro = clusterctl.layout.ensure_obelisk
     clusterctl.compose_path = lambda st: tmp_compose
-    clusterctl.layout.ensure = lambda root, keys=(), makedirs=None: []
+    clusterctl.layout.ensure_ark = lambda root, keys=(), makedirs=None: []
+    clusterctl.layout.ensure_obelisk = lambda root, makedirs=None: []
     r = await client.post("/admin/launch")
     body = await r.text()
     check("launch runs from the UI", any(a[:2] == ["up", "-d"] for a in acts), acts)
@@ -142,7 +145,8 @@ async def run():
     body = await r.text()
     check("stop runs from the UI", acts and acts[-1] == ["down"], acts)
     check("stop says saves are safe", "untouched" in body)
-    clusterctl.compose_path, clusterctl.layout.ensure = _rp, _re
+    clusterctl.compose_path, clusterctl.layout.ensure_ark = _rp, _re
+    clusterctl.layout.ensure_obelisk = _ro
 
     r = await client.get("/admin/cluster", allow_redirects=False)
     check("cluster page needs a session", r.status in (200, 302))
@@ -150,9 +154,11 @@ async def run():
     # ---- backups from the UI
     from . import backup as backupctl
     from . import layout as layoutmod
-    # Backups work on the root the store sits in - one mount, no second path to set.
-    broot = layoutmod.root_of(store)
-    layoutmod.ensure(broot, ["island"])
+    # Saves come from the Ark folder; the definition from Obelisk's own.
+    broot = layoutmod.ark_root_of(store)
+    layoutmod.ensure_ark(broot, ["island"])
+    layoutmod.ensure_obelisk(layoutmod.root_of(store))
+    store.save()
     sd = os.path.join(broot, "shared", "SavedArks", "TheIsland_WP")
     os.makedirs(sd, exist_ok=True)
     open(os.path.join(sd, "TheIsland_WP.ark"), "wb").write(bytes(1024))

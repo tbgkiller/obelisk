@@ -44,31 +44,33 @@ def fresh(**over):
 
 # ---------------------------------------------------------------- the layout
 st, d = fresh()
-root = st.get("appdata")           # the POSIX root the store carries
-p = layout.paths(root)
-check("root holds Obelisk's own store", p["obelisk"].endswith("/obelisk"), p["obelisk"])
-check("root holds the real saves", p["saved_arks"].endswith("/shared/SavedArks"))
-check("root holds transfer data", p["cluster"].endswith("/cluster"))
-check("per-map Saved is under the root",
+root = st.get("appdata")           # the Ark folder's host path
+p = layout.ark_paths(root)
+check("ark data holds the real saves", p["saved_arks"].endswith("/shared/SavedArks"))
+check("ark data holds transfer data", p["cluster"].endswith("/cluster"))
+check("ark data holds the server install", p["serverfiles"].endswith("/ServerFiles"))
+check("ark data holds the mods", p["mods"].endswith("/Mods"))
+check("per-map Saved is under the ark root",
       layout.instance_dir(root, "island") == root + "/instances/island/Saved")
 
-check("the game install is NOT in the portable set", "ServerFiles" not in layout.PORTABLE)
-check("portable set is the four trees", set(layout.PORTABLE) ==
-      {"obelisk", "shared", "cluster", "instances"}, layout.PORTABLE)
+# what a backup takes from the ark folder, and what it leaves
+check("the game install is NOT in the portable set",
+      layout.SERVERFILES not in layout.ARK_PORTABLE)
+check("the mods are NOT in the portable set", layout.MODS not in layout.ARK_PORTABLE)
+check("the portable part is saves, transfers and per-map config",
+      set(layout.ARK_PORTABLE) == {"shared", "cluster", "instances"}, layout.ARK_PORTABLE)
+check("and the excluded part is named", set(layout.ARK_EXCLUDED) == {"ServerFiles", "Mods"},
+      layout.ARK_EXCLUDED)
 
-# the game install lands beside the root, never inside it
-sf = layout.serverfiles_dir(st)
-check("game install defaults beside the root", sf == root + "-serverfiles", sf)
-check("game install is outside the root", not sf.startswith(root + "/"), sf)
-st.patch({"serverfiles": "/mnt/pool/ark-files"})
-check("an explicit game install path wins", layout.serverfiles_dir(st) == "/mnt/pool/ark-files")
-st.patch({"serverfiles": ""})
+check("the game install lives inside the ark folder",
+      layout.serverfiles_dir(st) == root + "/ServerFiles", layout.serverfiles_dir(st))
+check("so do the mods", layout.mods_dir(st) == root + "/Mods")
 
 # ensure/verify work on a real directory, so they get a real one
 disk_root = os.path.join(tempfile.mkdtemp(), "data")
-made = layout.ensure(disk_root, ["island", "ragnarok"])
+made = layout.ensure_ark(disk_root, ["island", "ragnarok"])
 check("ensure creates the whole layout", all(os.path.isdir(x) for x in made), made)
-check("ensure is repeatable", layout.ensure(disk_root, ["island"]) and True)
+check("ensure is repeatable", layout.ensure_ark(disk_root, ["island"]) and True)
 check("ensure makes a Saved dir per map",
       os.path.isdir(layout.instance_dir(disk_root, "ragnarok")))
 
@@ -115,29 +117,29 @@ check("a service per map plus Obelisk", set(doc["services"]) == {"island", "ragn
       list(doc["services"]))
 
 vols = doc["services"]["island"]["volumes"]
-check("saves mount from the data root",
+check("saves mount from the ark folder",
       any(v.startswith(root + "/instances/island/Saved:") for v in vols), vols)
-check("shared mounts from the data root",
+check("shared mounts from the ark folder",
       any(v.startswith(root + "/shared:") for v in vols), vols)
-check("transfer data mounts from the data root",
+check("transfer data mounts from the ark folder",
       any(v.startswith(root + "/cluster:") for v in vols), vols)
-check("the game install mounts from OUTSIDE the root",
-      any(v.startswith(root + "-serverfiles:") for v in vols), vols)
-check("nothing mounts a ServerFiles dir inside the root",
-      not any(v.startswith(root + "/ServerFiles") for v in vols), vols)
+check("the game install mounts from inside the ark folder",
+      any(v.startswith(root + "/ServerFiles:") for v in vols), vols)
 
 ob = doc["services"]["obelisk"]
 # One mount, and the two sides no longer have to be the same string: Obelisk asks
 # Docker where /data comes from, which is what lets the install form ask once.
-check("Obelisk mounts the whole root as its single data mount",
-      "%s:/data" % root in ob["volumes"], ob["volumes"])
-check("and nothing is mounted twice",
-      len([v for v in ob["volumes"] if v.startswith(root + ":")]) == 1, ob["volumes"])
+check("Obelisk mounts the ark folder at /ark",
+      "%s:/ark" % root in ob["volumes"], ob["volumes"])
+check("and its own settings folder at /data",
+      any(v.endswith(":/data") for v in ob["volumes"]), ob["volumes"])
+check("the two are different folders",
+      [v for v in ob["volumes"] if v.endswith(":/data")][0].split(":")[0] != root,
+      ob["volumes"])
 check("Obelisk gets the socket",
       any("docker.sock" in v for v in ob["volumes"]), ob["volumes"])
-check("Obelisk's store is inside its one mount",
-      ob["environment"]["OBELISK_DATA"] == "/data",
-      ob["environment"]["OBELISK_DATA"])
+check("Obelisk's store is at /data", ob["environment"]["OBELISK_DATA"] == "/data")
+check("and the ark folder at /ark", ob["environment"]["OBELISK_ARK"] == "/ark")
 
 # mods and ordering survive into the stack
 st.patch({"mod_ids": "929110,940003"})
@@ -185,10 +187,10 @@ clusterctl.dockerctl = fake
 # which the store locates itself from - not the host path that goes inside the file.
 import os as _os
 from . import layout as _layout
-check("compose file lands inside the data root",
-      clusterctl.compose_path(st) ==
-      _os.path.join(_layout.root_of(st), "obelisk", "compose.yaml").replace("\\", "/")
-      or clusterctl.compose_path(st).endswith("/obelisk/compose.yaml"),
+# The compose file belongs with the definition, not with the game files: it is
+# generated from the settings and is small.
+check("compose file lands in the Obelisk data folder",
+      clusterctl.compose_path(st) == _layout.root_of(st) + "/compose.yaml",
       clusterctl.compose_path(st))
 check("project name follows the cluster id", clusterctl.project(st) == "testcluster")
 
@@ -196,9 +198,10 @@ launch_root = os.path.join(tempfile.mkdtemp(), "data")
 _real_compose_path = clusterctl.compose_path
 clusterctl.compose_path = lambda store: os.path.join(launch_root, "obelisk", "compose.yaml")
 prepared = []
-_real_ensure = layout.ensure
-clusterctl.layout.ensure = lambda root, keys=(), makedirs=None: (
+_real_ensure = layout.ensure_ark
+clusterctl.layout.ensure_ark = lambda root, keys=(), makedirs=None: (
     prepared.append((root, list(keys))) or _real_ensure(launch_root, keys))
+clusterctl.layout.ensure_obelisk = lambda root, makedirs=None: []
 
 ok, msg = clusterctl.launch(st)
 check("launch reports success", ok, msg)
@@ -207,8 +210,8 @@ check("launch used the file in the data root",
       calls[-1][0] == clusterctl.compose_path(st), calls[-1])
 check("launch used the cluster's own project", calls[-1][1] == "testcluster")
 check("the compose file is on disk afterwards", os.path.isfile(clusterctl.compose_path(st)))
-check("launch laid out the data root first",
-      prepared and prepared[0][0] == layout.root_of(st), prepared)
+check("launch laid out the ark folder first",
+      prepared and prepared[0][0] == layout.ark_root_of(st), prepared)
 check("it laid out a dir for every selected map",
       prepared and prepared[0][1] == ["island", "ragnarok"], prepared)
 check("the real save trees exist", os.path.isdir(launch_root + "/shared/SavedArks"))
@@ -246,7 +249,7 @@ check("status carries the project", s["project"] == "testcluster")
 # Put the real derivation back: the never-launched case has to be judged by a store
 # that genuinely has no compose file, not by the redirected one above.
 clusterctl.compose_path = _real_compose_path
-clusterctl.layout.ensure = _real_ensure
+clusterctl.layout.ensure_ark = _real_ensure
 st3, _ = fresh(cluster_id="neverlaunched")
 clusterctl.dockerctl = fake
 s3 = clusterctl.status(st3)

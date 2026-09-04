@@ -13,7 +13,9 @@
     shared settings file across every map, relaying chat between them and to Discord,
     and giving you a status page and admin controls in the browser.
 
-    Only the fields below are needed to start: one folder, the socket and a port.
+    Only the fields below are needed to start: two folders, the socket and a port.
+    They hold different things - settings in one, the big game files in the other -
+    so read the descriptions before picking where each goes.
     Everything else - maps, mods, rates, Discord, wipe schedules, time zone - is set in
     the web UI once it is running. After starting, check the container log for a
     one-time setup code, then open the WebUI.
@@ -22,13 +24,22 @@
   <WebUI>http://[IP]:[PORT:8088]/</WebUI>
   <Icon>https://raw.githubusercontent.com/tbgkiller/obelisk/main/docs/icon.png</Icon>
 
-  <Config Name="Data root" Target="/data" Default="/mnt/user/appdata/obelisk"
-          Mode="rw" Description="One folder holding everything the cluster is: Obelisk's
-          settings, every map's saves, the shared config and the cross-map transfer data.
-          Copy this folder and you have moved the cluster. Put it on an SSD or NVMe pool,
-          NOT the spinning array - ASA is very I/O hungry.
-          The ~20 GB game install is kept in a sibling folder outside this one, because
-          it re-downloads for free and keeping it out is what makes a backup portable."
+  <Config Name="Obelisk data" Target="/data" Default="/mnt/user/appdata/obelisk"
+          Mode="rw" Description="Obelisk's own settings: the cluster definition, your
+          map selection, the mod ID list and its order, ports and RAM, admin credentials
+          and backup snapshots. No game files and no saves live here - it stays small
+          (kilobytes), and ordinary array storage is fine.
+          This is the half that cannot be downloaded again, so all of it is backed up."
+          Type="Path" Display="always" Required="true" Mask="false"/>
+
+  <Config Name="Ark data" Target="/ark" Default="/mnt/user/appdata/ark"
+          Mode="rw" Description="The large ARK files: the server install, the MODS it
+          downloads, and the world SAVES, plus the shared config and the cross-map
+          transfer data. Tens of gigabytes - put this on an SSD, NVMe or ZFS pool, NOT
+          the spinning array, because ASA is very I/O hungry.
+          Backups take the saves and transfer data from here and deliberately skip the
+          server install and the mods: those are re-downloaded from the mod IDs kept in
+          Obelisk data, so there is no reason to carry them off the machine."
           Type="Path" Display="always" Required="true" Mask="false"/>
 
   <Config Name="Docker socket" Target="/var/run/docker.sock" Default="/var/run/docker.sock"

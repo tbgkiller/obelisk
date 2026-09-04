@@ -113,49 +113,59 @@ check("timezone reaches the environment", os.environ.get("TZ") == "Europe/London
 check("tzset applied where the platform has it", applied or not hasattr(__import__("time"), "tzset"))
 
 
-# ---- ONE mount is a complete install
-# The install form used to ask for the data folder twice - a store mount and a saves
-# mount - and the workaround was pointing both at the same folder. One mount now has to
-# be genuinely sufficient: store, saves and everything else live inside it.
+# ---- TWO folders, because they hold two different things
+# Not the old duplicate-field trap: that asked for one folder twice and let the answers
+# disagree. These are two places - the definition, and the bulk - with different
+# contents, different sizes and different storage needs.
 from . import layout as layoutmod
 from .compose import generate_compose
 from .settings import Store
 
-one_root = os.path.join(tempfile.mkdtemp(), "data")
-st_one, created_one, code_one = bootstrap(os.path.join(one_root, "obelisk"), environ={})
-check("a fresh install boots from one folder", created_one and code_one)
-check("the store landed inside that folder",
-      os.path.isfile(os.path.join(one_root, "obelisk", "settings.json")))
+base = tempfile.mkdtemp()
+ob_root = os.path.join(base, "obelisk")
+ark_root = os.path.join(base, "ark")
+st_two, created_two, code_two = bootstrap(ob_root, environ={"OBELISK_ARK": ark_root})
+check("a fresh install boots with both folders given", created_two and code_two)
+check("the settings landed in the Obelisk folder",
+      os.path.isfile(os.path.join(ob_root, "settings.json")))
 check("the root is worked out from where the store is",
-      layoutmod.root_of(st_one) == os.path.abspath(one_root), layoutmod.root_of(st_one))
+      layoutmod.root_of(st_two) == os.path.abspath(ob_root), layoutmod.root_of(st_two))
+check("no game data is in the Obelisk folder",
+      not any(n in os.listdir(ob_root) for n in ("shared", "ServerFiles", "Mods")),
+      os.listdir(ob_root))
 
-layoutmod.ensure(layoutmod.root_of(st_one), ["island"])
-for sub in ("obelisk", "shared", "shared/SavedArks", "cluster", "instances/island/Saved"):
-    check("the layout has %s inside the one folder" % sub,
-          os.path.isdir(os.path.join(one_root, *sub.split("/"))))
+layoutmod.ensure_ark(ark_root, ["island"])
+for sub in ("shared/SavedArks", "shared/Config", "cluster", "instances/island/Saved",
+            "ServerFiles", "Mods"):
+    check("the Ark folder has %s" % sub,
+          os.path.isdir(os.path.join(ark_root, *sub.split("/"))))
+check("the Obelisk folder keeps its backups", os.path.isdir(os.path.join(ob_root, "backups")))
 
-# the host path is a separate fact, asked of Docker rather than assumed equal
-def _fake_inspect(name):
-    return 0, "/mnt/user/appdata/obelisk-testcluster" + chr(9) + "/data" + chr(10)
+# the two host paths are separate facts, each asked of Docker
+def _mounts_inspect(name):
+    return (0, "/mnt/user/appdata/obelisk" + chr(9) + "/data" + chr(10) +
+            "/mnt/zfs/appdata/ark" + chr(9) + "/ark" + chr(10))
 
-host, how = host_path_of("/data", environ={"HOSTNAME": "abc123"}, inspect=_fake_inspect)
-check("the host path comes back from Docker, not the mount table",
-      host == "/mnt/user/appdata/obelisk-testcluster", host)
-check("and it is allowed to differ from the container path", host != "/data")
+check("the Ark host path comes from its own mount",
+      host_path_of("/ark", environ={"HOSTNAME": "a"}, inspect=_mounts_inspect)[0] ==
+      "/mnt/zfs/appdata/ark")
+check("the Obelisk host path comes from its own mount",
+      host_path_of("/data", environ={"HOSTNAME": "a"}, inspect=_mounts_inspect)[0] ==
+      "/mnt/user/appdata/obelisk")
 
-st_l = Store(os.path.join(one_root, "obelisk", "settings.json")).load()
-st_l.patch({"appdata": "/mnt/user/appdata/obelisk-testcluster"}, source="install")
-st_l.patch({"maps": "island", "admin_password": "synthetic-pw", "cluster_id": "onemount"})
-yml = generate_compose(st_l, project="onemount")
-check("the compose names the HOST path for map saves",
-      "/mnt/user/appdata/obelisk-testcluster/instances/island/Saved" in yml)
-check("Obelisk itself gets one mount at /data",
-      '"/mnt/user/appdata/obelisk-testcluster:/data"' in yml)
-check("and there is no second data bind",
-      yml.count("/mnt/user/appdata/obelisk-testcluster:/") == 1, yml[-600:])
-check("the game install is still a sibling outside the root",
-      "/mnt/user/appdata/obelisk-testcluster-serverfiles:/home/pok/arkserver" in yml)
-
+st_l = Store(os.path.join(ob_root, "settings.json")).load()
+st_l.patch({"appdata": "/mnt/zfs/appdata/ark"}, source="install")
+st_l.patch({"maps": "island", "admin_password": "synthetic-pw", "cluster_id": "twofolder"})
+yml = generate_compose(st_l, project="twofolder")
+check("map saves come from the Ark folder",
+      "/mnt/zfs/appdata/ark/instances/island/Saved" in yml)
+check("the game install is inside the Ark folder",
+      "/mnt/zfs/appdata/ark/ServerFiles:/home/pok/arkserver" in yml)
+check("Obelisk mounts the Ark folder at /ark", '"/mnt/zfs/appdata/ark:/ark"' in yml)
+check("and its own folder at /data", ":/data\"" in yml, yml[-600:])
+check("no data path is passed as a variable",
+      "APPDATA" not in yml and "STATUS_PORT" not in yml,
+      [l for l in yml.splitlines() if "APPDATA" in l or "STATUS_PORT" in l])
 
 # ---- THREE fields, and no hidden twin to hand-add
 # The seam this closes: Obelisk bound the port it was listening on and published that

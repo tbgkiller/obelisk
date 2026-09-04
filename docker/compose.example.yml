@@ -1,10 +1,11 @@
 # Obelisk - the only container you install by hand. It generates and runs the rest.
 #
-# The three values below are the whole install-time configuration: one data folder, the
-# Docker socket, and a published port. Obelisk asks Docker where its own data mount
-# comes from on the host, so the folder is named once here and nowhere else. Everything
-# else - maps, mods, rates, Discord, wipe schedules, time zone - is set in the web UI
-# after this is running.
+# The values below are the whole install-time configuration: two data folders, the
+# Docker socket, and a published port. The two folders hold different things - settings
+# in one, the big game files in the other. Obelisk asks Docker where each mount comes
+# from on the host, so neither path is repeated as a variable that could drift.
+# Everything else - maps, mods, rates, Discord, wipe schedules, time zone - is set in
+# the web UI after this is running.
 #
 #   docker compose -f compose.example.yml up -d
 #   docker logs obelisk        # prints the one-time setup code
@@ -18,11 +19,14 @@ services:
     ports:
       - "8088:8088"
     volumes:
-      # One folder is the whole cluster: Obelisk's settings, every map's saves, the
-      # shared config and the transfer data. Copy it and you have moved the cluster.
-      # The ~20 GB game install goes in a sibling folder outside it, so a backup of
-      # this one stays portable.
+      # Obelisk's own settings: the cluster definition, mod list, credentials,
+      # snapshots. Kilobytes, and the half that cannot be downloaded again.
       - /mnt/user/appdata/obelisk:/data
+      # The large ARK files: server install, downloaded mods, world saves, shared
+      # config and transfer data. Put this on fast storage - ASA is very I/O hungry.
+      # Backups take the saves from here and skip the install and the mods, which
+      # come back from the mod IDs stored in the folder above.
+      - /mnt/user/appdata/ark:/ark
       # Lets Obelisk create and manage the map containers. See docs/ARCHITECTURE.md
       # for why this is the trade-off it is.
       - /var/run/docker.sock:/var/run/docker.sock

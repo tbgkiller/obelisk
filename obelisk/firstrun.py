@@ -24,14 +24,11 @@ STORE_NAME = "settings.json"
 
 
 def store_dir(environ=None):
-    """<data root>/obelisk - one mount, and the store is a folder inside it.
+    """Obelisk's own data folder - the definition lives at the top of it.
 
-    Keeping the store under the same root as the saves is what lets the install form
-    ask for one folder instead of two, and lets the store tell the rest of Obelisk
-    where the root is without being told twice.
+    Separate from the Ark folder on purpose: this is the small, irreplaceable half.
     """
-    from . import layout
-    return layout.paths(install.container_root(environ))["obelisk"]
+    return install.container_root(environ)
 
 
 def _import_legacy_env(store, environ):
@@ -119,12 +116,12 @@ def bootstrap(data_dir=None, environ=None):
     # recreate - otherwise wipe times and log stamps would lag a setting change.
     install.apply_timezone(store.get("timezone"))
 
-    # Lay out the root at boot rather than waiting for a launch, so the one folder the
-    # operator picked immediately describes itself: obelisk/, shared/, cluster/,
-    # instances/. An empty folder gives no clue that it is the whole cluster.
+    # Lay both folders out at boot rather than waiting for a launch, so each one
+    # immediately describes what belongs in it.
     try:
         from . import layout
-        layout.ensure(layout.root_of(store))
+        layout.ensure_obelisk(layout.root_of(store))
+        layout.ensure_ark(layout.ark_root_of(store, environ))
     except OSError as e:
         log.warning("could not create the data layout: %s", e)
 

@@ -31,18 +31,23 @@ def check(name, cond, detail=""):
 
 
 def fresh(**over):
-    root = os.path.join(tempfile.mkdtemp(), "data")
-    os.makedirs(os.path.join(root, "obelisk"), exist_ok=True)
-    st = Store(os.path.join(root, "obelisk", "settings.json")).load()
+    base = tempfile.mkdtemp()
+    root = os.path.join(base, "obelisk")          # Obelisk data: the definition
+    ark = os.path.join(base, "ark")               # Ark data: the bulk
+    os.makedirs(root, exist_ok=True)
+    os.makedirs(ark, exist_ok=True)
+    os.environ["OBELISK_ARK"] = ark
+    st = Store(os.path.join(root, "settings.json")).load()
     st.patch({"status_port": 8088}, source="install")
     st.patch(dict({"maps": "island", "admin_password": "synthetic-pw",
                    "cluster_id": "testcluster", "backup_keep": 5}, **over))
-    st.data["cluster"]["appdata"] = "/mnt/user/appdata/obelisk"
-    return st, root
+    st.data["cluster"]["appdata"] = "/mnt/user/appdata/ark"
+    st.save()            # the definition has to exist on disk to be backed up
+    return st, ark
 
 
 def populate(root):
-    layout.ensure(root, ["island"])
+    layout.ensure_ark(root, ["island"])
     sd = os.path.join(root, "shared", "SavedArks", "TheIsland_WP")
     os.makedirs(sd, exist_ok=True)
     with open(os.path.join(sd, "TheIsland_WP.ark"), "wb") as fh:

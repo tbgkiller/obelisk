@@ -44,9 +44,9 @@ def generate_compose(store, project="ark", in_use_ports=None):
     servers = ",".join("%s=asa_%s:%d" % (r["name"], r["map"], r["rcon_port"])
                        for r in plan["maps"])
 
-    root      = str(store.get("appdata")).rstrip("/")
-    paths     = layout.paths(root)
-    serverfiles = layout.serverfiles_dir(store)
+    ark       = str(store.get("appdata")).rstrip("/")     # host path of the Ark folder
+    paths     = layout.ark_paths(ark)
+    serverfiles = paths["serverfiles"]
     image     = store.get("ark_image")
     game_base = int(store.get("game_port_base"))
     rcon_base = int(store.get("rcon_port_base"))
@@ -125,7 +125,7 @@ def generate_compose(store, project="ark", in_use_ports=None):
             # The game install sits outside the data root: 20+ GB that re-downloads,
             # and the one thing a portable backup must not carry.
             '      - "%s:/home/pok/arkserver"' % serverfiles,
-            '      - "%s:/home/pok/arkserver/ShooterGame/Saved"' % layout.instance_dir(root, key),
+            '      - "%s:/home/pok/arkserver/ShooterGame/Saved"' % layout.instance_dir(ark, key),
             '      - "%s:/home/pok/arkserver/ShooterGame/Saved/clusters"' % paths["cluster"],
             '      - "%s:/home/pok/shared"' % paths["shared"],
             "",
@@ -147,14 +147,16 @@ def generate_compose(store, project="ark", in_use_ports=None):
         # No STATUS_PORT: the container works out what it is published as by asking
         # Docker, so there is no second number to keep in step with the mapping below.
         "      OBELISK_DATA: \"/data\"",
+        "      OBELISK_ARK: \"/ark\"",
         "    ports:",
         # host port the operator chose : the port the image listens on
         '      - "%s:%s"' % (store.get("status_port"), install.CONTAINER_PORT),
         "    volumes:",
-        # One mount: the whole data root. Obelisk finds the host path back out of
-        # Docker, so the two sides do not have to be the same string - which is what
-        # lets the install form ask for one folder instead of two.
-        '      - "%s:/data"' % paths["root"],
+        # Two mounts, because they are two different folders: the definition, and the
+        # bulk. Obelisk finds each host path back out of Docker, so neither is repeated
+        # as a variable that could drift.
+        '      - "%s:/data"' % _obelisk_host(store),
+        '      - "%s:/ark"' % paths["root"],
         '      - "/var/run/docker.sock:/var/run/docker.sock"',
         "",
         "networks:",
@@ -178,3 +180,15 @@ def _session_name(store, index, m):
     if tags:
         bits.append(tags)
     return " | ".join(bits)
+
+def _obelisk_host(store):
+    """Host path of Obelisk's own data folder, for the stack it regenerates itself into.
+
+    Asked of Docker like everything else. Falling back to the Ark folder's sibling keeps
+    a generated file readable rather than empty if the socket cannot answer.
+    """
+    from . import install
+    host, _how = install.host_path_of(install.container_root())
+    if host:
+        return host
+    return str(store.get("appdata")).rstrip("/") + "-obelisk"

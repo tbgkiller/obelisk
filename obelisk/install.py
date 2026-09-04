@@ -73,9 +73,15 @@ def candidate_mounts(mountinfo_text, data_dir="/data"):
 
 
 def container_root(environ=None):
-    """The data root as this container sees it - one mount, nothing else needed."""
+    """Obelisk's own data folder, as this container sees it. Holds the definition."""
     environ = os.environ if environ is None else environ
     return (environ.get("OBELISK_DATA") or "/data").rstrip("/")
+
+
+def ark_container_root(environ=None):
+    """The Ark data folder, as this container sees it. Holds the bulk."""
+    environ = os.environ if environ is None else environ
+    return (environ.get("OBELISK_ARK") or "/ark").rstrip("/")
 
 
 def _self_names(environ):
@@ -188,9 +194,9 @@ def derive_appdata(environ=None, mountinfo_text=None, data_dir=None):
     if explicit:
         return explicit, "environment"
 
-    # Ask Docker where our own data mount comes from. This is the path that has to go
-    # into the generated compose, and it is not the path we see it at.
-    root = container_root(environ)
+    # Ask Docker where the *Ark* mount comes from. That host path is what a generated
+    # compose has to name for the map containers, and it is not the path we see it at.
+    root = ark_container_root(environ)
     host, how = host_path_of(root, environ=environ)
     if host:
         return host, "docker"
