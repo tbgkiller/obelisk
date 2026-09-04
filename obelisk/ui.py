@@ -66,7 +66,7 @@ def _e(v):
 
 def page(title, body, nav_on=""):
     tabs = [("/", "Status"), ("/admin", "Settings"), ("/admin/cluster", "Cluster"),
-            ("/admin/mods", "Mods")]
+            ("/admin/mods", "Mods"), ("/admin/backups", "Backups")]
     nav = "".join('<a href="%s"%s>%s</a>' % (h, ' class=on' if h == nav_on else "", _e(t))
                   for h, t in tabs)
     return ("<!doctype html><html><head><meta charset=utf-8>"
@@ -284,3 +284,50 @@ def render_mods(store, health=None):
             '<div class=help>The number in the mod\u2019s CurseForge URL. New mods are '
             'added last so they cannot silently outrank something that already works.'
             '</div></div></fieldset></form>' % (banner, "".join(rows)))
+
+def render_backups(store, rows, message="", problem=""):
+    """Backups: make one now, see what exists, and what the schedule will do.
+
+    The list is the point. A backup feature you cannot see the results of is a feature
+    you have to trust, and trusting an unverified backup is how people discover at
+    restore time that it was empty.
+    """
+    banner = ""
+    if problem:
+        banner = '<div class=problem>%s</div>' % _e(problem)
+    elif message:
+        banner = '<div class=note>%s</div>' % _e(message)
+
+    times = str(store.get("backup_times") or "").strip()
+    keep = store.get("backup_keep")
+    when = ("Scheduled for %s each day, keeping the newest %s." % (_e(times), _e(keep))
+            if times else
+            "No schedule - backups happen when you press the button. Set a time in "
+            "Settings to run them nightly.")
+
+    body = []
+    for r in rows:
+        body.append("<tr><td><code>%s</code></td><td class=num>%.1f MB</td>"
+                    "<td>%s</td></tr>"
+                    % (_e(r["name"]), r["bytes"] / 1048576.0, _e(r["when"])))
+    if not body:
+        body = ['<tr><td colspan=3 class=help>No backups yet.</td></tr>']
+
+    return (banner +
+            '<form method=post action="/admin/backup">'
+            '<fieldset><legend>Back up now</legend>'
+            '<div class=f><button type=submit>Back up now</button>'
+            '<div class=help>Copies the whole data root - every map’s saves, the '
+            'shared config, the transfer data - plus the cluster definition with your '
+            'mod list, so a rebuild knows what to load. The game install is left out '
+            'on purpose: it re-downloads for free and carrying it is what stops a '
+            'backup being portable. Every archive is opened and checked after writing; '
+            'one that cannot be read is discarded rather than kept.</div></div>'
+            '<div class=note>%s</div>'
+            '<div class=problem>These archives contain your admin/RCON password and '
+            'Discord token, because a restore without them is not a restore. They are '
+            'written owner-only (0600). Encrypt them before copying anywhere else.</div>'
+            '</fieldset>'
+            '<fieldset><legend>Backups on disk</legend>'
+            '<table><tr><th>Archive</th><th class=num>Size</th><th>When</th></tr>%s</table>'
+            '</fieldset></form>' % (when, "".join(body)))

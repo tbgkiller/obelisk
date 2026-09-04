@@ -141,3 +141,33 @@ def status(store):
     out["services"] = dockerctl.compose_ps(compose_path(store), project(store))
     out["running"] = sum(1 for s in out["services"] if s.get("state") == "running")
     return out
+
+def save_world(store, rcon=None):
+    """Ask every running map to write its world to disk. Returns (ok, detail).
+
+    A copy taken mid-session captures the last autosave, which can be fifteen minutes
+    of lost progress. This closes that window. It is best-effort on purpose: a map that
+    is down or slow must not stop a backup from happening at all - a slightly older
+    archive beats no archive.
+    """
+    from . import bot
+    servers = bot.SERVERS or {}
+    if not servers:
+        return False, "no running maps to save"
+    if rcon is None:
+        import asyncio
+        rcon = lambda host, port, cmd: asyncio.run(
+            bot.rcon(host, port, cmd, timeout=30))
+    done, failed = [], []
+    for label, (host, port) in servers.items():
+        try:
+            rcon(host, port, "SaveWorld")
+            done.append(label)
+        except Exception as e:
+            failed.append("%s (%s)" % (label, e))
+    if not done:
+        return False, "no map accepted SaveWorld: " + ", ".join(failed)
+    if failed:
+        return True, "saved %d of %d maps; %s did not answer" % (
+            len(done), len(servers), ", ".join(failed))
+    return True, "saved %d map(s)" % len(done)

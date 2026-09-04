@@ -15,6 +15,7 @@ only when there is a cluster to relay between, which on a fresh install there is
 
 import asyncio, logging, os, sys
 
+from . import backup as backupctl
 from . import cluster as clusterctl
 from . import dockerctl, install, ui
 from .firstrun import bootstrap
@@ -148,6 +149,33 @@ def build_app(store, docker=None):
             raise web.HTTPFound("/setup")
         return _act(clusterctl.stop, request)
 
+    # ---- backups
+    def _flush_for(store_):
+        """The SaveWorld callable, only when the operator asked for it."""
+        if not store_.get("backup_flush"):
+            return None
+        return lambda: clusterctl.save_world(store_)
+
+    async def backups_page(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        return chrome(ui.render_backups(store, backupctl.listing(store)),
+                      "Backups", "/admin/backups")
+
+    async def backup_now(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        ok, msg, _path = backupctl.create(store, flush=_flush_for(store))
+        if ok:
+            removed = backupctl.prune(store)
+            if removed:
+                msg += " Removed %d older backup%s." % (
+                    len(removed), "" if len(removed) == 1 else "s")
+        return chrome(ui.render_backups(store, backupctl.listing(store),
+                                        message=msg if ok else "",
+                                        problem="" if ok else msg),
+                      "Backups", "/admin/backups")
+
     async def root(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
@@ -176,6 +204,8 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/maps", cluster_maps)
     app.router.add_post("/admin/launch", cluster_launch)
     app.router.add_post("/admin/stop", cluster_stop)
+    app.router.add_get("/admin/backups", backups_page)
+    app.router.add_post("/admin/backup", backup_now)
     app.router.add_get("/healthz", healthz)
     return app
 
@@ -196,6 +226,26 @@ async def serve(store, port):
         await asyncio.sleep(3600)
 
 
+async def backup_scheduler(store, interval=60):
+    """Fire scheduled backups. One check a minute; the schedule itself decides.
+
+    Whether a run is due is judged against the newest archive on disk rather than a
+    remembered "last run", so a restart cannot make it forget a night, and cannot make
+    it fire twice for the same slot.
+    """
+    while True:
+        try:
+            due, why = backupctl.due(store)
+            if due:
+                log.info("%s", why)
+                flush = (lambda: clusterctl.save_world(store)) if store.get("backup_flush") else None
+                ok, msg = backupctl.run_scheduled(store, flush=flush)
+                (log.info if ok else log.error)("scheduled backup: %s", msg)
+        except Exception as e:                    # a bad night must not kill the loop
+            log.error("scheduled backup failed: %s", e)
+        await asyncio.sleep(interval)
+
+
 async def main():
     store, created, code = bootstrap()
 
@@ -214,6 +264,8 @@ async def main():
         tasks.append(asyncio.create_task(serve(store, port)))
     else:
         log.warning("web UI disabled (port 0)")
+
+    tasks.append(asyncio.create_task(backup_scheduler(store)))
 
     from . import bot
     if bot.CLUSTER_CONFIGURED:

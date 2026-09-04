@@ -207,6 +207,24 @@ SETTINGS = [
          help="Whispers a greeting privately to the joining player rather than "
               "broadcasting it, so a busy server doesn't fill with welcome spam."),
 
+    # ---------------------------------------------------------------- Backups
+    dict(key="backup_times", label="Backup schedule", group="Backups",
+         type="times", default="", target="obelisk:backup_times", apply="none",
+         help="24-hour times to back up, comma separated - e.g. 04:00. Blank means "
+              "backups only happen when you press the button."),
+
+    dict(key="backup_keep", label="Backups to keep", group="Backups",
+         type="int", default=7, min=1, max=365, target="obelisk:backup_keep",
+         apply="none",
+         help="Older archives are deleted after each successful backup. Without a "
+              "limit a nightly backup eventually fills the disk it is protecting."),
+
+    dict(key="backup_flush", label="Save the world first", group="Backups",
+         type="bool", default=True, target="obelisk:backup_flush", apply="none",
+         help="Ask every running map to save before copying, so the archive holds the "
+              "world as of now instead of the last autosave. Costs a few seconds and a "
+              "brief pause in game."),
+
     # ---------------------------------------------------------------- Obelisk
     dict(key="status_port", label="Status page port", group="Obelisk",
          type="port", default=8088, target="env:STATUS_PORT", apply="recreate",
@@ -283,7 +301,7 @@ SETTINGS = [
               "means an upstream change can't surprise every map at once."),
 
     dict(key="obelisk_image", label="Obelisk image", group="Cluster",
-         type="text", default="ghcr.io/obelisk-ark/obelisk:latest",
+         type="text", default="ghcr.io/tbgkiller/obelisk:latest",
          target="obelisk:obelisk_image", apply="recreate", max_len=120, ascii_only=True,
          help="Obelisk's own image. Change this to run a fork or a pinned version."),
 
@@ -328,7 +346,7 @@ SETTINGS = [
 ]
 
 GROUPS = ["Cluster", "Identity", "Access", "Mods", "Rates", "Upkeep",
-          "Discord", "Obelisk", "Resources", "Advanced"]
+          "Discord", "Backups", "Obelisk", "Resources", "Advanced"]
 
 BY_KEY = {s["key"]: s for s in SETTINGS}
 

@@ -144,6 +144,38 @@ async def run():
     r = await client.get("/admin/cluster", allow_redirects=False)
     check("cluster page needs a session", r.status in (200, 302))
 
+    # ---- backups from the UI
+    from . import backup as backupctl
+    from . import layout as layoutmod
+    broot = os.path.join(tempfile.mkdtemp(), "data")
+    store.data["cluster"]["appdata"] = broot
+    layoutmod.ensure(broot, ["island"])
+    sd = os.path.join(broot, "shared", "SavedArks", "TheIsland_WP")
+    os.makedirs(sd, exist_ok=True)
+    open(os.path.join(sd, "TheIsland_WP.ark"), "wb").write(bytes(1024))
+    store.patch({"maps": "island", "backup_keep": 2, "backup_flush": False})
+
+    r = await client.get("/admin/backups")
+    body = await r.text()
+    check("backups page renders", r.status == 200 and "Back up now" in body, r.status)
+    check("it warns the archive holds secrets", "admin/RCON password" in body)
+    check("it says the game install is left out", "re-downloads" in body)
+    check("no backups yet is a normal state", "No backups yet" in body)
+
+    r = await client.post("/admin/backup")
+    body = await r.text()
+    check("backup runs from the UI", "verified readable" in body, body[:400])
+    check("the new archive is listed", "obelisk-backup-" in body)
+    check("one backup exists on disk", len(backupctl.listing(store)) == 1,
+          backupctl.listing(store))
+
+    await client.post("/admin/backup")
+    await client.post("/admin/backup")
+    check("retention applies to UI backups too", len(backupctl.listing(store)) == 2,
+          backupctl.listing(store))
+
+    check("Backups is in the nav", "/admin/backups" in body)
+
     before = str(store.get("admin_token"))
     await client.post("/admin/save", data={"admin_password": ""}, allow_redirects=False)
     check("a blank password means 'leave it alone'", str(store.get("admin_token")) == before)

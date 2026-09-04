@@ -100,6 +100,16 @@ def build_plan(store, in_use_ports=None, host_ram_gb=None):
         if clash:
             problems.append("ports already in use on this host: %s"
                             % ", ".join(str(p) for p in clash))
+        # Obelisk publishes its own port in the stack it generates, so it has to be
+        # checked like any other. Leaving it out meant a launch passed review and then
+        # failed inside Docker with "port is already allocated" - a clear refusal here
+        # is the difference between a five-second fix and reading compose output.
+        if status_port and status_port in in_use:
+            problems.append(
+                "Obelisk's own web port (%d) is already in use on this host. The "
+                "generated stack publishes that port, so it would collide. Set "
+                "STATUS_PORT on this container to a free port and recreate it."
+                % status_port)
     else:
         notes.append("Host port usage wasn't checked, so a clash with something outside "
                      "this cluster is still possible.")

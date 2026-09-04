@@ -174,5 +174,17 @@ p = build_plan(store(), in_use_ports={7777, 27020})
 check("planning around live host ports", p["maps"][0]["game_port"] == 7778
       and p["maps"][0]["rcon_port"] == 27021, p["maps"][0])
 
+
+# ---- Obelisk's own published port is a port like any other. Leaving it out of the
+# check meant a launch passed review, then failed inside Docker with "port is already
+# allocated" - which reads like a bug in the cluster rather than a busy port.
+st_p = store(maps="island")
+busy = int(st_p.get("status_port"))
+pl = build_plan(st_p, in_use_ports={busy})
+check("a busy Obelisk port blocks the launch", not pl["ok"], pl["problems"])
+check("and says which port and what to do about it",
+      any("own web port" in x and "STATUS_PORT" in x for x in pl["problems"]), pl["problems"])
+pl = build_plan(st_p, in_use_ports=set())
+check("a free Obelisk port is fine", pl["ok"], pl["problems"])
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

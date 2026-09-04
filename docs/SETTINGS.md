@@ -17,7 +17,7 @@ web UI after it is running.
 | First game port | `game_port_base` | port | `7777` | UI | recreate |
 | First RCON port | `rcon_port_base` | port | `27020` | UI | recreate |
 | ARK server image | `ark_image` | text | `acekorneya/asa_server:2_1_latest` | UI | recreate |
-| Obelisk image | `obelisk_image` | text | `ghcr.io/obelisk-ark/obelisk:latest` | UI | recreate |
+| Obelisk image | `obelisk_image` | text | `ghcr.io/tbgkiller/obelisk:latest` | UI | recreate |
 | Update window opens | `update_window_start` | text | `4:00 AM` | UI | recreate |
 | Update window closes | `update_window_end` | text | `6:00 AM` | UI | recreate |
 | Restart warning | `restart_notice_minutes` | int | `30` | UI | recreate |
@@ -159,6 +159,21 @@ web UI after it is running.
 **Admin role ID** - Optional. Only members with this Discord role may use admin commands. Blank means the admin channel itself is the only gate.
 
 
+## Backups
+
+| Setting | Key | Type | Default | Set in | Takes effect |
+|---|---|---|---|---|---|
+| Backup schedule | `backup_times` | times | `` | UI | none |
+| Backups to keep | `backup_keep` | int | `7` | UI | none |
+| Save the world first | `backup_flush` | bool | `True` | UI | none |
+
+**Backup schedule** - 24-hour times to back up, comma separated - e.g. 04:00. Blank means backups only happen when you press the button.
+
+**Backups to keep** - Older archives are deleted after each successful backup. Without a limit a nightly backup eventually fills the disk it is protecting.
+
+**Save the world first** - Ask every running map to save before copying, so the archive holds the world as of now instead of the last autosave. Costs a few seconds and a brief pause in game.
+
+
 ## Obelisk
 
 | Setting | Key | Type | Default | Set in | Takes effect |
@@ -182,10 +197,13 @@ web UI after it is running.
 | Setting | Key | Type | Default | Set in | Takes effect |
 |---|---|---|---|---|---|
 | RAM cap per map | `mem_limit` | memory | `20g` | UI | recreate |
+| Game install folder | `serverfiles` | text | `` | UI | recreate |
 | Cluster data folder | `appdata` | text | `/mnt/user/appdata/ark` | container template | recreate |
 | RAM budget for this host | `host_ram_gb` | int | `0` | UI | none |
 
 **RAM cap per map** - A cap, not a reservation - unused headroom costs nothing. If a map is OOM-killed you'll see it restart repeatedly with the container itself reporting a clean exit, because only the game process is killed. Override per map for the heavy ones.
+
+**Game install folder** - Where the ~20 GB ARK server files live. Deliberately outside the data folder: it is re-downloadable, and keeping it out is what makes a backup small enough to move. Blank puts it beside the data folder.
 
 **Cluster data folder** - Where server files, saves and the shared config live on the host. Put this on an SSD or NVMe pool, never the spinning array - ASA is very I/O hungry. Changing it moves the whole cluster and needs a recreate.
 
