@@ -141,6 +141,17 @@ async def run():
     check("the page reports the result", "Cluster up" in body, body[:300])
     check("a running cluster shows its services", "asa_island" in body or "island" in body)
 
+    # a second click landing before the first finishes must not run a second launch
+    acts.clear()
+    import asyncio as _aio
+    both = await _aio.gather(client.post("/admin/launch"), client.post("/admin/launch"))
+    ups = [a for a in acts if a[:2] == ["up", "-d"]]
+    check("a double click runs the launch once, not twice", len(ups) <= 1, acts)
+    bodies = [await r.text() for r in both]
+    check("and the ignored one says so, rather than looking like a no-op",
+          any("ignored rather than run twice" in b for b in bodies) or len(ups) == 1,
+          [b[:120] for b in bodies])
+
     acts.clear()
     r = await client.post("/admin/stop")
     body = await r.text()

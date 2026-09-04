@@ -107,7 +107,7 @@ def build_app(store, docker=None):
     # ---- the cluster: define it, launch it, stop it
     def _cluster_body(request, message="", problem=""):
         try:
-            in_use = dockerctl.ports_in_use()
+            in_use = clusterctl.other_ports_in_use(store)
         except Exception:
             in_use = None
         plan = build_plan(store, in_use_ports=in_use)
@@ -142,20 +142,38 @@ def build_app(store, docker=None):
             return chrome(_cluster_body(request, problem=str(e)), "Cluster", "/admin/cluster")
         raise web.HTTPFound("/admin/cluster")
 
+    cluster_busy = asyncio.Lock()
+
     def _act(fn, request):
         ok, msg = fn(store)
         body = _cluster_body(request, message=msg if ok else "", problem="" if ok else msg)
         return chrome(body, "Cluster", "/admin/cluster")
 
+    async def _act_once(fn, request):
+        """Serialise cluster actions.
+
+        Disabling the button in the browser is a courtesy, not a guarantee - a second
+        click that lands before the first response renders would otherwise run a second
+        `compose up` alongside the first. That happens to be harmless today only because
+        compose adopts a container by name; relying on that is relying on a coincidence.
+        """
+        if cluster_busy.locked():
+            return chrome(_cluster_body(
+                request, message="Already working on the last request - this one was "
+                                 "ignored rather than run twice."),
+                "Cluster", "/admin/cluster")
+        async with cluster_busy:
+            return await asyncio.to_thread(_act, fn, request)
+
     async def cluster_launch(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        return _act(clusterctl.launch, request)
+        return await _act_once(clusterctl.launch, request)
 
     async def cluster_stop(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        return _act(clusterctl.stop, request)
+        return await _act_once(clusterctl.stop, request)
 
     def _connect_panel():
         """The addresses people actually type, once there are maps to type them for."""

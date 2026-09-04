@@ -58,6 +58,7 @@ tr:last-child td{border-bottom:none}
 .callout strong{color:#e6e9ef;font-size:15px;display:block;margin-bottom:6px}
 .callout .steps{color:#b8c6d9;font-size:13px;line-height:1.6}
 .callout code{background:#0f1620;padding:1px 5px;border-radius:4px}
+form[data-busy] button{opacity:.45;cursor:progress}
 .problem{background:#2a1d1f;color:#ffb4ab;border:1px solid #4a2b2e}
 .ok{color:#3fb950}
 .foot{color:#5b6472;font-size:11px;margin-top:22px}
@@ -209,7 +210,7 @@ def render_cluster(store, plan, status=None):
                   plan["total_memory"], plan["obelisk_port"]))
 
     return (render_status(status) +
-            '<form method=post action="/admin/maps">'
+            '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '
             'own. Trim it afterwards.</div></fieldset>'

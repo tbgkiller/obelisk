@@ -131,13 +131,18 @@ except ValueError as e:
 from . import dockerctl
 _real = dockerctl._run
 
+# docker ps now reports the owning container beside the ports, so a cluster can be
+# left out of its own check.
+TAB = chr(9)
 dockerctl._run = lambda a, timeout=60: (0,
-    "0.0.0.0:8088->8088/tcp, :::8088->8088/tcp\n"
-    "0.0.0.0:7777->7777/udp, :::7777->7777/udp\n"
-    "7779/udp\n"                       # exposed but not published - not in use on the host
-    "0.0.0.0:27020->27020/tcp\n")
+    "other-app" + TAB + "0.0.0.0:8088->8088/tcp, :::8088->8088/tcp" + chr(10) +
+    "asa-mine-island" + TAB + "0.0.0.0:7777->7777/udp, :::7777->7777/udp" + chr(10) +
+    "exposed-only" + TAB + "7779/udp" + chr(10) +
+    "asa-mine-island" + TAB + "0.0.0.0:27020->27020/tcp" + chr(10))
 got = dockerctl.ports_in_use()
 check("reads published host ports", got == {8088, 7777, 27020}, got)
+got_ex = dockerctl.ports_in_use(exclude_names=["asa-mine-island"])
+check("a cluster's own ports can be excluded", got_ex == {8088}, got_ex)
 check("ignores a port that is only exposed", 7779 not in got, got)
 
 dockerctl._run = lambda a, timeout=60: (1, "Cannot connect to the Docker daemon")

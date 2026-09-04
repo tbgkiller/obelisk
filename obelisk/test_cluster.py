@@ -427,5 +427,43 @@ check("preflight targets instance names",
       clusterctl.target_names(st_i) == ["asa-ports-island", "asa-ports-ragnarok"],
       clusterctl.target_names(st_i))
 
+
+# ---- a running cluster keeps the ports it is on
+# After a launch the plan asked the host which ports were busy and got back its own,
+# so it shifted to the next free pair - the page then showed numbers that did not match
+# the running containers, and an Apply would have moved a live server for no reason.
+seen_excludes = []
+
+
+class PortDocker(FakeDocker):
+    def ports_in_use(self, exclude_names=()):
+        seen_excludes.append(sorted(exclude_names))
+        # the host: this cluster on 7877/27920, plus something unrelated on 7878
+        held = {7877: "asa-ports2-island", 27920: "asa-ports2-island", 7878: "other-app"}
+        skip = set(exclude_names)
+        return {p for p, owner in held.items() if owner not in skip}
+
+
+st_p2, _dp = fresh(maps="island", cluster_id="ports2")
+st_p2.patch({"game_port_base": 7877, "rcon_port_base": 27920})
+clusterctl.dockerctl = PortDocker()
+
+in_use = clusterctl.other_ports_in_use(st_p2)
+check("the cluster's own containers are excluded from the check",
+      seen_excludes and seen_excludes[-1] == ["asa-ports2-island"], seen_excludes)
+check("so its own ports are not reported as taken", 7877 not in in_use and 27920 not in in_use,
+      sorted(in_use))
+check("but other people's still are", 7878 in in_use, sorted(in_use))
+
+pl2 = build_plan(st_p2, in_use_ports=in_use)
+check("the plan keeps the ports the cluster is actually running on",
+      (pl2["maps"][0]["game_port"], pl2["maps"][0]["rcon_port"]) == (7877, 27920),
+      (pl2["maps"][0]["game_port"], pl2["maps"][0]["rcon_port"]))
+
+# without the exclusion it drifts - the bug being fixed
+pl_drift = build_plan(st_p2, in_use_ports={7877, 7878, 27920})
+check("and would have drifted without it",
+      pl_drift["maps"][0]["game_port"] == 7879, pl_drift["maps"][0]["game_port"])
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

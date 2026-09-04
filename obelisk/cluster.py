@@ -245,3 +245,12 @@ def name_conflicts(store, existing=None):
                    "host: %s. Nothing was started and nothing was changed. Rename this "
                    "cluster - the cluster ID is part of every container name - or remove "
                    "the containers that hold those names." % lines)
+
+def other_ports_in_use(store):
+    """Host ports held by everything except this cluster.
+
+    The plan is asking "where would this cluster sit", and a cluster is allowed to keep
+    the ports it is already on. Counting its own bindings as occupied made a launched
+    cluster's plan drift to the next free pair, which reads as though something moved.
+    """
+    return dockerctl.ports_in_use(exclude_names=target_names(store))

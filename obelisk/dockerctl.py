@@ -45,18 +45,28 @@ def available():
     return True, "Docker %s, compose plugin present" % server
 
 
-def ports_in_use():
-    """Host ports already bound by any container, so a plan never lands on one.
+def ports_in_use(exclude_names=()):
+    """Host ports bound by containers, so a plan never lands on one.
+
+    `exclude_names` leaves out containers that belong to the cluster being planned.
+    Without that, a running cluster counts its own ports as taken and the plan shifts to
+    the next free pair - so the page shows numbers that do not match what is actually
+    running, and an Apply would move a live server's ports for no reason.
 
     Returns None when Docker can't be reached - the plan reports that as
     'not checked' rather than pretending nothing is in use.
     """
-    rc, out = _run(["docker", "ps", "--format", "{{.Ports}}"], timeout=30)
+    skip = {str(n) for n in exclude_names}
+    fmt = "{{.Names}}" + chr(9) + "{{.Ports}}"
+    rc, out = _run(["docker", "ps", "--format", fmt], timeout=30)
     if rc != 0:
         return None
     ports = set()
     for line in out.splitlines():
-        for chunk in line.split(","):
+        name, _, portstr = line.partition(chr(9))
+        if name.strip() in skip:
+            continue
+        for chunk in portstr.split(","):
             chunk = chunk.strip()
             if "->" not in chunk:
                 continue
