@@ -83,8 +83,15 @@ def page(title, body, nav_on=""):
 
 
 def _field(s, value, locked):
+    """One control, from the schema.
+
+    A locked field is disabled rather than merely readonly, because readonly still
+    submits. Posting back a value the server refuses to accept from here failed the
+    entire save - so changing a port meant nothing saved at all, with an error naming
+    two fields the user had not touched.
+    """
     t, key = s["type"], s["key"]
-    ro = " readonly" if locked else ""
+    ro = " readonly disabled" if locked else ""
     if t == "bool":
         ctrl = ('<select name="%s"%s><option value="true"%s>Yes</option>'
                 '<option value="false"%s>No</option></select>'

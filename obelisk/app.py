@@ -81,8 +81,15 @@ def build_app(store, docker=None):
     async def save(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
+        from .schema import INSTALL_KEYS
         form = await request.post()
         changes = {k: v for k, v in form.items() if k != "code"}
+        # Settings Docker fixed at create time are shown here read-only. A browser that
+        # posts them back - an older page, an autofill, a field that was not disabled -
+        # must not be able to fail the whole save: the user changed something else and
+        # is entitled to have it stick. Drop them and carry on.
+        for key in INSTALL_KEYS:
+            changes.pop(key, None)
         # A password left blank means "leave it alone", never "erase it".
         for key, value in list(changes.items()):
             if value == "" and _is_password(key):

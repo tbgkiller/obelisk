@@ -232,6 +232,41 @@ async def run():
     r = await client.post("/admin/cloud/disconnect")
     check("disconnect works from the UI", "Connect and test" in await r.text())
 
+    # ---- a save must not be blocked by fields the user cannot change
+    # The live failure: the settings form rendered status_port and appdata read-only but
+    # still submitted them, and the save rejected the whole request because those keys
+    # are container-set. Changing a port saved nothing, and the error named two fields
+    # the user had never touched. Nobody could save anything from this page.
+    store.patch({"game_port_base": 7777, "rcon_port_base": 27020})
+    store.save()
+    payload = {
+        "game_port_base": "7877",
+        "rcon_port_base": "27920",
+        "admin_password": "synthetic-admin-pw",
+        # exactly what the browser posted back, unchanged, from the read-only fields
+        "status_port": str(store.get("status_port")),
+        "appdata": str(store.get("appdata")),
+    }
+    r = await client.post("/admin/save", data=payload, allow_redirects=False)
+    check("a save carrying container-set fields is accepted, not rejected",
+          r.status == 302, "%s %s" % (r.status, (await r.text())[:200]))
+    check("the ports actually persisted",
+          store.get("game_port_base") == 7877 and store.get("rcon_port_base") == 27920,
+          (store.get("game_port_base"), store.get("rcon_port_base")))
+    check("the admin password persisted too",
+          str(store.get("admin_password")) == "synthetic-admin-pw")
+    check("and the cluster is no longer blocked on it",
+          not any(b["key"] == "admin_password" for b in store.readiness()),
+          store.readiness())
+
+    body = await (await client.get("/admin")).text()
+    check("container-set fields are disabled, so a fresh page never posts them",
+          body.count("readonly disabled") >= 2, body.count("readonly disabled"))
+    check("editable fields are not disabled",
+          'name="max_players"' in body and
+          'name="max_players" value="%s" readonly disabled' % store.get("max_players")
+          not in body)
+
     before = str(store.get("admin_token"))
     await client.post("/admin/save", data={"admin_password": ""}, allow_redirects=False)
     check("a blank password means 'leave it alone'", str(store.get("admin_token")) == before)
