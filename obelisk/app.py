@@ -15,8 +15,10 @@ only when there is a cluster to relay between, which on a fresh install there is
 
 import asyncio, logging, os, sys
 
+from . import cluster as clusterctl
 from . import dockerctl, install, ui
 from .firstrun import bootstrap
+from .plan import build_plan
 from .settings import Invalid
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
@@ -93,13 +95,70 @@ def build_app(store, docker=None):
                           "Obelisk settings", "/admin")
         raise web.HTTPFound("/admin")
 
+    # ---- the cluster: define it, launch it, stop it
+    def _cluster_body(request, message="", problem=""):
+        try:
+            in_use = dockerctl.ports_in_use()
+        except Exception:
+            in_use = None
+        plan = build_plan(store, in_use_ports=in_use)
+        st = clusterctl.status(store)
+        banner = ""
+        if problem:
+            banner = '<div class=problem>%s</div>' % ui._e(problem)
+        elif message:
+            banner = '<div class=note>%s</div>' % ui._e(message)
+        return banner + ui.render_cluster(store, plan, status=st)
+
+    async def cluster_page(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        return chrome(_cluster_body(request), "Cluster", "/admin/cluster")
+
+    async def cluster_maps(request):
+        """Update the map selection (or apply a preset) without launching anything."""
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        preset = form.get("preset")
+        if preset:
+            from .presets import BY_KEY as PRESET_BY_KEY
+            chosen = PRESET_BY_KEY.get(preset, {}).get("maps", [])
+        else:
+            chosen = form.getall("maps", [])
+        try:
+            store.patch({"maps": ",".join(chosen)})
+            store.save()
+        except Invalid as e:
+            return chrome(_cluster_body(request, problem=str(e)), "Cluster", "/admin/cluster")
+        raise web.HTTPFound("/admin/cluster")
+
+    def _act(fn, request):
+        ok, msg = fn(store)
+        body = _cluster_body(request, message=msg if ok else "", problem="" if ok else msg)
+        return chrome(body, "Cluster", "/admin/cluster")
+
+    async def cluster_launch(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        return _act(clusterctl.launch, request)
+
+    async def cluster_stop(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        return _act(clusterctl.stop, request)
+
     async def root(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
         todo = store.readiness()
-        body = ('<div class=note>Cluster not created yet. %s</div>'
-                % (("Still to set: " + ", ".join(b["label"] for b in todo))
-                   if todo else "Ready to launch from the Cluster tab."))
+        st = clusterctl.status(store)
+        if st.get("running"):
+            body = ui.render_status(st)
+        else:
+            body = ('<div class=note>Cluster not running. %s</div>'
+                    % (("Still to set: " + ", ".join(b["label"] for b in todo))
+                       if todo else "Launch it from the Cluster tab."))
         return chrome(body, "Obelisk", "/")
 
     async def healthz(_request):
@@ -113,6 +172,10 @@ def build_app(store, docker=None):
     app.router.add_post("/setup", setup_submit)
     app.router.add_get("/admin", admin)
     app.router.add_post("/admin/save", save)
+    app.router.add_get("/admin/cluster", cluster_page)
+    app.router.add_post("/admin/maps", cluster_maps)
+    app.router.add_post("/admin/launch", cluster_launch)
+    app.router.add_post("/admin/stop", cluster_stop)
     app.router.add_get("/healthz", healthz)
     return app
 

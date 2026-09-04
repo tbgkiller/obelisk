@@ -243,6 +243,13 @@ SETTINGS = [
          help="Optional. Only members with this Discord role may use admin commands. "
               "Blank means the admin channel itself is the only gate."),
 
+    dict(key="serverfiles", label="Game install folder", group="Resources",
+         type="text", default="", target="obelisk:serverfiles", apply="recreate",
+         pattern=r"^(/[A-Za-z0-9._/-]{3,120})?$",
+         help="Where the ~20 GB ARK server files live. Deliberately outside the data "
+              "folder: it is re-downloadable, and keeping it out is what makes a backup "
+              "small enough to move. Blank puts it beside the data folder."),
+
     dict(key="appdata", label="Cluster data folder", group="Resources",
          type="text", default="/mnt/user/appdata/ark", target="env:APPDATA",
          apply="recreate", phase="install", pattern=r"^/[A-Za-z0-9._/-]{3,120}$",

@@ -8,7 +8,7 @@ IP or a firewall, at the exact moment the operator has nothing else to go on.
 Fixture values are synthetic throughout.
 """
 
-import asyncio, sys, tempfile
+import asyncio, os, sys, tempfile
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -89,6 +89,60 @@ async def run():
                       allow_redirects=False)
     check("an invalid value is refused, not stored",
           store.get("timezone") == "Europe/London", store.get("timezone"))
+
+    # ---- the cluster page: define, launch, stop, all from the UI
+    from . import cluster as clusterctl
+    acts = []
+
+    class FakeDocker:
+        def available(self): return (True, "Docker 27.0.0")
+        def compose(self, path, proj, args, timeout=900):
+            acts.append(list(args)); return 0, ""
+        def compose_ps(self, path, proj, timeout=60):
+            return [{"service": "island", "name": "asa_island", "state": "running",
+                     "status": "Up 3 minutes", "health": "healthy"}]
+        def ports_in_use(self): return set()
+
+    clusterctl.dockerctl = FakeDocker()
+    store.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
+    store.patch({"admin_password": "synthetic-pw", "cluster_id": "uitest",
+                 "host_ram_gb": 256, "maps": "island"})
+    store.save()
+
+    r = await client.get("/admin/cluster")
+    body = await r.text()
+    check("cluster page renders", r.status == 200 and "Plan" in body, r.status)
+    check("it shows the port/RAM plan", "Game" in body and "RCON" in body)
+    check("it offers a launch button", "/admin/launch" in body)
+
+    r = await client.post("/admin/maps", data={"maps": ["island", "ragnarok"]},
+                          allow_redirects=False)
+    check("map selection saves from the UI", store.get("maps") == "island,ragnarok",
+          store.get("maps"))
+
+    r = await client.post("/admin/maps", data={"preset": "single"}, allow_redirects=False)
+    check("a preset ticks the boxes", store.get("maps") == "island", store.get("maps"))
+
+    tmp_compose = os.path.join(tempfile.mkdtemp(), "compose.yaml")
+    _rp = clusterctl.compose_path
+    _re = clusterctl.layout.ensure
+    clusterctl.compose_path = lambda st: tmp_compose
+    clusterctl.layout.ensure = lambda root, keys=(), makedirs=None: []
+    r = await client.post("/admin/launch")
+    body = await r.text()
+    check("launch runs from the UI", any(a[:2] == ["up", "-d"] for a in acts), acts)
+    check("the page reports the result", "Cluster up" in body, body[:300])
+    check("a running cluster shows its services", "asa_island" in body or "island" in body)
+
+    acts.clear()
+    r = await client.post("/admin/stop")
+    body = await r.text()
+    check("stop runs from the UI", acts and acts[-1] == ["down"], acts)
+    check("stop says saves are safe", "untouched" in body)
+    clusterctl.compose_path, clusterctl.layout.ensure = _rp, _re
+
+    r = await client.get("/admin/cluster", allow_redirects=False)
+    check("cluster page needs a session", r.status in (200, 302))
 
     before = str(store.get("admin_token"))
     await client.post("/admin/save", data={"admin_password": ""}, allow_redirects=False)

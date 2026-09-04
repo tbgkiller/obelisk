@@ -140,7 +140,30 @@ def render_settings(store):
             % (banner, "".join(blocks)))
 
 
-def render_cluster(store, plan):
+def render_status(status):
+    """What is actually running. Absent or empty is a normal state, not an error."""
+    if not status:
+        return ""
+    if not status.get("docker_ok"):
+        return ('<div class=problem><strong>Docker not connected.</strong> %s</div>'
+                % _e(status.get("docker_detail", "")))
+    if not status.get("compose_exists"):
+        return ('<div class=note>No cluster has been launched from this Obelisk yet. '
+                'Pick your maps below and launch.</div>')
+    rows = "".join(
+        "<tr><td>%s</td><td class=%s>%s</td><td>%s</td></tr>"
+        % (_e(s["service"]),
+           "ok" if s["state"] == "running" else "bad",
+           _e(s["state"] or "?"), _e(s["status"]))
+        for s in status.get("services", []))
+    if not rows:
+        return '<div class=note>The cluster is defined but nothing is running.</div>'
+    return ('<fieldset><legend>Running now</legend><table>'
+            '<tr><th>Service</th><th>State</th><th>Detail</th></tr>%s</table></fieldset>'
+            % rows)
+
+
+def render_cluster(store, plan, status=None):
     selected = set(str(store.get("maps")).split(","))
     presets = "".join(
         '<button class=ghost type=button name=preset value="%s" title="%s">%s</button>'
@@ -161,13 +184,20 @@ def render_cluster(store, plan):
     msgs = "".join('<div class=problem>%s</div>' % _e(p) for p in plan["problems"])
     msgs += "".join('<div class=note>%s</div>' % _e(n) for n in plan["notes"])
 
-    launch = ('<button type=submit formaction="/admin/launch"%s>Launch cluster</button>'
-              % ("" if plan["ok"] else " disabled"))
+    up = (status or {}).get("running", 0)
+    if up:
+        launch = ('<button type=submit formaction="/admin/launch"%s>Apply and restart</button> '
+                  '<button class=ghost type=submit formaction="/admin/stop">Stop cluster</button>'
+                  % ("" if plan["ok"] else " disabled"))
+    else:
+        launch = ('<button type=submit formaction="/admin/launch"%s>Launch cluster</button>'
+                  % ("" if plan["ok"] else " disabled"))
     summary = ("%d map%s, %s of RAM at most, plus Obelisk on port %s."
                % (len(plan["maps"]), "" if len(plan["maps"]) == 1 else "s",
                   plan["total_memory"], plan["obelisk_port"]))
 
-    return ('<form method=post action="/admin/maps">'
+    return (render_status(status) +
+            '<form method=post action="/admin/maps">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '
             'own. Trim it afterwards.</div></fieldset>'

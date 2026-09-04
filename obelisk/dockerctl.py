@@ -11,7 +11,7 @@ say "the socket isn't mounted", not surface as a confusing error twenty steps la
 when a launch half-completes.
 """
 
-import shutil, subprocess
+import json, shutil, subprocess
 
 SOCKET = "/var/run/docker.sock"
 
@@ -65,3 +65,39 @@ def ports_in_use():
             if bit.isdigit():
                 ports.add(int(bit))
     return ports
+
+def compose(compose_file, project_name, args, timeout=900):
+    """Run one `docker compose` command against a specific file and project.
+
+    Always -f and -p explicitly: Obelisk's own working directory is not the cluster's,
+    and an inherited project name would silently adopt or orphan somebody else's stack.
+    """
+    cmd = ["docker", "compose", "-f", compose_file, "-p", project_name] + list(args)
+    return _run(cmd, timeout=timeout)
+
+
+def compose_ps(compose_file, project_name, timeout=60):
+    """Per-service state as a list of dicts. Empty when nothing is up or Docker is out.
+
+    Parses the JSON-lines form rather than the table: the table's columns move between
+    Docker versions, and a status page that misreads them is worse than none.
+    """
+    rc, out = compose(compose_file, project_name, ["ps", "--format", "json"],
+                      timeout=timeout)
+    if rc != 0:
+        return []
+    rows = []
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or not line.startswith("{"):
+            continue
+        try:
+            d = json.loads(line)
+        except ValueError:
+            continue
+        rows.append({"service": d.get("Service") or d.get("Name", ""),
+                     "name": d.get("Name", ""),
+                     "state": (d.get("State") or "").lower(),
+                     "status": d.get("Status", ""),
+                     "health": (d.get("Health") or "").lower()})
+    return rows
