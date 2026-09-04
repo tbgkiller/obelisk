@@ -225,6 +225,19 @@ SETTINGS = [
               "world as of now instead of the last autosave. Costs a few seconds and a "
               "brief pause in game."),
 
+    dict(key="cloud_enabled", label="Send backups off-site", group="Backups",
+         type="bool", default=False, target="obelisk:cloud_enabled", apply="none",
+         help="Upload each new backup to the connected cloud, encrypted here first so "
+              "the provider only ever holds ciphertext. Connect a provider on the "
+              "Cloud page before turning this on."),
+
+    dict(key="cloud_keep", label="Backups to keep off-site", group="Backups",
+         type="int", default=14, min=1, max=365, target="obelisk:cloud_keep",
+         apply="none",
+         help="Older archives are removed from the cloud after each successful upload. "
+              "Usually higher than the local limit - off-site space is cheaper than the "
+              "disk the cluster runs on."),
+
     # ---------------------------------------------------------------- Obelisk
     dict(key="status_port", label="Status page port", group="Obelisk",
          type="port", default=8088, target="env:STATUS_PORT", apply="recreate",

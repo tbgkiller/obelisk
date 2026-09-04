@@ -176,6 +176,53 @@ async def run():
 
     check("Backups is in the nav", "/admin/backups" in body)
 
+    # ---- the cloud page, including the connect step the owner drives
+    from . import cloud as cloudctl
+    import hashlib as _h
+    rcalls = []
+
+    def fake_rclone(args, timeout=300, input_text=None):
+        rcalls.append(list(args))
+        if "version" in args: return 0, "rclone v1.66.0"
+        if "obscure" in args: return 0, _h.sha256(args[-1].encode()).hexdigest()[:32]
+        if "lsjson" in args: return 0, "[]"
+        return 0, ""
+
+    cloudctl._run = fake_rclone
+    cloudctl.shutil.which = lambda n: "/usr/bin/rclone"
+
+    r = await client.get("/admin/cloud")
+    body = await r.text()
+    check("cloud page renders", r.status == 200, r.status)
+    check("it offers the providers", "Google Drive" in body and "Backblaze B2" in body)
+    check("it says the sign-in is the owner's to do", "yours to do" in body)
+    check("it names the exact command to run", "rclone authorize drive" in body)
+    check("it warns the passphrase cannot be recovered", "Lose it" in body)
+    check("Cloud is in the nav", "/admin/cloud" in body)
+
+    r = await client.post("/admin/cloud/connect",
+                          data={"provider": "drive", "password": "",
+                                "token": "x", "path": "obelisk-backups"})
+    check("connecting without a passphrase is refused in the UI",
+          "passphrase is required" in await r.text())
+
+    r = await client.post("/admin/cloud/connect",
+                          data={"provider": "drive", "password": "synthetic-phrase",
+                                "token": '{"access_token":"synthetic"}',
+                                "path": "obelisk-backups"})
+    body = await r.text()
+    check("connecting works from the UI", "Connected to Google Drive" in body, body[:400])
+    check("the page then shows the connected state", "Disconnect" in body)
+    check("the passphrase is never echoed back", "synthetic-phrase" not in body)
+    check("the token is never echoed back", "access_token" not in body)
+
+    r = await client.post("/admin/cloud/push")
+    check("upload runs from the UI",
+          any("copy" in c and any("cloudcrypt:" in x for x in c) for c in rcalls), rcalls[-1])
+
+    r = await client.post("/admin/cloud/disconnect")
+    check("disconnect works from the UI", "Connect and test" in await r.text())
+
     before = str(store.get("admin_token"))
     await client.post("/admin/save", data={"admin_password": ""}, allow_redirects=False)
     check("a blank password means 'leave it alone'", str(store.get("admin_token")) == before)

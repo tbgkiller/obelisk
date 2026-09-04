@@ -166,12 +166,18 @@ web UI after it is running.
 | Backup schedule | `backup_times` | times | `` | UI | none |
 | Backups to keep | `backup_keep` | int | `7` | UI | none |
 | Save the world first | `backup_flush` | bool | `True` | UI | none |
+| Send backups off-site | `cloud_enabled` | bool | `False` | UI | none |
+| Backups to keep off-site | `cloud_keep` | int | `14` | UI | none |
 
 **Backup schedule** - 24-hour times to back up, comma separated - e.g. 04:00. Blank means backups only happen when you press the button.
 
 **Backups to keep** - Older archives are deleted after each successful backup. Without a limit a nightly backup eventually fills the disk it is protecting.
 
 **Save the world first** - Ask every running map to save before copying, so the archive holds the world as of now instead of the last autosave. Costs a few seconds and a brief pause in game.
+
+**Send backups off-site** - Upload each new backup to the connected cloud, encrypted here first so the provider only ever holds ciphertext. Connect a provider on the Cloud page before turning this on.
+
+**Backups to keep off-site** - Older archives are removed from the cloud after each successful upload. Usually higher than the local limit - off-site space is cheaper than the disk the cluster runs on.
 
 
 ## Obelisk

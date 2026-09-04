@@ -22,7 +22,10 @@ https://download.docker.com/linux/debian $(. /etc/os-release && echo "$VERSION_C
     rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN pip install --no-cache-dir "discord.py>=2.3,<3" "aiohttp>=3.9"
+# rclone moves the backups off-site and does the client-side encryption; cryptography
+# keeps the provider credentials encrypted at rest on this machine.
+RUN set -eux;     apt-get update;     apt-get install -y --no-install-recommends rclone;     rm -rf /var/lib/apt/lists/*
+RUN pip install --no-cache-dir "discord.py>=2.3,<3" "aiohttp>=3.9" "cryptography>=42"
 COPY obelisk/ /app/obelisk/
 
 ENV PYTHONUNBUFFERED=1 OBELISK_DATA=/data

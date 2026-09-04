@@ -186,9 +186,19 @@ def _unique(path):
 
 
 def _skip_backups(info):
-    """Keep the backups folder out of its own archives."""
+    """Keep the backups folder - and the cloud vault - out of the archive.
+
+    The vault holds the passphrase and provider token for the place these archives are
+    stored, and rclone.conf holds the same token in rclone's own plain format. An
+    archive carrying either would mean one stolen copy unlocks every copy - and the
+    archive is the thing most likely to end up somewhere careless.
+    """
+    from . import cloud, vault
+    never = tuple(vault.EXCLUDED_FROM_BACKUP) + (cloud.CONF_NAME,)
     parts = info.name.replace("\\", "/").split("/")
     if "backups" in parts:
+        return None
+    if parts and parts[-1] in never:
         return None
     return info
 
@@ -284,15 +294,36 @@ def prune(store, keep=None):
     return removed
 
 
-def run_scheduled(store, flush=None, when=None):
-    """One scheduled run: create, verify, prune. Returns (ok, message)."""
+def run_scheduled(store, flush=None, when=None, push=True):
+    """One scheduled run: create, verify, prune, and send off-site. (ok, message).
+
+    The upload is reported separately and never turns a good local backup into a
+    failure: a copy on this disk is worth having even on a night the network is out.
+    """
     ok, msg, path = create(store, when=when, flush=flush)
     if not ok:
         return False, msg
     removed = prune(store)
     if removed:
         msg += " Removed %d older backup%s." % (len(removed), "" if len(removed) == 1 else "s")
+    if push and store.get("cloud_enabled"):
+        msg += " " + push_offsite(store, path)
     return True, msg
+
+
+def push_offsite(store, path):
+    """Upload one archive and prune the remote. Returns a sentence for the log/UI."""
+    from . import cloud
+    if not cloud.configured(store):
+        return "Off-site is on but no cloud is connected, so nothing was uploaded."
+    ok, detail = cloud.push(store, path)
+    if not ok:
+        return "The local backup is fine, but the upload failed: %s" % detail
+    out = detail
+    gone = cloud.prune(store, store.get("cloud_keep"))
+    if gone:
+        out += " Removed %d older copy from the cloud." % len(gone) if len(gone) == 1                else " Removed %d older copies from the cloud." % len(gone)
+    return out
 
 
 def due(store, now=None, last=None):

@@ -66,7 +66,8 @@ def _e(v):
 
 def page(title, body, nav_on=""):
     tabs = [("/", "Status"), ("/admin", "Settings"), ("/admin/cluster", "Cluster"),
-            ("/admin/mods", "Mods"), ("/admin/backups", "Backups")]
+            ("/admin/mods", "Mods"), ("/admin/backups", "Backups"),
+            ("/admin/cloud", "Cloud")]
     nav = "".join('<a href="%s"%s>%s</a>' % (h, ' class=on' if h == nav_on else "", _e(t))
                   for h, t in tabs)
     return ("<!doctype html><html><head><meta charset=utf-8>"
@@ -331,3 +332,93 @@ def render_backups(store, rows, message="", problem=""):
             '<fieldset><legend>Backups on disk</legend>'
             '<table><tr><th>Archive</th><th class=num>Size</th><th>When</th></tr>%s</table>'
             '</fieldset></form>' % (when, "".join(body)))
+
+def render_cloud(store, state, remote=None, message="", problem=""):
+    """Connect a provider, see what is off-site, restore from it.
+
+    The connect step is written for the one fact that shapes it: signing in to Google is
+    the owner's to do, in their own browser. Obelisk asks for the token that comes back,
+    never for the account.
+    """
+    from . import cloud as cloudlib
+    banner = ""
+    if problem:
+        banner = '<div class=problem>%s</div>' % _e(problem)
+    elif message:
+        banner = '<div class=note>%s</div>' % _e(message)
+
+    if not state.get("rclone_ok"):
+        return banner + ('<div class=problem>%s</div>' % _e(state.get("rclone_detail", "")))
+    if not state.get("encryption_ok"):
+        return banner + ('<div class=problem>This build cannot encrypt, so connecting a '
+                         'cloud is disabled.</div>')
+
+    if state.get("connected"):
+        reach = state.get("reachable")
+        line = ('<span class=ok>reachable</span>' if reach else
+                '<span class=bad>not reachable</span> - %s' % _e(state.get("reachable_detail", "")))
+        rows = ""
+        for r in (remote or []):
+            rows += ("<tr><td><code>%s</code></td><td class=num>%.1f MB</td><td>%s</td></tr>"
+                     % (_e(r["name"]), (r["bytes"] or 0) / 1048576.0, _e(r["when"])))
+        if not rows:
+            rows = '<tr><td colspan=3 class=help>Nothing uploaded yet.</td></tr>'
+        return (banner +
+                '<fieldset><legend>Connected</legend>'
+                '<div class=f><label>Provider</label><div class=help>%s, folder '
+                '<code>%s</code> - %s</div></div>'
+                '<div class=f><div class=help>Everything is encrypted on this machine '
+                'before it is sent. The provider stores ciphertext with obscured file '
+                'names and cannot read your saves.</div></div>'
+                '<form method=post action="/admin/cloud/disconnect">'
+                '<button class=ghost type=submit>Disconnect</button></form></fieldset>'
+                '<fieldset><legend>Off-site copies</legend>'
+                '<table><tr><th>Archive</th><th class=num>Size</th><th>When</th></tr>%s</table>'
+                '<form method=post action="/admin/cloud/push" style="margin-top:12px">'
+                '<button type=submit>Upload the newest backup now</button></form>'
+                '</fieldset>'
+                '<fieldset><legend>Restore from the cloud</legend>'
+                '<form method=post action="/admin/cloud/pull">'
+                '<div class=f><label>Archive name</label>'
+                '<input type=text name=name placeholder="obelisk-backup-....tar.gz"> '
+                '<button type=submit class=ghost>Download</button>'
+                '<div class=help>Downloads and decrypts it into this Obelisk’s backups '
+                'folder, where it becomes an ordinary local archive. Putting it back into '
+                'the cluster is the next step and is not wired up yet.</div></div>'
+                '</form></fieldset>'
+                % (_e(state.get("provider", "")), _e(state.get("path", "")), line, rows))
+
+    opts = "".join('<option value="%s">%s</option>' % (_e(p["key"]), _e(p["name"]))
+                   for p in cloudlib.PROVIDERS)
+    return (banner +
+            '<form method=post action="/admin/cloud/connect">'
+            '<fieldset><legend>Connect a cloud</legend>'
+            '<div class=f><label>Provider</label>'
+            '<select name=provider>%s</select>'
+            '<div class=help>Any of these work the same way. Backups are encrypted here '
+            'first, so the provider only ever holds ciphertext.</div></div>'
+            '<div class=f><label>Encryption passphrase</label>'
+            '<input type=password name=password autocomplete=new-password>'
+            '<div class=help><strong>Write this down somewhere safe.</strong> It is what '
+            'makes the copies unreadable to the provider - and it is the only thing that '
+            'can read them back. Lose it and the off-site backups are gone, whatever the '
+            'provider still has.</div></div>'
+            '<div class=f><label>Folder</label>'
+            '<input type=text name=path value="obelisk-backups">'
+            '<div class=help>Created in the account if it does not exist.</div></div>'
+            '<div class=f><label>Access token <span class=tag>Google Drive and similar</span></label>'
+            '<textarea name=token rows=3 '
+            'placeholder="paste the whole token block rclone prints"></textarea>'
+            '<div class=help>Signing in to your account is yours to do, in your own '
+            'browser - Obelisk never sees it. On any machine with a browser and rclone '
+            'installed, run <code>rclone authorize drive</code>, complete the sign-in, '
+            'and paste the whole token block it prints here. Leave blank for S3 or B2 '
+            'and fill in the keys below instead.</div></div>'
+            '<div class=f><label>S3 / B2 key <span class=tag>optional</span></label>'
+            '<input type=text name=access_key_id placeholder="access key id"> '
+            '<input type=password name=secret_access_key placeholder="secret key">'
+            '<div class=help>Only for providers that use keys instead of a sign-in.</div></div>'
+            '<button type=submit>Connect and test</button>'
+            '<div class=help style="margin-top:8px">Nothing is called connected until a '
+            'test upload path actually answers.</div>'
+            '</fieldset></form>' % opts)

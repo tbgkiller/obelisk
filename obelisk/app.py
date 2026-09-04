@@ -16,6 +16,7 @@ only when there is a cluster to relay between, which on a fresh install there is
 import asyncio, logging, os, sys
 
 from . import backup as backupctl
+from . import cloud as cloudctl
 from . import cluster as clusterctl
 from . import dockerctl, install, ui
 from .firstrun import bootstrap
@@ -176,6 +177,66 @@ def build_app(store, docker=None):
                                         problem="" if ok else msg),
                       "Backups", "/admin/backups")
 
+    # ---- cloud
+    async def cloud_page(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        st = cloudctl.status(store)
+        rows = []
+        if st.get("connected"):
+            ok, res = cloudctl.listing(store)
+            rows = res if ok and isinstance(res, list) else []
+        return chrome(ui.render_cloud(store, st, rows), "Cloud", "/admin/cloud")
+
+    def _cloud_chrome(msg="", problem=""):
+        st = cloudctl.status(store)
+        rows = []
+        if st.get("connected"):
+            ok, res = cloudctl.listing(store)
+            rows = res if ok and isinstance(res, list) else []
+        return chrome(ui.render_cloud(store, st, rows, message=msg, problem=problem),
+                      "Cloud", "/admin/cloud")
+
+    async def cloud_connect(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        f = await request.post()
+        extra = {k: f.get(k, "") for k in ("access_key_id", "secret_access_key")}
+        ok, msg = cloudctl.connect(store,
+                                   provider=f.get("provider", ""),
+                                   password=f.get("password", ""),
+                                   path=f.get("path", "obelisk-backups"),
+                                   token=f.get("token", ""),
+                                   extra=extra)
+        return _cloud_chrome(msg if ok else "", "" if ok else msg)
+
+    async def cloud_disconnect(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        ok, msg = cloudctl.disconnect(store)
+        return _cloud_chrome(msg, "")
+
+    async def cloud_push(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        rows = backupctl.listing(store)
+        if not rows:
+            return _cloud_chrome("", "There is no local backup to upload yet.")
+        return _cloud_chrome(backupctl.push_offsite(store, rows[0]["path"]), "")
+
+    async def cloud_pull(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        f = await request.post()
+        name = str(f.get("name", "")).strip()
+        if not name:
+            return _cloud_chrome("", "Give the archive name to download.")
+        ok, res = cloudctl.pull(store, name, backupctl.backups_dir(store))
+        if not ok:
+            return _cloud_chrome("", res)
+        return _cloud_chrome("Downloaded and decrypted %s into this Obelisk's backups "
+                             "folder." % name, "")
+
     async def root(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
@@ -206,6 +267,11 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/stop", cluster_stop)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)
+    app.router.add_get("/admin/cloud", cloud_page)
+    app.router.add_post("/admin/cloud/connect", cloud_connect)
+    app.router.add_post("/admin/cloud/disconnect", cloud_disconnect)
+    app.router.add_post("/admin/cloud/push", cloud_push)
+    app.router.add_post("/admin/cloud/pull", cloud_pull)
     app.router.add_get("/healthz", healthz)
     return app
 
