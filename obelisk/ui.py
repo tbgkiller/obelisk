@@ -163,17 +163,36 @@ def render_status(status):
     if not status.get("compose_exists"):
         return ('<div class=note>No cluster has been launched from this Obelisk yet. '
                 'Pick your maps below and launch.</div>')
-    rows = "".join(
-        "<tr><td>%s</td><td class=%s>%s</td><td>%s</td></tr>"
-        % (_e(s["service"]),
-           "ok" if s["state"] == "running" else "bad",
-           _e(s["state"] or "?"), _e(s["status"]))
-        for s in status.get("services", []))
+    # Colour follows what the server is doing, not merely whether a process exists. A
+    # container that aborts and restarts every few seconds reports "running" the whole
+    # time, and showing that in green is a status that lies.
+    css = {"ok": "ok", "busy": "", "bad": "bad"}
+    rows = ""
+    for s in status.get("services", []):
+        level = s.get("level") or ("ok" if s.get("state") == "running" else "bad")
+        says = s.get("says") or s.get("status") or s.get("state") or "?"
+        rows += ("<tr><td>%s</td><td class=%s>%s</td><td>%s</td></tr>"
+                 % (_e(s.get("service") or s.get("name") or "?"), css.get(level, ""),
+                    _e(says), _e(s.get("status") or "")))
+        if s.get("log_tail"):
+            rows += ('<tr><td colspan=3><details><summary class=help>why it is '
+                     'failing</summary><pre class=logtail>%s</pre></details></td></tr>'
+                     % _e(s["log_tail"]))
     if not rows:
         return '<div class=note>The cluster is defined but nothing is running.</div>'
-    return ('<fieldset><legend>Running now</legend><table>'
-            '<tr><th>Service</th><th>State</th><th>Detail</th></tr>%s</table></fieldset>'
-            % rows)
+    banner = ""
+    bad = [s for s in status.get("services", []) if s.get("level") == "bad"]
+    if bad:
+        banner = ('<div class=problem><strong>%d map%s failing to start.</strong> This '
+                  'is not a slow first start - the server keeps aborting and restarting. '
+                  'Open the row below for the reason.</div>'
+                  % (len(bad), "" if len(bad) == 1 else "s"))
+    return (banner + '<fieldset><legend>Running now</legend><table>'
+            '<tr><th>Map</th><th>Doing</th><th>Container</th></tr>%s</table>'
+            '<div class=help style="margin-top:10px">A first start downloads about 12 GB '
+            'of game files and then generates the world, so it is normally slow. The '
+            'phase and elapsed time above are how you tell it is still moving.</div>'
+            '</fieldset>' % rows)
 
 
 def render_cluster(store, plan, status=None):

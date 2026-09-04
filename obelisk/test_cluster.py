@@ -493,5 +493,39 @@ check("a filesystem that refuses ownership is reported, not fatal", ok_chown is 
 check("and ensure_ark still returns its folders",
       len(layout.ensure_ark(os.path.join(tempfile.mkdtemp(), "a"), chown=_refuse)) > 0)
 
+
+# ---- launch refuses when the server could not write to its own folders
+# The silent version of this cost an hour: the container came up, looped on Permission
+# denied, installed nothing, and reported health: starting the whole time.
+class RootOwned:
+    st_uid = 0
+    st_gid = 0
+    st_mode = 0o755
+
+
+blocked = layout.not_writable_by_server("/ark", stat=lambda p: RootOwned())
+check("root-owned folders are reported as unwritable", blocked, blocked)
+check("and the report names the ownership", "owned by 0:0" in blocked[0], blocked[0])
+
+
+class ServerOwned:
+    st_uid = layout.SERVER_UID
+    st_gid = layout.SERVER_GID
+    st_mode = 0o755
+
+
+check("folders owned by the server's user are fine",
+      layout.not_writable_by_server("/ark", stat=lambda p: ServerOwned()) == [])
+
+
+class WorldWritable:
+    st_uid = 0
+    st_gid = 0
+    st_mode = 0o777
+
+
+check("world-writable folders are fine too",
+      layout.not_writable_by_server("/ark", stat=lambda p: WorldWritable()) == [])
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

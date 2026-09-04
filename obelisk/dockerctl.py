@@ -140,3 +140,38 @@ def existing_containers(timeout=30):
         if name:
             found[name] = project.strip()
     return found
+
+def container_details(names, timeout=30):
+    """Per-container facts the status page needs: state, health, restarts, uptime."""
+    import datetime
+    out = {}
+    for name in names:
+        fmt = ("{{.State.Status}}" + chr(9) +
+               "{{if .State.Health}}{{.State.Health.Status}}{{else}}{{end}}" + chr(9) +
+               "{{.RestartCount}}" + chr(9) + "{{.State.StartedAt}}")
+        rc, res = _run(["docker", "inspect", "-f", fmt, name], timeout=timeout)
+        if rc != 0:
+            continue
+        parts = res.strip().split(chr(9))
+        if len(parts) < 4:
+            continue
+        started, uptime = parts[3], None
+        try:
+            iso = started.split(".")[0].rstrip("Z")
+            began = datetime.datetime.strptime(iso, "%Y-%m-%dT%H:%M:%S")
+            uptime = max(0, int((datetime.datetime.utcnow() - began).total_seconds()))
+        except Exception:
+            uptime = None
+        try:
+            restarts = int(parts[2])
+        except ValueError:
+            restarts = 0
+        out[name] = {"state": parts[0].lower(), "health": parts[1].lower(),
+                     "restarts": restarts, "uptime_seconds": uptime}
+    return out
+
+
+def logs(name, tail=200, timeout=30):
+    """The tail of one container's log, for showing a person why it is unhappy."""
+    rc, out = _run(["docker", "logs", "--tail", str(tail), name], timeout=timeout)
+    return out if rc == 0 else ""

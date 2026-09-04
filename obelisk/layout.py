@@ -200,3 +200,28 @@ def verify(root, walker=None, readlink=None, exists=None):
             elif not exists(dest):
                 problems.append("%s is a broken link (-> %s)." % (full, target))
     return problems
+
+def not_writable_by_server(root, stat=None, uid=SERVER_UID, gid=SERVER_GID):
+    """Folders the server's user could not write to. [] means it can get to work.
+
+    The failure this catches is silent and expensive: the server loops on "Permission
+    denied", installs nothing, and reports `running (health: starting)` forever. Checked
+    before a launch so it is a refusal with a fix rather than an hour of watching a
+    progress bar that was never moving.
+    """
+    stat = stat or os.stat
+    problems = []
+    for name, path in sorted(ark_paths(root).items()):
+        try:
+            st = stat(path)
+        except OSError:
+            continue                       # not created yet; ensure_ark will make it
+        mode = getattr(st, "st_mode", 0)
+        owner_ok = getattr(st, "st_uid", uid) == uid and (mode & 0o200)
+        group_ok = getattr(st, "st_gid", gid) == gid and (mode & 0o020)
+        other_ok = mode & 0o002
+        if not (owner_ok or group_ok or other_ok):
+            problems.append("%s (owned by %s:%s, mode %o)"
+                            % (path, getattr(st, "st_uid", "?"),
+                               getattr(st, "st_gid", "?"), mode & 0o777))
+    return problems

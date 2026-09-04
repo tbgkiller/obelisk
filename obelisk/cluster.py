@@ -98,6 +98,15 @@ def launch(store, in_use_ports=None):
         return False, why
 
     prepare(store)
+
+    # prepare() hands the folders to the server's user; if that did not take, the server
+    # would come up, fail to write, and loop silently. Refuse instead.
+    blocked = layout.not_writable_by_server(layout.ark_root_of(store))
+    if blocked:
+        return False, ("The game server (user %d) cannot write to its own data folders, "
+                       "so it would start, fail to install, and restart forever without "
+                       "saying why. Fix the ownership of these and launch again: %s"
+                       % (layout.SERVER_UID, "; ".join(blocked[:4])))
     try:
         path, _text = write_compose(store, in_use_ports=in_use_ports)
     except ValueError as e:
@@ -150,7 +159,45 @@ def status(store):
         return out
     out["services"] = dockerctl.compose_ps(compose_path(store), project(store))
     out["running"] = sum(1 for s in out["services"] if s.get("state") == "running")
+    _enrich(out["services"])
+    out["trouble"] = [s for s in out["services"] if s.get("looping") or s.get("failure")]
     return out
+
+
+def _enrich(services):
+    """Add what the container is actually doing, and whether it is failing.
+
+    A container that aborts and restarts every few seconds reports `running` the whole
+    time. Reporting that as green is the bug this exists to prevent.
+    """
+    from . import progress
+    names = [s.get("name") for s in services if s.get("name")]
+    if not names:
+        return services
+    try:
+        details = dockerctl.container_details(names)
+    except Exception:
+        details = {}
+    for s in services:
+        d = details.get(s.get("name"), {})
+        s.update({k: d.get(k) for k in ("restarts", "uptime_seconds")})
+        if d.get("state"):
+            s["state"] = d["state"]
+        if d.get("health"):
+            s["health"] = d["health"]
+        s["looping"] = progress.looks_like_a_loop(d.get("restarts"), d.get("uptime_seconds"))
+        text = ""
+        if s["looping"] or s["state"] != "running" or (s.get("health") or "") != "healthy":
+            try:
+                text = dockerctl.logs(s["name"], tail=200)
+            except Exception:
+                text = ""
+        phase, percent, failure = progress.read_log(text)
+        s["phase"], s["percent"], s["failure"] = phase, percent, failure
+        s["log_tail"] = (chr(10).join(text.splitlines()[-12:])
+                         if (s["looping"] or failure) else "")
+        s["level"], s["says"] = progress.describe(s)
+    return services
 
 def save_world(store, rcon=None):
     """Ask every running map to write its world to disk. Returns (ok, detail).
