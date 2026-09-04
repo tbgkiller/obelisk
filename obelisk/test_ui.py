@@ -113,5 +113,23 @@ check("an error still renders above it",
       render_setup(error="nope").index("nope") <
       render_setup(error="nope").index("First time?"))
 
+
+# ---- the status page answers "what do I type in"
+from .ui import render_connect
+c = render_connect([("The Island", "192.168.1.50:7877"),
+                    ("The Center", "192.168.1.50:7878")],
+                   web_address="http://192.168.1.50:18091/")
+check("every map gets a connect address", "192.168.1.50:7877" in c and "192.168.1.50:7878" in c)
+check("the map names are shown", "The Island" in c and "The Center" in c)
+check("Obelisk's own address is shown", "http://192.168.1.50:18091/" in c)
+check("it says how to use it in game", "open &lt;address&gt;" in c or "Unofficial" in c)
+check("no panel before a cluster is defined", render_connect([]) == "")
+
+unknown = render_connect([("The Island", "<this-host>:7877")], host_known=False)
+check("an unknown host address is admitted, not hidden",
+      "cannot see the address" in unknown and "Server address" in unknown)
+check("a known host address needs no apology",
+      "cannot see the address" not in c)
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

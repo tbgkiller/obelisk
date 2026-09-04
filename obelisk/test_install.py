@@ -249,5 +249,24 @@ check("the logged URL carries the published port, not the listening one",
       "http://tower:18091/setup",
       setup_url({"HOST_HOSTNAME": "tower"}, published=18091))
 
+
+# ---- the server address is display-only, and never reaches the servers
+# Pinning an ASA server to one address stops Steam and Epic advertising it correctly on
+# a single host, so the generated cluster must never carry one.
+st_ip = Store(os.path.join(tempfile.mkdtemp(), "settings.json"))
+st_ip.data = {"version": 1, "cluster": {}, "maps": {}}
+st_ip.patch({"appdata": "/mnt/zfs/appdata/ark", "status_port": 18091}, source="install")
+st_ip.patch({"maps": "island", "admin_password": "synthetic-pw", "cluster_id": "ipcheck"})
+yml_ip = generate_compose(st_ip, project="ipcheck")
+check("no MULTIHOME in the generated cluster", "MULTIHOME" not in yml_ip)
+import re as _re
+check("no IP literal in the generated cluster",
+      not _re.search(r"\d{1,3}(?:\.\d{1,3}){3}", yml_ip),
+      _re.findall(r"\d{1,3}(?:\.\d{1,3}){3}", yml_ip))
+check("the server address is not passed to any map",
+      "OBELISK_HOST" not in yml_ip, [l for l in yml_ip.splitlines() if "OBELISK_HOST" in l])
+check("maps are reached by container name, not address",
+      "asa_island:" in yml_ip)
+
 print("\nFAILURES: %s" % fails if fails else "\nall install tests passed")
 sys.exit(1 if fails else 0)

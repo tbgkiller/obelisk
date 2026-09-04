@@ -47,6 +47,15 @@
           Mode="rw" Description="Lets Obelisk create and manage the map containers."
           Type="Path" Display="advanced" Required="true" Mask="false"/>
 
+  <Config Name="Server address" Target="OBELISK_HOST" Default=""
+          Description="Optional. The LAN IP or hostname players and admins use to reach
+          this box, e.g. 192.168.1.50. Leave blank to use the container's hostname.
+          This only affects the addresses Obelisk shows you - the setup URL in the log
+          and the connect lines on the status page. It is not needed to run the cluster,
+          and the game servers are never bound to it: pinning a server to one address
+          stops Steam and Epic advertising it correctly on a single host."
+          Type="Variable" Display="always" Required="false" Mask="false"/>
+
   <Config Name="WebUI port" Target="8088" Default="8088" Mode="tcp"
           Description="Status page and admin UI. Change the host side here and Obelisk
           follows it - there is no second port to keep in sync."

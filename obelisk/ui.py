@@ -442,3 +442,32 @@ def render_cloud(store, state, remote=None, message="", problem=""):
             '<div class=help style="margin-top:8px">Nothing is called connected until a '
             'test upload path actually answers.</div>'
             '</fieldset></form>' % opts)
+
+def render_connect(entries, web_address="", host_known=True):
+    """Where to actually connect, per map.
+
+    The one thing a status page is for is answering "what do I type in". A container
+    cannot see the address its host answers on, so this is only as good as what it was
+    told - and it says so rather than printing a confident guess.
+    """
+    if not entries:
+        return ""
+    rows = "".join(
+        "<tr><td>%s</td><td><code>%s</code></td></tr>" % (_e(n), _e(a))
+        for n, a in entries)
+    note = ""
+    if not host_known:
+        note = ('<div class=help>Obelisk cannot see the address this machine answers '
+                'on from inside a container, so it is showing its own host name. If '
+                'that is not what people type, set <b>Server address</b> in the '
+                'container template to your LAN IP - it changes these lines and nothing '
+                'else.</div>')
+    web = ""
+    if web_address:
+        web = ('<div class=help style="margin-bottom:8px">Obelisk itself: '
+               '<code>%s</code></div>' % _e(web_address))
+    return ('<fieldset><legend>Connect</legend>%s'
+            '<table><tr><th>Map</th><th>Address</th></tr>%s</table>'
+            '<div class=help style="margin-top:10px">In game: <b>Join ARK</b> &rarr; '
+            '<b>Unofficial</b>, or open the console and type '
+            '<code>open &lt;address&gt;</code>.</div>%s</fieldset>' % (web, rows, note))

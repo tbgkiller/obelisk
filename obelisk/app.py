@@ -150,6 +150,20 @@ def build_app(store, docker=None):
             raise web.HTTPFound("/setup")
         return _act(clusterctl.stop, request)
 
+    def _connect_panel():
+        """The addresses people actually type, once there are maps to type them for."""
+        try:
+            plan = build_plan(store)
+        except Exception:
+            return ""
+        if not plan.get("maps"):
+            return ""
+        host = install.host_address()
+        known = host != "<this-host>"
+        entries = [(r["name"], "%s:%d" % (host, r["game_port"])) for r in plan["maps"]]
+        web = "http://%s:%s/" % (host, store.get("status_port"))
+        return ui.render_connect(entries, web_address=web, host_known=known)
+
     # ---- backups
     def _flush_for(store_):
         """The SaveWorld callable, only when the operator asked for it."""
@@ -248,6 +262,7 @@ def build_app(store, docker=None):
             body = ('<div class=note>Cluster not running. %s</div>'
                     % (("Still to set: " + ", ".join(b["label"] for b in todo))
                        if todo else "Launch it from the Cluster tab."))
+        body += _connect_panel()
         return chrome(body, "Obelisk", "/")
 
     async def healthz(_request):
