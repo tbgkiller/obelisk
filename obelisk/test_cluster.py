@@ -465,5 +465,33 @@ pl_drift = build_plan(st_p2, in_use_ports={7877, 7878, 27920})
 check("and would have drifted without it",
       pl_drift["maps"][0]["game_port"] == 7879, pl_drift["maps"][0]["game_port"])
 
+
+# ---- the server has to be able to write to its own folders
+# Docker creates a missing bind-mount source as root, and Obelisk runs as root, so every
+# folder the game needs would be root-owned. The server does not fail loudly on that -
+# it loops on "Permission denied", installs nothing, and looks like a slow first start.
+owned = []
+r_own = os.path.join(tempfile.mkdtemp(), "ark")
+layout.ensure_ark(r_own, ["island"],
+                  chown=lambda p, u, g: owned.append((os.path.basename(p), u, g)))
+names = [o[0] for o in owned]
+check("every ark folder is handed to the server's user",
+      {"ServerFiles", "Mods", "shared", "SavedArks", "cluster", "instances"} <= set(names),
+      names)
+check("including the per-instance Saved folder", "Saved" in names, names)
+check("to the uid the server image runs as",
+      all(o[1:] == (layout.SERVER_UID, layout.SERVER_GID) for o in owned), owned[:2])
+check("which is 7777", layout.SERVER_UID == 7777)
+
+# a filesystem without ownership must warn, not abort the launch
+def _refuse(p, u, g):
+    raise OSError("read-only")
+
+
+ok_chown = layout.give_to_server(["/nowhere"], chown=_refuse)
+check("a filesystem that refuses ownership is reported, not fatal", ok_chown is False)
+check("and ensure_ark still returns its folders",
+      len(layout.ensure_ark(os.path.join(tempfile.mkdtemp(), "a"), chown=_refuse)) > 0)
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

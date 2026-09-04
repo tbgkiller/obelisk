@@ -23,7 +23,16 @@ Ark root, so "copy the portable part of the root" is complete by construction, a
 verify() says so out loud if a link ever points out of it again.
 """
 
-import os
+import logging, os
+
+log = logging.getLogger("obelisk.layout")
+
+# The server image runs as this user. Docker creates a missing bind-mount source as
+# root, and Obelisk itself runs as root, so every folder the game has to write would
+# otherwise be root-owned and the server would come up unable to install itself: it
+# loops on "Permission denied", downloads nothing, and looks like a slow first start.
+SERVER_UID = 7777
+SERVER_GID = 7777
 
 # ---- Obelisk data: the definition. Small, and entirely worth keeping.
 STORE_NAME = "settings.json"
@@ -111,8 +120,8 @@ def ensure_obelisk(root, makedirs=None):
     return made
 
 
-def ensure_ark(root, map_keys=(), makedirs=None):
-    """Create the Ark layout. Safe to repeat."""
+def ensure_ark(root, map_keys=(), makedirs=None, chown=None):
+    """Create the Ark layout, owned by the user the server runs as. Safe to repeat."""
     makedirs = makedirs or (lambda p: os.makedirs(p, exist_ok=True))
     p = ark_paths(root)
     made = []
@@ -124,7 +133,35 @@ def ensure_ark(root, map_keys=(), makedirs=None):
         d = instance_dir(root, key)
         makedirs(d)
         made.append(d)
+    give_to_server(made, chown=chown)
     return made
+
+
+def give_to_server(paths, chown=None, uid=SERVER_UID, gid=SERVER_GID):
+    """Hand these folders to the server's user.
+
+    Without this the game server cannot write into its own data folders. It does not
+    fail loudly - it retries, forever, having installed nothing, which reads as a slow
+    download rather than a broken one.
+
+    Best effort: a filesystem with no ownership (or a host that refuses) is reported and
+    carried on with, because refusing to launch over it would be worse.
+    """
+    # os.chown does not exist on every platform - a dev box is not the deployment
+    # target, and "this OS has no ownership" is not a failure worth shouting about.
+    chown = chown or getattr(os, "chown", None)
+    if chown is None:
+        return True
+    failed = []
+    for d in paths:
+        try:
+            chown(d, uid, gid)
+        except Exception as e:                 # no POSIX ownership, or not permitted
+            failed.append("%s (%s)" % (d, e))
+    if failed:
+        log.warning("could not give %d folder(s) to uid %d - the server may not be able "
+                    "to write to them: %s", len(failed), uid, "; ".join(failed[:3]))
+    return not failed
 
 
 def _resolve(link, target, root):
