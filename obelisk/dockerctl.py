@@ -101,3 +101,12 @@ def compose_ps(compose_file, project_name, timeout=60):
                      "status": d.get("Status", ""),
                      "health": (d.get("Health") or "").lower()})
     return rows
+
+def network_connect(network, container, timeout=30):
+    """Put `container` on `network`. Already-connected is success, not an error."""
+    rc, out = _run(["docker", "network", "connect", network, container], timeout=timeout)
+    if rc == 0:
+        return True, "connected"
+    if "already exists" in out or "already connected" in out:
+        return True, "already connected"
+    return False, out.strip()[-200:]

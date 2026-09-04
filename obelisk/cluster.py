@@ -101,9 +101,11 @@ def launch(store, in_use_ports=None):
     rc, out = _compose(store, "up", "-d", "--remove-orphans")
     if rc != 0:
         return False, "docker compose up failed:\n%s" % out[-1500:]
+
+    _join_network(store)
     n = len(plan["maps"])
-    return True, ("Cluster up: %d map%s plus Obelisk. First start downloads the game "
-                  "files once on %s and the others wait for it, so give it a while."
+    return True, ("Cluster up: %d map%s. First start downloads the game files once on "
+                  "%s and the others wait for it, so give it a while."
                   % (n, "" if n == 1 else "s", plan["maps"][0]["name"]))
 
 
@@ -174,3 +176,26 @@ def save_world(store, rcon=None):
         return True, "saved %d of %d maps; %s did not answer" % (
             len(done), len(servers), ", ".join(failed))
     return True, "saved %d map(s)" % len(done)
+
+def _join_network(store, environ=None):
+    """Put this container on the cluster's network so the maps are reachable by name.
+
+    Obelisk is not a service in the stack it generates - it is the thing that generates
+    it - so Docker does not attach it for us. Without this the manager could create maps
+    it could not then talk to over RCON.
+
+    Best effort: a cluster that is up but not yet reachable by name is still a working
+    cluster, and saying so beats failing a launch that succeeded.
+    """
+    environ = os.environ if environ is None else environ
+    me = (environ.get("HOSTNAME") or "").strip() or          (environ.get("HOST_CONTAINERNAME") or "").strip()
+    if not me:
+        return False, "could not tell which container this is"
+    net = "%s-net" % project(store)
+    ok, detail = dockerctl.network_connect(net, me)
+    if ok:
+        log.info("joined the cluster network %s (%s)", net, detail)
+    else:
+        log.warning("could not join the cluster network %s: %s - the maps are running, "
+                    "but chat relay and in-game commands will not reach them", net, detail)
+    return ok, detail

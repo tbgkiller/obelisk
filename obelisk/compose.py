@@ -40,10 +40,6 @@ def generate_compose(store, project="ark", in_use_ports=None):
     if not plan["ok"]:
         raise ValueError("can't generate this cluster: " + "; ".join(plan["problems"]))
     by_key = {r["map"]: r for r in plan["maps"]}
-    # label=host:port pairs so Obelisk can reach every map's RCON by name
-    servers = ",".join("%s=asa_%s:%d" % (r["name"], r["map"], r["rcon_port"])
-                       for r in plan["maps"])
-
     ark       = str(store.get("appdata")).rstrip("/")     # host path of the Ark folder
     paths     = layout.ark_paths(ark)
     serverfiles = paths["serverfiles"]
@@ -52,8 +48,6 @@ def generate_compose(store, project="ark", in_use_ports=None):
     rcon_base = int(store.get("rcon_port_base"))
     net       = "%s-net" % project
     master    = chosen[0]["key"]
-
-    # label=host:port pairs so the manager can reach every map's RCON by name
 
     L = [HEADER.format(project=project), "services:"]
 
@@ -131,39 +125,24 @@ def generate_compose(store, project="ark", in_use_ports=None):
             "",
         ]
 
-    # ---- the manager itself
+    # ---- no manager service here, on purpose
+    #
+    # Obelisk manages this cluster; it is not part of it. It is installed once, by hand
+    # or from the container template, and it creates, stops and relaunches the maps
+    # above. Writing itself into the file it generates meant that launching from an
+    # already-running Obelisk asked Docker to start a second one on the port the first
+    # was already bound to: a collision with itself, every time, reported as an error
+    # telling the operator to free a port that was already free.
+    #
+    # It also keeps the unit honest. This file is the cluster, so recreating it never
+    # touches the thing doing the recreating.
     L += [
-        "  obelisk:",
-        "    image: %s" % store.get("obelisk_image"),
-        "    container_name: obelisk",
-        "    restart: unless-stopped",
-        "    networks: [%s]" % net,
-        "    environment:",
-        "      TZ: %s"        % _q(store.get("timezone")),
-        "      SERVERS: %s"   % _q(servers),
-        "      RCON_PASSWORD: %s" % _q(store.get("admin_password")),
-        "      DISCORD_TOKEN: %s" % _q(store.get("discord_token")),
-        "      DISCORD_CHANNEL_ID: %s" % _q(store.get("discord_channel_id")),
-        # No STATUS_PORT: the container works out what it is published as by asking
-        # Docker, so there is no second number to keep in step with the mapping below.
-        "      OBELISK_DATA: \"/data\"",
-        "      OBELISK_ARK: \"/ark\"",
-        "    ports:",
-        # host port the operator chose : the port the image listens on
-        '      - "%s:%s"' % (store.get("status_port"), install.CONTAINER_PORT),
-        "    volumes:",
-        # Two mounts, because they are two different folders: the definition, and the
-        # bulk. Obelisk finds each host path back out of Docker, so neither is repeated
-        # as a variable that could drift.
-        '      - "%s:/data"' % _obelisk_host(store),
-        '      - "%s:/ark"' % paths["root"],
-        '      - "/var/run/docker.sock:/var/run/docker.sock"',
-        "",
         "networks:",
         "  %s:" % net,
         "    name: %s" % net,
         "",
     ]
+
     return "\n".join(L)
 
 

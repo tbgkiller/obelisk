@@ -93,23 +93,20 @@ def build_plan(store, in_use_ports=None, host_ram_gb=None):
     # ---- the things that make a stack unbootable, caught before it is written
     status_port = int(store.get("status_port"))
     if status_port in taken:
-        problems.append("Obelisk's own web port (%d) collides with a map - move the port "
-                        "base or change the web port in the container template." % status_port)
+        problems.append("A map has been given port %d, which is Obelisk's own web port. "
+                        "Move the port base, or change the WebUI port on this container."
+                        % status_port)
     if known_usage:
         clash = sorted(p for p in taken if p in in_use)
         if clash:
             problems.append("ports already in use on this host: %s"
                             % ", ".join(str(p) for p in clash))
-        # Obelisk publishes its own port in the stack it generates, so it has to be
-        # checked like any other. Leaving it out meant a launch passed review and then
-        # failed inside Docker with "port is already allocated" - a clear refusal here
-        # is the difference between a five-second fix and reading compose output.
-        if status_port and status_port in in_use:
-            problems.append(
-                "Obelisk's own web port (%d) is already in use on this host. The "
-                "generated stack publishes that port, so it would collide. Set "
-                "STATUS_PORT on this container to a free port and recreate it."
-                % status_port)
+        # Obelisk's own port is deliberately not checked against the host here. It is
+        # in use - by Obelisk, which is serving the page this plan is displayed on. The
+        # generated stack no longer contains a manager service, so nothing in it will
+        # try to bind that port. Checking it meant every launch from a running Obelisk
+        # was refused for colliding with itself, and told the operator to free a port
+        # that was already free.
     else:
         notes.append("Host port usage wasn't checked, so a clash with something outside "
                      "this cluster is still possible.")

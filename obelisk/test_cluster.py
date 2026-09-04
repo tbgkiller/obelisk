@@ -15,6 +15,7 @@ import io, os, sys, tempfile, yaml
 from . import cluster as clusterctl
 from . import layout
 from .compose import generate_compose
+from .plan import build_plan
 from .settings import Store
 
 fails = []
@@ -113,7 +114,8 @@ root = st.get("appdata")
 text = generate_compose(st, project="testcluster")
 doc = yaml.safe_load(text)
 check("compose is valid YAML", isinstance(doc, dict) and "services" in doc)
-check("a service per map plus Obelisk", set(doc["services"]) == {"island", "ragnarok", "obelisk"},
+# Only the maps: Obelisk manages this stack, it is not in it.
+check("a service per map, and nothing else", set(doc["services"]) == {"island", "ragnarok"},
       list(doc["services"]))
 
 vols = doc["services"]["island"]["volumes"]
@@ -126,20 +128,20 @@ check("transfer data mounts from the ark folder",
 check("the game install mounts from inside the ark folder",
       any(v.startswith(root + "/ServerFiles:") for v in vols), vols)
 
-ob = doc["services"]["obelisk"]
-# One mount, and the two sides no longer have to be the same string: Obelisk asks
-# Docker where /data comes from, which is what lets the install form ask once.
-check("Obelisk mounts the ark folder at /ark",
-      "%s:/ark" % root in ob["volumes"], ob["volumes"])
-check("and its own settings folder at /data",
-      any(v.endswith(":/data") for v in ob["volumes"]), ob["volumes"])
+# How Obelisk itself is installed is no longer described by the file it generates -
+# it is the manager, not a member. That contract lives in the compose example, which is
+# what an operator actually runs to install it, so it is checked there.
+example = io.open("docker/compose.example.yml", encoding="utf-8").read()
+ex = yaml.safe_load(example)["services"]["obelisk"]
+check("Obelisk installs with its own settings folder at /data",
+      any(v.endswith(":/data") for v in ex["volumes"]), ex["volumes"])
+check("and the ark folder at /ark",
+      any(v.endswith(":/ark") for v in ex["volumes"]), ex["volumes"])
 check("the two are different folders",
-      [v for v in ob["volumes"] if v.endswith(":/data")][0].split(":")[0] != root,
-      ob["volumes"])
-check("Obelisk gets the socket",
-      any("docker.sock" in v for v in ob["volumes"]), ob["volumes"])
-check("Obelisk's store is at /data", ob["environment"]["OBELISK_DATA"] == "/data")
-check("and the ark folder at /ark", ob["environment"]["OBELISK_ARK"] == "/ark")
+      [v.split(":")[0] for v in ex["volumes"] if v.endswith(":/data")] !=
+      [v.split(":")[0] for v in ex["volumes"] if v.endswith(":/ark")], ex["volumes"])
+check("and it gets the socket",
+      any("docker.sock" in v for v in ex["volumes"]), ex["volumes"])
 
 # mods and ordering survive into the stack
 st.patch({"mod_ids": "929110,940003"})
@@ -219,7 +221,8 @@ check("a launched root verifies clean", layout.verify(launch_root) == [],
       layout.verify(launch_root))
 written = io.open(clusterctl.compose_path(st), encoding="utf-8").read()
 check("what landed on disk is the generated compose",
-      "asa_island" in written and "obelisk:" in written)
+      "asa_island" in written and "services:" in written)
+check("and it does not contain the manager", "container_name: obelisk" not in written)
 check("the written compose is runnable by hand without Obelisk",
       "docker compose" in written.split("services:")[0], written[:200])
 
@@ -258,6 +261,53 @@ check("status before any launch is a normal empty state",
 ok, msg = clusterctl.stop(st3)
 check("stopping a cluster that was never launched explains itself",
       not ok and "never been launched" in msg, msg)
+
+
+# ---- launching from an already-running Obelisk must not collide with itself
+# The live failure: the generated stack contained a manager service publishing the same
+# port the running manager was already bound to. Every launch was refused for clashing
+# with itself, advising the operator to free a port that was already free.
+st_self, _d = fresh(maps="island", cluster_id="selftest")
+st_self.patch({"game_port_base": 7877, "rcon_port_base": 27920})
+st_self.patch({"status_port": 18091}, source="install")
+
+plan_self = build_plan(st_self, in_use_ports={18091, 8088, 7777, 27020})
+check("a plan is not blocked by Obelisk's own port being in use",
+      plan_self["ok"], plan_self["problems"])
+check("and nothing advises freeing a port",
+      not any("STATUS_PORT" in p for p in plan_self["problems"]), plan_self["problems"])
+
+yml_self = generate_compose(st_self, project="selftest")
+doc_self = yaml.safe_load(yml_self)
+check("the generated stack has no manager service",
+      "obelisk" not in doc_self["services"], list(doc_self["services"]))
+check("it is only the maps", set(doc_self["services"]) == {"island"},
+      list(doc_self["services"]))
+check("the manager's port appears nowhere in it", "18091" not in yml_self,
+      [l for l in yml_self.splitlines() if "18091" in l])
+check("the cluster network is still defined", "selftest-net" in yml_self)
+
+# a map is still not allowed to take the manager's port
+st_clash, _d2 = fresh(maps="island", cluster_id="clash")
+st_clash.patch({"status_port": 18091}, source="install")
+st_clash.patch({"game_port_base": 18091})
+pc = build_plan(st_clash, in_use_ports=set())
+check("a map given the manager's port is still refused", not pc["ok"], pc["problems"])
+check("and the reason names the map, not a phantom stack service",
+      any("Obelisk's own web port" in p for p in pc["problems"]), pc["problems"])
+
+# the manager joins the cluster network, so it can still reach the maps it made
+joined = []
+_fake_net = FakeDocker()
+_fake_net.network_connect = lambda net, name, timeout=30: (
+    joined.append((net, name)) or (True, "connected"))
+clusterctl.dockerctl = _fake_net
+clusterctl._join_network(st_self, environ={"HOSTNAME": "obelisk123"})
+check("the manager joins the cluster's network after launch",
+      joined == [("selftest-net", "obelisk123")], joined)
+_fake_net.network_connect = lambda net, name, timeout=30: (False, "boom")
+ok_j, _d3 = clusterctl._join_network(st_self, environ={"HOSTNAME": "obelisk123"})
+check("a failed join is reported but does not fail the launch", ok_j is False)
 
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

@@ -175,16 +175,20 @@ check("planning around live host ports", p["maps"][0]["game_port"] == 7778
       and p["maps"][0]["rcon_port"] == 27021, p["maps"][0])
 
 
-# ---- Obelisk's own published port is a port like any other. Leaving it out of the
-# check meant a launch passed review, then failed inside Docker with "port is already
-# allocated" - which reads like a bug in the cluster rather than a busy port.
+# ---- Obelisk's own port being busy is not a problem: Obelisk is what is using it.
+# The generated stack contains no manager service, so nothing in it competes for that
+# port. Treating it as a clash refused every launch from a running Obelisk, and told
+# the operator to free a port that was already free.
 st_p = store(maps="island")
 busy = int(st_p.get("status_port"))
 pl = build_plan(st_p, in_use_ports={busy})
-check("a busy Obelisk port blocks the launch", not pl["ok"], pl["problems"])
-check("and says which port and what to do about it",
-      any("own web port" in x and "STATUS_PORT" in x for x in pl["problems"]), pl["problems"])
-pl = build_plan(st_p, in_use_ports=set())
-check("a free Obelisk port is fine", pl["ok"], pl["problems"])
+check("Obelisk holding its own port does not block a launch", pl["ok"], pl["problems"])
+check("and no advice about freeing it is offered",
+      not any("STATUS_PORT" in x for x in pl["problems"]), pl["problems"])
+
+# a map handed that port is still refused - that is a real clash
+st_q = store(maps="island", game_port_base=int(store().get("status_port")))
+pq = build_plan(st_q, in_use_ports=set())
+check("a map given Obelisk's port is still refused", not pq["ok"], pq["problems"])
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

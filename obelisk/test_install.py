@@ -161,8 +161,8 @@ check("map saves come from the Ark folder",
       "/mnt/zfs/appdata/ark/instances/island/Saved" in yml)
 check("the game install is inside the Ark folder",
       "/mnt/zfs/appdata/ark/ServerFiles:/home/pok/arkserver" in yml)
-check("Obelisk mounts the Ark folder at /ark", '"/mnt/zfs/appdata/ark:/ark"' in yml)
-check("and its own folder at /data", ":/data\"" in yml, yml[-600:])
+check("the generated stack contains no manager service",
+      "container_name: obelisk" not in yml)
 check("no data path is passed as a variable",
       "APPDATA" not in yml and "STATUS_PORT" not in yml,
       [l for l in yml.splitlines() if "APPDATA" in l or "STATUS_PORT" in l])
@@ -206,14 +206,13 @@ st_three.patch({"maps": "island", "admin_password": "synthetic-pw",
                 "cluster_id": "threefield", "game_port_base": 7877,
                 "rcon_port_base": 27920})
 yml3 = generate_compose(st_three, project="threefield")
-check("the generated stack publishes the operator's port, not 8088",
-      '"18091:8088"' in yml3, [l for l in yml3.splitlines() if "18091" in l or "8088" in l])
-check("and never publishes 8088 on the host",
-      '"8088:8088"' not in yml3, yml3[-500:])
-check("no STATUS_PORT is passed to the generated container",
+# The manager is not in the stack, so its port must not appear there at all - that is
+# what stopped a launch from an already-running Obelisk colliding with itself.
+check("the generated stack never publishes the manager's port",
+      "18091" not in yml3, [l for l in yml3.splitlines() if "18091" in l])
+check("and never publishes 8088 on the host", '"8088:8088"' not in yml3, yml3[-500:])
+check("no STATUS_PORT is passed to anything",
       "STATUS_PORT" not in yml3, [l for l in yml3.splitlines() if "STATUS_PORT" in l])
-check("so nothing has to be hand-added to make the two agree",
-      yml3.count("18091") == 1, [l for l in yml3.splitlines() if "18091" in l])
 
 
 # ---- dual-stack publishing: the same port, twice
@@ -266,7 +265,7 @@ check("no IP literal in the generated cluster",
 check("the server address is not passed to any map",
       "OBELISK_HOST" not in yml_ip, [l for l in yml_ip.splitlines() if "OBELISK_HOST" in l])
 check("maps are reached by container name, not address",
-      "asa_island:" in yml_ip)
+      "container_name: asa_island" in yml_ip)
 
 print("\nFAILURES: %s" % fails if fails else "\nall install tests passed")
 sys.exit(1 if fails else 0)

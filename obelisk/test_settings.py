@@ -203,8 +203,9 @@ check("ports count up from the base", 'ASA_PORT: "7779"' in yml and 'RCON_PORT: 
 check("first map is the update master", "depends_on" in yml and yml.count("depends_on") == 2)
 check("per-map memory override honoured", "mem_limit: 32g" in yml and "mem_limit: 20g" in yml)
 check("session name is numbered after the prefix", 'SESSION_NAME: "TEST 03 | Scorched Earth"' in yml, yml)
-check("obelisk service is included", "container_name: obelisk" in yml)
-check("RCON map is passed to obelisk", "The Center=asa_center:27021" in yml, yml)
+# The manager is not in the stack it generates - it is the thing generating it.
+check("no manager service in the generated stack", "container_name: obelisk" not in yml)
+check("maps are addressable by container name", "container_name: asa_center" in yml, yml)
 # The data root carries the saves; the game install is deliberately outside it, which
 # is what keeps a backup of the root portable.
 check("the data root is used for saves",
