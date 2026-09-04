@@ -352,5 +352,30 @@ check("and leaves the channel ids at zero rather than crashing",
       _b2.DISCORD_CHANNEL_ID == 0 and _b2.ADMIN_CHANNEL_ID == 0)
 check("and the token empty", _b2.DISCORD_TOKEN == "")
 
+
+# ---- the entrypoint runs last, or it runs too early
+#
+# `if __name__ == "__main__": asyncio.run(main())` sat above _wire_relay(), so main()
+# called a name Python had not bound yet. Importing the module was fine, every test
+# passed, and the container exited on NameError - but only once a cluster was actually
+# running for the relay to pick up, which is the one path no test had exercised and the
+# one that matters in production. Nothing about the source looks wrong; the order is the
+# whole of it. So the order is what gets asserted.
+import ast as _ast
+import io as _io
+
+_src = _io.open(os.path.join(os.path.dirname(__file__), "app.py"), encoding="utf-8").read()
+_tree = _ast.parse(_src)
+_defs = [n.lineno for n in _tree.body
+         if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef))]
+_guards = [n.lineno for n in _tree.body if isinstance(n, _ast.If)
+           and _ast.dump(n.test).find("__main__") >= 0]
+check("app.py has exactly one __main__ guard", len(_guards) == 1, _guards)
+check("and nothing it calls is defined after it",
+      _guards and _defs and _guards[0] > max(_defs),
+      "guard at line %s, last definition at line %s" % (_guards[:1], max(_defs)))
+check("and it is the last statement in the file",
+      _guards and _guards[0] == max(n.lineno for n in _tree.body), _guards)
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

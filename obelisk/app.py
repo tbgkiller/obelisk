@@ -392,9 +392,6 @@ async def main():
     await asyncio.gather(*tasks)
 
 
-if __name__ == "__main__":
-    asyncio.run(main())
-
 def _wire_relay(store, bot):
     """Point the chat relay at this cluster's maps. Returns True if there are any.
 
@@ -450,3 +447,11 @@ _RELAY_SETTINGS = (
     ("join_leave", "JOIN_LEAVE", bool),
     ("welcome_enabled", "WELCOME_ENABLED", bool),
 )
+
+
+# Last in the file, and it has to stay last: everything main() reaches for must
+# already be defined by the time this line runs. Sitting above _wire_relay(), it
+# called a name that did not exist yet - so the container exited on NameError the
+# moment a cluster was actually running for the relay to pick up, and only then.
+if __name__ == "__main__":
+    asyncio.run(main())
