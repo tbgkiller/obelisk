@@ -59,12 +59,16 @@ def prepare(store, run=None):
     return made
 
 
-def write_compose(store, in_use_ports=None):
+def write_compose(store, in_use_ports=None, text=None):
     """Generate the compose file and put it in the data root. Returns (path, text).
 
     Raises ValueError if the cluster would not boot - a bad plan never reaches disk.
+
+    `text` lets a caller that has already generated the file hand it over rather than
+    generate it twice, which is what registering the stack first requires.
     """
-    text = generate_compose(store, project=project(store), in_use_ports=in_use_ports)
+    if text is None:
+        text = generate_compose(store, project=project(store), in_use_ports=in_use_ports)
     path = compose_path(store)
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
@@ -116,15 +120,21 @@ def launch(store, in_use_ports=None):
                        "saying why. Fix the ownership of these and launch again: %s"
                        % (layout.SERVER_UID, "; ".join(blocked[:4])))
     try:
-        path, _text = write_compose(store, in_use_ports=in_use_ports)
+        text = generate_compose(store, project=project(store), in_use_ports=in_use_ports)
     except ValueError as e:
         return False, str(e)
 
-    # Register before bringing it up, so the stack exists in the UI from the first
-    # moment its containers do.
-    ok_s, detail_s = stack.register(store, project(store), _text)
+    # Register before the compose file is written, not after - and the order is the whole
+    # point. Writing that file creates the project directory, and a project directory
+    # with no marker in it is exactly what register refuses to touch, because that is
+    # what somebody else's cluster looks like. Registering second meant a new cluster
+    # collided with a folder it had made itself one line earlier and could never claim
+    # its own stack on the launch that created it.
+    ok_s, detail_s = stack.register(store, project(store), text)
     if not ok_s:
         log.info("stack not registered (%s) - the cluster still runs", detail_s)
+
+    write_compose(store, text=text)
 
     rc, out = _compose(store, "up", "-d", "--remove-orphans")
     if rc != 0:

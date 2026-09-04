@@ -600,5 +600,84 @@ for svc, game, rcon in (("island", 7877, 27920), ("ragnarok", 7878, 27921)):
 check("the two instances do not share a game port",
       doc_pp["services"]["island"]["ports"][0] != doc_pp["services"]["ragnarok"]["ports"][0])
 
+
+# ---- a new cluster claims its own stack on the launch that creates it
+#
+# The compose file lives inside the Compose Manager project folder, so writing it is
+# what brings that folder into existence. register() refuses a folder with no marker in
+# it, because a folder with no marker is what somebody else's cluster looks like - so
+# writing first and registering second meant a brand-new cluster collided with a
+# directory it had made itself one line earlier. It launched, and then ran as loose
+# containers forever, because nothing ever claimed the stack. Order is the whole fix.
+from . import stack as stackmod
+
+_proj_dir, _ark_dir = tempfile.mkdtemp(), tempfile.mkdtemp()
+os.environ["OBELISK_PROJECTS"], os.environ["OBELISK_ARK"] = _proj_dir, _ark_dir
+_not_writable = layout.not_writable_by_server
+layout.not_writable_by_server = lambda root, **kw: []     # ownership is a Linux concern
+clusterctl.dockerctl = FakeDocker()
+calls.clear()
+
+st_fs, _dfs = fresh(cluster_id="freshstack")
+ok_fs, msg_fs = clusterctl.launch(st_fs)
+_d = os.path.join(_proj_dir, "freshstack")
+
+check("a brand-new cluster launches", ok_fs, msg_fs)
+check("and claims its own stack on that very first launch",
+      os.path.isfile(os.path.join(_d, stackmod.MARKER)),
+      sorted(os.listdir(_d)) if os.path.isdir(_d) else "no project dir at all")
+check("the marker names the project it belongs to",
+      open(os.path.join(_d, stackmod.MARKER), encoding="utf-8").read().strip()
+      == "freshstack")
+check("and the compose file is there for the plugin to run",
+      os.path.isfile(os.path.join(_d, "compose.yaml")))
+check("compose was driven against that same file",
+      calls and calls[-1][0] == os.path.join(_d, "compose.yaml"), calls)
+
+# The refusal it is ordered around still has to work: somebody else's project of the
+# same name is left completely alone.
+st_th, _dth = fresh(cluster_id="theirs")
+_theirs = os.path.join(_proj_dir, "theirs")
+os.makedirs(_theirs)
+with open(os.path.join(_theirs, "compose.yaml"), "w", encoding="utf-8") as fh:
+    fh.write("# hand-built, not ours\n")
+ok_th, _m = clusterctl.launch(st_th)
+check("a project we did not create is never marked as ours",
+      not os.path.exists(os.path.join(_theirs, stackmod.MARKER)),
+      sorted(os.listdir(_theirs)))
+
+layout.not_writable_by_server = _not_writable
+del os.environ["OBELISK_PROJECTS"]
+del os.environ["OBELISK_ARK"]
+
+
+
+# ---- every folder on the way to a save is handed to the server, not just the last one
+#
+# The mount lands on instances/<key>/Saved, so makedirs creates instances/<key> on the
+# way there. Naming only the leaf meant that parent stayed owned by root. The server
+# writes inside Saved so nothing broke, which is what makes it worth a test: it is the
+# quiet half of the failure that does break things - a folder Docker creates at mount
+# time, owned by root, that the server cannot write.
+_own_root = os.path.join(tempfile.mkdtemp(), "ark")
+_owned = []
+
+
+def _record_chown(path, uid, gid):
+    _owned.append(path)
+    return True
+
+
+layout.ensure_ark(_own_root, ["island", "ragnarok"], chown=_record_chown)
+for _key in ("island", "ragnarok"):
+    _saved = layout.instance_dir(_own_root, _key)
+    check("%s's Saved folder is handed to the server" % _key, _saved in _owned)
+    check("and so is the instance folder holding it",
+          os.path.dirname(_saved) in _owned,
+          [x for x in _owned if _key in x])
+check("nothing is handed over twice for one instance",
+      len(_owned) == len(set(_owned)), sorted(_owned))
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)
