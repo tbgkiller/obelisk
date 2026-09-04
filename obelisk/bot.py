@@ -75,8 +75,11 @@ CLUSTER_NAME = os.environ.get("CLUSTER_NAME", "ARK Cluster")
 STATUS_PORT = int(os.environ.get("STATUS_PORT", "8088"))
 STATS_FILE = os.environ.get("STATS_FILE", "/home/pok/shared/cluster_stats.json")
 
-if not SERVERS or not RCON_PASSWORD:
-    log.error("SERVERS and RCON_PASSWORD must be set"); sys.exit(1)
+# A cluster that hasn't been created yet is the normal state on a fresh install, not an
+# error: Obelisk is the thing you use to create it. Importing this module must therefore
+# never kill the process - the entrypoint keeps serving the setup UI and starts the relay
+# only once there are maps to relay between.
+CLUSTER_CONFIGURED = bool(SERVERS and RCON_PASSWORD)
 
 # ---------------------------------------------------------------- Source RCON
 SERVERDATA_AUTH, SERVERDATA_EXECCOMMAND, SERVERDATA_RESPONSE_VALUE = 3, 2, 0
@@ -727,4 +730,8 @@ async def main():
     await asyncio.gather(*tasks)
 
 if __name__ == "__main__":
+    if not CLUSTER_CONFIGURED:
+        log.error("SERVERS and RCON_PASSWORD must be set to run the relay on its own; "
+                  "run `python -m obelisk.app` for the full container entrypoint")
+        sys.exit(1)
     asyncio.run(main())

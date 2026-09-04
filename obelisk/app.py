@@ -1,0 +1,169 @@
+"""
+The container entrypoint.
+
+The first thing Obelisk owes you is an explanation. Whatever is wrong - no Docker
+socket, no cluster yet, a setting it can't use - it has to come up, listen on its port
+and say so in the browser. A container that exits because something is missing gives
+you a dead container and `connection refused`, which is the same symptom as a wrong
+port, a wrong IP, a crashed process and a firewall. That is a black box, and the moment
+you most need a working UI is the moment before you have finished setting things up.
+
+So: bootstrap the store, start the web server, and only then look at the world. Docker
+being unreachable is a banner on the page, not a reason to die. The chat relay starts
+only when there is a cluster to relay between, which on a fresh install there isn't.
+"""
+
+import asyncio, logging, os, sys
+
+from . import dockerctl, install, ui
+from .firstrun import bootstrap
+from .settings import Invalid
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
+                    stream=sys.stdout)
+log = logging.getLogger("obelisk.app")
+
+COOKIE = "obelisk_session"
+
+
+def docker_state():
+    """(ok, message) - checked at boot and shown in the UI, never fatal."""
+    try:
+        return dockerctl.available()
+    except Exception as e:                      # a broken socket must not stop the UI
+        return False, "couldn't check Docker: %s" % e
+
+
+def build_app(store, docker=None):
+    """The web application. Separated from serving so tests can drive it directly."""
+    from aiohttp import web
+
+    docker = docker if docker is not None else docker_state()
+
+    def authed(request):
+        token = str(store.get("admin_token") or "")
+        return bool(token) and request.cookies.get(COOKIE) == token
+
+    def chrome(body, title, nav_on=""):
+        ok, msg = docker
+        if not ok:
+            body = ('<div class=problem><strong>Docker not connected.</strong> %s '
+                    'Obelisk is running and you can finish setup, but it cannot create '
+                    'or manage map containers until this is fixed.</div>%s'
+                    % (ui._e(msg), body))
+        return web.Response(text=ui.page(title, body, nav_on), content_type="text/html")
+
+    async def setup_page(request):
+        if authed(request):
+            raise web.HTTPFound("/admin")
+        return chrome(ui.render_setup(), "Set up Obelisk")
+
+    async def setup_submit(request):
+        form = await request.post()
+        token = str(store.get("admin_token") or "")
+        if not token or form.get("code", "") != token:
+            return chrome(ui.render_setup(error="That code doesn't match. It is printed "
+                                                "in the container log at startup."),
+                          "Set up Obelisk")
+        resp = web.HTTPFound("/admin")
+        resp.set_cookie(COOKIE, token, httponly=True, samesite="Lax")
+        raise resp
+
+    async def admin(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        return chrome(ui.render_settings(store), "Obelisk settings", "/admin")
+
+    async def save(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        changes = {k: v for k, v in form.items() if k != "code"}
+        # A password left blank means "leave it alone", never "erase it".
+        for key, value in list(changes.items()):
+            if value == "" and _is_password(key):
+                changes.pop(key)
+        try:
+            store.patch(changes)
+            store.save()
+            install.apply_timezone(store.get("timezone"))
+        except Invalid as e:
+            return chrome('<div class=problem>%s</div>%s'
+                          % (ui._e(str(e)), ui.render_settings(store)),
+                          "Obelisk settings", "/admin")
+        raise web.HTTPFound("/admin")
+
+    async def root(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        todo = store.readiness()
+        body = ('<div class=note>Cluster not created yet. %s</div>'
+                % (("Still to set: " + ", ".join(b["label"] for b in todo))
+                   if todo else "Ready to launch from the Cluster tab."))
+        return chrome(body, "Obelisk", "/")
+
+    async def healthz(_request):
+        ok, msg = docker
+        return web.json_response({"ok": True, "docker": ok, "docker_detail": msg,
+                                  "ready": not store.readiness()})
+
+    app = web.Application()
+    app.router.add_get("/", root)
+    app.router.add_get("/setup", setup_page)
+    app.router.add_post("/setup", setup_submit)
+    app.router.add_get("/admin", admin)
+    app.router.add_post("/admin/save", save)
+    app.router.add_get("/healthz", healthz)
+    return app
+
+
+def _is_password(key):
+    from .schema import BY_KEY
+    return BY_KEY.get(key, {}).get("type") == "password"
+
+
+async def serve(store, port):
+    from aiohttp import web
+    app = build_app(store)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", port).start()
+    log.info("web UI on http://0.0.0.0:%d/  (setup at /setup)", port)
+    while True:                                  # serve forever
+        await asyncio.sleep(3600)
+
+
+async def main():
+    store, created, code = bootstrap()
+
+    ok, msg = docker_state()
+    if ok:
+        log.info("docker: %s", msg)
+    else:
+        # Loud, but not fatal. The same sentence appears in the UI.
+        log.warning("docker not connected: %s", msg)
+        log.warning("the web UI still works - finish setup there; map containers "
+                    "cannot be created until the socket is mounted")
+
+    port, _ = install.derive_status_port()
+    tasks = []
+    if port > 0:
+        tasks.append(asyncio.create_task(serve(store, port)))
+    else:
+        log.warning("web UI disabled (port 0)")
+
+    from . import bot
+    if bot.CLUSTER_CONFIGURED:
+        log.info("cluster configured - starting the chat relay")
+        tasks.append(asyncio.create_task(bot.main()))
+    else:
+        log.info("no cluster yet - relay idle until maps are launched")
+
+    if not tasks:
+        log.error("nothing to run: web UI is off and no cluster is configured")
+        return
+    await asyncio.gather(*tasks)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

@@ -28,4 +28,4 @@ COPY obelisk/ /app/obelisk/
 ENV PYTHONUNBUFFERED=1 OBELISK_DATA=/data
 VOLUME ["/data"]
 EXPOSE 8088
-CMD ["python", "-m", "obelisk.bot"]
+CMD ["python", "-m", "obelisk.app"]
