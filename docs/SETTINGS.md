@@ -166,7 +166,7 @@ web UI after it is running.
 | Status page port | `status_port` | port | `8088` | container template | recreate |
 | Admin token | `admin_token` | password | `` | UI | reload |
 | Player count refresh | `online_poll_seconds` | int | `60` | UI | reload |
-| Time zone | `timezone` | text | `UTC` | container template | recreate |
+| Time zone | `timezone` | choice | `UTC` | UI | reload |
 
 **Status page port** - The read-only status page and the admin UI. 0 turns both off.
 
@@ -174,7 +174,7 @@ web UI after it is running.
 
 **Player count refresh** - Seconds between cluster-wide player count refreshes. 0 disables.
 
-**Time zone** - Drives wipe times, restart windows and log timestamps.
+**Time zone** - Drives wipe times, restart windows and log timestamps. Picked from the IANA zone list rather than typed: "chicago" and "CST" are not zones, and a name the server can't resolve silently leaves it on UTC.
 
 
 ## Resources

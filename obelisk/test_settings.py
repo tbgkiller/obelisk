@@ -173,8 +173,11 @@ st_p.patch({"appdata": "/mnt/user/somewhere", "status_port": 9000}, source="inst
 check("the container can set them at boot", st_p.get("appdata") == "/mnt/user/somewhere"
       and st_p.get("status_port") == 9000)
 check("the UI can still change everything else", st_p.patch({"max_players": 30}) != set())
+# Only what Docker genuinely fixes at create time belongs here. Timezone used to be on
+# this list and wasn't boot-critical - it is a UI setting now, picked from the zone list.
 check("install list is short and honest", sorted(INSTALL_KEYS) ==
-      ["appdata", "status_port", "timezone"], INSTALL_KEYS)
+      ["appdata", "status_port"], INSTALL_KEYS)
+check("timezone is not an install setting", "timezone" not in INSTALL_KEYS)
 rows = st_p.install_settings()
 check("install settings are exposed for a read-only panel",
       {r["key"] for r in rows} == set(INSTALL_KEYS) and all(r["help"] for r in rows), rows)

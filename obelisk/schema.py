@@ -26,6 +26,36 @@ Adding a setting means adding a dict here. There is no UI code to touch.
 # --- types -----------------------------------------------------------------
 # text longtext password int bool choice csv memory times minutes port
 
+def _timezones():
+    """Valid IANA zone names for the picker.
+
+    Read from the system's tz database when there is one, so the list matches what the
+    container can actually resolve. The fallback keeps the field usable on an image
+    without tzdata instead of offering an empty dropdown.
+    """
+    try:
+        from zoneinfo import available_timezones
+        zones = {z for z in available_timezones() if "/" in z or z == "UTC"}
+        if len(zones) > 50:
+            return ["UTC"] + sorted(zones - {"UTC"})
+    except Exception:
+        pass
+    return ["UTC", "America/Anchorage", "America/Chicago", "America/Denver",
+            "America/Halifax", "America/Los_Angeles", "America/Mexico_City",
+            "America/New_York", "America/Phoenix", "America/Sao_Paulo",
+            "America/Toronto", "Asia/Dubai", "Asia/Hong_Kong", "Asia/Kolkata",
+            "Asia/Seoul", "Asia/Shanghai", "Asia/Singapore", "Asia/Tokyo",
+            "Australia/Brisbane", "Australia/Melbourne", "Australia/Perth",
+            "Australia/Sydney", "Europe/Amsterdam", "Europe/Berlin", "Europe/Dublin",
+            "Europe/Helsinki", "Europe/Lisbon", "Europe/London", "Europe/Madrid",
+            "Europe/Moscow", "Europe/Oslo", "Europe/Paris", "Europe/Prague",
+            "Europe/Rome", "Europe/Stockholm", "Europe/Warsaw", "Europe/Zurich",
+            "Pacific/Auckland", "Pacific/Honolulu"]
+
+
+TIMEZONES = _timezones()
+
+
 SETTINGS = [
     # ---------------------------------------------------------------- Identity
     dict(key="session_prefix", label="Server name prefix", group="Identity",
@@ -193,10 +223,11 @@ SETTINGS = [
          apply="reload", help="Seconds between cluster-wide player count refreshes. 0 disables."),
 
     dict(key="timezone", label="Time zone", group="Obelisk",
-         type="text", default="UTC", target="env:TZ", apply="recreate",
-         phase="install",
-         pattern=r"^[A-Za-z_]+(/[A-Za-z_+-]+){0,2}$",
-         help="Drives wipe times, restart windows and log timestamps."),
+         type="choice", default="UTC", choices=TIMEZONES, target="env:TZ",
+         apply="reload",
+         help="Drives wipe times, restart windows and log timestamps. Picked from the "
+              "IANA zone list rather than typed: \"chicago\" and \"CST\" are not zones, "
+              "and a name the server can't resolve silently leaves it on UTC."),
 
     # ---------------------------------------------------------------- Resources
     dict(key="mem_limit", label="RAM cap per map", group="Resources",
