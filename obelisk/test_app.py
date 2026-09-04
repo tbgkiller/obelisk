@@ -13,6 +13,7 @@ import asyncio, os, sys, tempfile
 from aiohttp.test_utils import TestClient, TestServer
 
 from .app import build_app, COOKIE
+from .settings import Store
 from .firstrun import bootstrap
 
 fails = []
@@ -286,5 +287,70 @@ async def run():
 
 
 asyncio.run(run())
+
+# ---- the relay is wired from the store, Discord included
+#
+# The maps were fixed once already: the relay read SERVERS from the environment, so a
+# normally-installed Obelisk relayed nothing. The Discord half had the identical bug and
+# outlived the fix - a token typed into the admin page sat in settings.json while the bot
+# kept reading an empty env var, and chat relayed map to map with no Discord and no
+# complaint. Three of these are named differently on the two sides, which is precisely
+# how a near-miss survives review.
+from . import app as appmod
+from . import cluster as clusterctl_t
+
+
+class _Bot:
+    SERVERS, RCON_PASSWORD, CLUSTER_NAME = {}, "", "Cluster"
+    DISCORD_TOKEN, DISCORD_INVITE = "", ""
+    DISCORD_CHANNEL_ID = TRIBELOG_CHANNEL_ID = ADMIN_CHANNEL_ID = ADMIN_ROLE_ID = 0
+    JOIN_LEAVE = WELCOME_ENABLED = False
+    CLUSTER_CONFIGURED = False
+
+
+_d = tempfile.mkdtemp()
+_st = Store(os.path.join(_d, "settings.json")).load()
+_st.patch({"appdata": "/srv/ark", "status_port": 8088}, source="install")
+_st.patch({"maps": "island,center", "admin_password": "synthetic-pw",
+           "cluster_id": "relaytest", "cluster_name": "Relay Test",
+           "discord_token": "synthetic-token", "discord_channel_id": "1152353384062525490",
+           "discord_tribelog_channel_id": "1152619270581276745",
+           "discord_admin_channel_id": "1152467398188859392",
+           "discord_invite": "https://discord.gg/synthetic", "join_leave": True})
+
+_saved_running = clusterctl_t.running_instances
+clusterctl_t.running_instances = lambda store: [("The Island", "asa-relaytest-island", 27020),
+                                                ("The Center", "asa-relaytest-center", 27021)]
+_b = _Bot()
+_ok = appmod._wire_relay(_st, _b)
+clusterctl_t.running_instances = _saved_running
+
+check("the relay is configured from the store", _ok and _b.CLUSTER_CONFIGURED)
+check("every running map is addressed by container name",
+      _b.SERVERS == {"The Island": ("asa-relaytest-island", 27020),
+                     "The Center": ("asa-relaytest-center", 27021)}, _b.SERVERS)
+check("the RCON password comes from the store", _b.RCON_PASSWORD == "synthetic-pw")
+check("and so does the Discord token", _b.DISCORD_TOKEN == "synthetic-token")
+check("the relay channel id is carried across as a number",
+      _b.DISCORD_CHANNEL_ID == 1152353384062525490, _b.DISCORD_CHANNEL_ID)
+check("the tribe log channel too, under the name the relay uses",
+      _b.TRIBELOG_CHANNEL_ID == 1152619270581276745, _b.TRIBELOG_CHANNEL_ID)
+check("and the admin channel, likewise renamed",
+      _b.ADMIN_CHANNEL_ID == 1152467398188859392, _b.ADMIN_CHANNEL_ID)
+check("the invite reaches the in-game !discord command",
+      _b.DISCORD_INVITE == "https://discord.gg/synthetic", _b.DISCORD_INVITE)
+check("join/leave announcements follow the setting", _b.JOIN_LEAVE is True)
+
+# Blank is the ordinary case - no Discord, map-to-map only - and must not raise.
+_st.patch({"discord_token": "", "discord_channel_id": "", "discord_admin_channel_id": ""})
+clusterctl_t.running_instances = lambda store: [("The Island", "asa-relaytest-island", 27020)]
+_b2 = _Bot()
+_ok2 = appmod._wire_relay(_st, _b2)
+clusterctl_t.running_instances = _saved_running
+check("a cluster with no Discord still wires its maps", _ok2 and _b2.SERVERS)
+check("and leaves the channel ids at zero rather than crashing",
+      _b2.DISCORD_CHANNEL_ID == 0 and _b2.ADMIN_CHANNEL_ID == 0)
+check("and the token empty", _b2.DISCORD_TOKEN == "")
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

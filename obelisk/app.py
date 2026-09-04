@@ -411,5 +411,42 @@ def _wire_relay(store, bot):
     bot.SERVERS = {label: (host, port) for label, host, port in targets}
     bot.RCON_PASSWORD = str(store.get("admin_password") or "")
     bot.CLUSTER_NAME = str(store.get("cluster_name") or bot.CLUSTER_NAME)
+
+    # The Discord half has to come across too. The relay reads these from its own module
+    # globals, seeded once from the environment - so a token typed into the admin page
+    # sat in settings.json while the bot went on looking at an empty env var and relayed
+    # map to map only, silently. Same shape as the map list before it: the setting is
+    # stored in one place and read from another, and nothing says so.
+    for key, attr, cast in _RELAY_SETTINGS:
+        try:
+            setattr(bot, attr, cast(store.get(key)))
+        except (TypeError, ValueError):
+            log.warning("ignoring unusable value for %s", key)
+
     bot.CLUSTER_CONFIGURED = bool(bot.SERVERS and bot.RCON_PASSWORD)
     return bot.CLUSTER_CONFIGURED
+
+
+def _id(v):
+    """A Discord snowflake from the store, or 0. Blank is normal, not an error."""
+    s = str(v or "").strip()
+    return int(s) if s.isdigit() else 0
+
+
+def _text(v):
+    return str(v or "").strip()
+
+
+# store key -> the relay's own global, and how to read it. Spelled out rather than
+# derived from the schema's env: targets, because three of them are named differently on
+# the two sides and a silent near-miss is exactly the bug above.
+_RELAY_SETTINGS = (
+    ("discord_token", "DISCORD_TOKEN", _text),
+    ("discord_channel_id", "DISCORD_CHANNEL_ID", _id),
+    ("discord_tribelog_channel_id", "TRIBELOG_CHANNEL_ID", _id),
+    ("discord_admin_channel_id", "ADMIN_CHANNEL_ID", _id),
+    ("discord_admin_role_id", "ADMIN_ROLE_ID", _id),
+    ("discord_invite", "DISCORD_INVITE", _text),
+    ("join_leave", "JOIN_LEAVE", bool),
+    ("welcome_enabled", "WELCOME_ENABLED", bool),
+)

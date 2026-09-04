@@ -132,6 +132,11 @@ def ensure_ark(root, map_keys=(), makedirs=None, chown=None):
     for key in map_keys:
         d = instance_dir(root, key)
         makedirs(d)
+        # The instance folder is created on the way to Saved, so it has to be handed
+        # over too. Only naming the leaf left every per-instance folder owned by root -
+        # invisible while the server writes solely inside Saved, and a trap for anything
+        # that ever needs to put a file beside it.
+        made.append(os.path.dirname(d))
         made.append(d)
     give_to_server(made, chown=chown)
     return made

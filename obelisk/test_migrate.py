@@ -150,5 +150,36 @@ check("per-map memory is adopted too",
       st.data["maps"].get("astraeos", {}).get("mem_limit") == "32g", st.data["maps"])
 check("and it reports what it changed", "cluster_id" in changed and "mod_ids" in changed)
 
+
+# ---- the update master, while the migration is still running
+#
+# The settled cluster's master is its first map, and that is the island - the one thing
+# that deliberately moves last. So for the whole of a rolling migration there is no
+# master, and a follower that finds a new build published waits for one that will not
+# arrive. It looks exactly like a slow start, which is how it cost a map twenty minutes
+# of silence before anyone learned it was never going to come up.
+order = migrate.migration_order(["island", "center", "scorched", "astraeos"])
+check("the master during a migration is the first map that moved",
+      migrate.master_instance(order) == "center", order)
+check("which is never the map that migrates last",
+      migrate.master_instance(order) != migrate.LAST)
+check("and a single-map migration still has a master",
+      migrate.master_instance(["genesis"]) == "genesis")
+
+# ---- the gate that turns a twenty-minute silence into a sentence
+ok_b, msg_b = migrate.build_gate("25090264", "25090264", master_running=False)
+check("matching builds need no master at all", ok_b, msg_b)
+
+ok_b, msg_b = migrate.build_gate("25090264", "25117056", master_running=True)
+check("a new build is fine when the master is up to fetch it", ok_b, msg_b)
+
+ok_b, msg_b = migrate.build_gate("25090264", "25117056", master_running=False)
+check("a new build with no master refuses the cutover", not ok_b, msg_b)
+check("and the refusal names both builds",
+      "25090264" in msg_b and "25117056" in msg_b, msg_b)
+check("and says what to do instead", "pre-stage" in msg_b and "pin" in msg_b, msg_b)
+check("an unknown build id is not treated as a mismatch",
+      migrate.build_gate("", "25117056", master_running=False)[0])
+
 print("\nFAILURES: %s" % fails if fails else "\nall migrate tests passed")
 sys.exit(1 if fails else 0)
