@@ -178,6 +178,9 @@ class FakeDocker:
     def ports_in_use(self):
         return set()
 
+    def existing_containers(self, timeout=30):
+        return {}                      # a clean host unless a test says otherwise
+
 
 st, d = fresh()
 fake = FakeDocker()
@@ -221,7 +224,7 @@ check("a launched root verifies clean", layout.verify(launch_root) == [],
       layout.verify(launch_root))
 written = io.open(clusterctl.compose_path(st), encoding="utf-8").read()
 check("what landed on disk is the generated compose",
-      "asa_island" in written and "services:" in written)
+      "asa-testcluster-island" in written and "services:" in written)
 check("and it does not contain the manager", "container_name: obelisk" not in written)
 check("the written compose is runnable by hand without Obelisk",
       "docker compose" in written.split("services:")[0], written[:200])
@@ -308,6 +311,75 @@ check("the manager joins the cluster's network after launch",
 _fake_net.network_connect = lambda net, name, timeout=30: (False, "boom")
 ok_j, _d3 = clusterctl._join_network(st_self, environ={"HOSTNAME": "obelisk123"})
 check("a failed join is reported but does not fail the launch", ok_j is False)
+
+
+# ---- a second cluster must never be able to claim the first one's containers
+# The live failure: a test cluster generated `container_name: asa_island` while a
+# hand-built cluster was running a container of exactly that name. Docker refused, which
+# is the only reason this was an aborted launch and not a replaced game server - after
+# it had already created a network. Names are namespaced by cluster now, and a launch
+# that would still collide is refused before anything is created.
+from .compose import container_name
+
+check("container names carry the cluster id",
+      container_name("arkcluster", "island") == "asa-arkcluster-island",
+      container_name("arkcluster", "island"))
+check("which is not the bare name a hand-built cluster uses",
+      container_name("arkcluster", "island") != "asa_island")
+check("two clusters with the same maps get different names",
+      container_name("clusterA", "island") != container_name("clusterB", "island"))
+
+st_n, _dn = fresh(maps="island,ragnarok", cluster_id="testcluster")
+yml_n = generate_compose(st_n, project="testcluster")
+check("the generated stack uses namespaced names",
+      "container_name: asa-testcluster-island" in yml_n, yml_n[:400])
+check("and never the bare form", "container_name: asa_island" not in yml_n)
+
+# preflight: the exact live-cluster situation
+live = {"asa_island": "ark-asa", "asa_ragnarok": "ark-asa", "asa_crosschat": "ark-asa"}
+ok_n, msg_n = clusterctl.name_conflicts(st_n, existing=live)
+check("namespaced names do not collide with a live cluster", ok_n, msg_n)
+
+# and if a name really is taken, refuse with the reason
+taken = {"asa-testcluster-island": "someone-elses-project"}
+ok_c, msg_c = clusterctl.name_conflicts(st_n, existing=taken)
+check("a genuinely taken name is refused", not ok_c, msg_c)
+check("the message names the container and its owner",
+      "asa-testcluster-island" in msg_c and "someone-elses-project" in msg_c, msg_c)
+check("and says nothing was changed", "nothing was changed" in msg_c, msg_c)
+
+# our own containers are not a conflict - that is what relaunching is
+ours = {"asa-testcluster-island": "testcluster", "asa-testcluster-ragnarok": "testcluster"}
+ok_o, _m = clusterctl.name_conflicts(st_n, existing=ours)
+check("relaunching our own cluster is allowed", ok_o)
+
+# an unknown answer must never be read as "nothing is there"
+class BlindDocker(FakeDocker):
+    def existing_containers(self, timeout=30):
+        return None                    # e.g. the socket went away mid-session
+
+
+_saved = clusterctl.dockerctl
+clusterctl.dockerctl = BlindDocker()
+ok_u, msg_u = clusterctl.name_conflicts(st_n)
+check("an unreadable container list refuses rather than assuming", not ok_u, msg_u)
+check("and says why it could not check", "Docker socket" in msg_u, msg_u)
+clusterctl.dockerctl = _saved
+
+# and launch stops before creating anything at all
+calls.clear()
+
+
+class ConflictDocker(FakeDocker):
+    def existing_containers(self, timeout=30):
+        return {"asa-testcluster-island": "ark-asa"}
+
+
+clusterctl.dockerctl = ConflictDocker()
+ok_l, msg_l = clusterctl.launch(st_n)
+check("launch refuses on a name conflict", not ok_l, msg_l)
+check("and never ran docker compose - no network, no half-built stack",
+      calls == [], calls)
 
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

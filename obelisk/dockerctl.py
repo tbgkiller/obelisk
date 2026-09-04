@@ -110,3 +110,23 @@ def network_connect(network, container, timeout=30):
     if "already exists" in out or "already connected" in out:
         return True, "already connected"
     return False, out.strip()[-200:]
+
+def existing_containers(timeout=30):
+    """Every container name on the host, with the compose project that owns it.
+
+    Includes stopped containers: a stopped container still holds its name, and Docker
+    refuses to reuse it. Returns {name: project_or_empty}.
+    """
+    fmt = "{{.Names}}" + chr(9) + '{{.Label "com.docker.compose.project"}}'
+    rc, out = _run(["docker", "ps", "-a", "--format", fmt], timeout=timeout)
+    if rc != 0:
+        return None                      # unknown, which the caller must not treat as "none"
+    found = {}
+    for line in out.splitlines():
+        if chr(9) not in line:
+            continue
+        name, project = line.split(chr(9), 1)
+        name = name.strip()
+        if name:
+            found[name] = project.strip()
+    return found

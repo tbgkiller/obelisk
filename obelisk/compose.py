@@ -58,7 +58,7 @@ def generate_compose(store, project="ark", in_use_ports=None):
         L += [
             "  %s:" % key,
             "    image: %s" % image,
-            "    container_name: asa_%s" % key,
+            "    container_name: %s" % container_name(project, key),
             "    restart: unless-stopped",
             "    stop_grace_period: 210s",
             "    mem_limit: %s" % mem,
@@ -171,3 +171,14 @@ def _obelisk_host(store):
     if host:
         return host
     return str(store.get("appdata")).rstrip("/") + "-obelisk"
+
+def container_name(project, map_key):
+    """The container name for one map of one cluster.
+
+    Namespaced by cluster, because a bare `asa_island` is a name any other cluster on
+    the host would also pick. A generated stack once tried to claim exactly that name
+    from a hand-built cluster that was live at the time - Docker refused, which is the
+    only reason it was a failed launch rather than a clobbered game server. A name that
+    can only mean one cluster removes the question.
+    """
+    return "asa-%s-%s" % (project, map_key)

@@ -265,7 +265,8 @@ check("no IP literal in the generated cluster",
 check("the server address is not passed to any map",
       "OBELISK_HOST" not in yml_ip, [l for l in yml_ip.splitlines() if "OBELISK_HOST" in l])
 check("maps are reached by container name, not address",
-      "container_name: asa_island" in yml_ip)
+      "container_name: asa-ipcheck-island" in yml_ip,
+      [l for l in yml_ip.splitlines() if "container_name" in l])
 
 print("\nFAILURES: %s" % fails if fails else "\nall install tests passed")
 sys.exit(1 if fails else 0)

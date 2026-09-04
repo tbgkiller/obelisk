@@ -20,7 +20,7 @@ a button here does by accident.
 import logging, os
 
 from . import dockerctl, layout
-from .compose import generate_compose
+from .compose import container_name, generate_compose
 from .plan import build_plan
 
 log = logging.getLogger("obelisk.cluster")
@@ -91,6 +91,10 @@ def launch(store, in_use_ports=None):
     plan = build_plan(store, in_use_ports=in_use_ports)
     if not plan["ok"]:
         return False, "This cluster won't start yet: " + "; ".join(plan["problems"])
+
+    ok, why = name_conflicts(store)
+    if not ok:
+        return False, why
 
     prepare(store)
     try:
@@ -199,3 +203,43 @@ def _join_network(store, environ=None):
         log.warning("could not join the cluster network %s: %s - the maps are running, "
                     "but chat relay and in-game commands will not reach them", net, detail)
     return ok, detail
+
+def target_names(store):
+    """The container names this cluster would create."""
+    proj = project(store)
+    return [container_name(proj, key) for key in _map_keys(store)]
+
+
+def name_conflicts(store, existing=None):
+    """(ok, message). Refuse a launch that would fight over a container name.
+
+    Docker refuses to reuse a name, which is the only reason a generated stack that
+    claimed a live cluster's container failed instead of replacing it. Relying on that
+    is relying on luck: it aborts halfway, having already created a network, and the
+    error talks about container IDs rather than saying which cluster is in the way.
+
+    A name owned by this same cluster is not a conflict - that is a relaunch, which is
+    exactly what `up` is for.
+    """
+    if existing is None:
+        existing = dockerctl.existing_containers()
+    if existing is None:
+        # Never treat "could not check" as "nothing is there".
+        return False, ("Couldn't check which containers already exist on this host, so "
+                       "the launch was not attempted. Is the Docker socket still mounted?")
+    proj = project(store)
+    clashes = []
+    for name in target_names(store):
+        owner = existing.get(name)
+        if owner is None:
+            continue                       # nothing has this name
+        if owner == proj:
+            continue                       # ours already - relaunching is fine
+        clashes.append((name, owner or "a container created outside compose"))
+    if not clashes:
+        return True, ""
+    lines = ", ".join("%s (owned by %s)" % (n, o) for n, o in clashes)
+    return False, ("This cluster would need container names that already exist on this "
+                   "host: %s. Nothing was started and nothing was changed. Rename this "
+                   "cluster - the cluster ID is part of every container name - or remove "
+                   "the containers that hold those names." % lines)

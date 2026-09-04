@@ -196,16 +196,17 @@ st.patch({"admin_password": "pw", "maps": "island,center,scorched",
 st.patch({"appdata": "/mnt/user/appdata/ark"}, source="install")   # as the container would
 st.patch({"mem_limit": "32g"}, map_name="center")
 yml = generate_compose(st, project="ark")
-check("compose names every chosen map", all(("container_name: asa_%s" % m) in yml
+# Names are namespaced by cluster so two clusters on one host cannot fight over them.
+check("compose names every chosen map", all(("container_name: asa-ark-%s" % m) in yml
                                             for m in ("island", "center", "scorched")), yml[:400])
-check("compose omits maps not chosen", "asa_genesis" not in yml)
+check("compose omits maps not chosen", "-genesis" not in yml)
 check("ports count up from the base", 'ASA_PORT: "7779"' in yml and 'RCON_PORT: "27022"' in yml, yml)
 check("first map is the update master", "depends_on" in yml and yml.count("depends_on") == 2)
 check("per-map memory override honoured", "mem_limit: 32g" in yml and "mem_limit: 20g" in yml)
 check("session name is numbered after the prefix", 'SESSION_NAME: "TEST 03 | Scorched Earth"' in yml, yml)
 # The manager is not in the stack it generates - it is the thing generating it.
 check("no manager service in the generated stack", "container_name: obelisk" not in yml)
-check("maps are addressable by container name", "container_name: asa_center" in yml, yml)
+check("maps are addressable by container name", "container_name: asa-ark-center" in yml, yml)
 # The data root carries the saves; the game install is deliberately outside it, which
 # is what keeps a backup of the root portable.
 check("the data root is used for saves",

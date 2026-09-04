@@ -106,6 +106,7 @@ async def run():
             return [{"service": "island", "name": "asa_island", "state": "running",
                      "status": "Up 3 minutes", "health": "healthy"}]
         def ports_in_use(self): return set()
+        def existing_containers(self, timeout=30): return {}
 
     clusterctl.dockerctl = FakeDocker()
     store.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
