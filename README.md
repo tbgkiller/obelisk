@@ -55,6 +55,10 @@ rest there — maps, mods, rates, Discord, wipe schedules, passwords. None of th
 needed to boot, so none of it belongs in a template field, and nothing ships with a
 blank waiting to be filled in.
 
+The setup code is not your in-game admin password - they are different secrets and
+only the code opens this page. It prints on first boot only; if you need it again see
+[docs/LOCKOUT.md](docs/LOCKOUT.md).
+
 Those first three stay read-only in the UI on purpose. Showing an editable box for a
 bind mount would let you change a value that isn't real until somebody recreates the
 container — so instead the UI shows what Docker actually created it with, and tells you
