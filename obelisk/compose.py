@@ -114,7 +114,12 @@ def generate_compose(store, project="ark", in_use_ports=None):
             # start - this is what makes one shared settings file work for all maps.
             "      BACKUP_DIR: /home/pok/shared",
             "    ports:",
+            # The game port on both protocols. Gameplay is UDP, so direct connect works
+            # either way - but the hand-built cluster this replaces publishes TCP too and
+            # is demonstrably listed in the server browser, and matching something proven
+            # beats reasoning about what the query path does or does not need.
             '      - "%d:%d/udp"' % (game_port, game_port),
+            '      - "%d:%d/tcp"' % (game_port, game_port),
             '      - "%d:%d/tcp"' % (rcon_port, rcon_port),
             "    volumes:",
             # The game install sits outside the data root: 20+ GB that re-downloads,

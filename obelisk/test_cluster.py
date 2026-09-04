@@ -580,5 +580,25 @@ ok_b, detail_b = clusterctl.save_world(st_f, rcon=_boom)
 check("a map that will not answer is reported, not hidden",
       not ok_b and "did not answer" in detail_b or "no map accepted" in detail_b, detail_b)
 
+
+# ---- the game port is published on both protocols, per instance
+# Gameplay is UDP, but the hand-built cluster that is actually listed in the server
+# browser publishes TCP as well. Matching something proven beats reasoning about what
+# the query path needs.
+st_pp, _dpp = fresh(maps="island,ragnarok", cluster_id="ports3")
+st_pp.patch({"game_port_base": 7877, "rcon_port_base": 27920})
+doc_pp = yaml.safe_load(generate_compose(st_pp, project="ports3"))
+for svc, game, rcon in (("island", 7877, 27920), ("ragnarok", 7878, 27921)):
+    ports = doc_pp["services"][svc]["ports"]
+    check("%s publishes the game port on udp" % svc,
+          "%d:%d/udp" % (game, game) in ports, ports)
+    check("%s publishes the game port on tcp too" % svc,
+          "%d:%d/tcp" % (game, game) in ports, ports)
+    check("%s still publishes RCON on tcp" % svc,
+          "%d:%d/tcp" % (rcon, rcon) in ports, ports)
+    check("%s publishes exactly those three" % svc, len(ports) == 3, ports)
+check("the two instances do not share a game port",
+      doc_pp["services"]["island"]["ports"][0] != doc_pp["services"]["ragnarok"]["ports"][0])
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)
