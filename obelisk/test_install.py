@@ -7,7 +7,8 @@ Fixture values here are synthetic. The one real value anywhere in the suites is 
 
 import os, sys, tempfile
 
-from .install import (CONTAINER_PORT, candidate_mounts, container_root,
+from . import install as install_mod
+from .install import (CONTAINER_PORT, candidate_mounts, container_root, derive_ports,
                       derive_appdata, derive_status_port, host_path_of,
                       mount_points, apply_timezone)
 from .firstrun import bootstrap
@@ -154,6 +155,55 @@ check("and there is no second data bind",
       yml.count("/mnt/user/appdata/obelisk-testcluster:/") == 1, yml[-600:])
 check("the game install is still a sibling outside the root",
       "/mnt/user/appdata/obelisk-testcluster-serverfiles:/home/pok/arkserver" in yml)
+
+
+# ---- THREE fields, and no hidden twin to hand-add
+# The seam this closes: Obelisk bound the port it was listening on and published that
+# same number in the stack it generated. An operator who mapped 18091 got a generated
+# stack trying to bind 8088 - so they had to hand-add STATUS_PORT to make the two
+# agree, which is the same duplicate-value footgun as the old APPDATA field.
+def _ports_inspect(name):
+    return 0, "8088/tcp 18091" + chr(10)
+
+listen, published, how = derive_ports({"HOSTNAME": "abc123"}, inspect=_ports_inspect)
+check("the listening port is the container's", listen == CONTAINER_PORT, listen)
+check("the published port is the operator's choice", published == 18091, published)
+check("and Docker is where that came from", how == "docker", how)
+check("the two are allowed to differ", listen != published)
+
+many = lambda n: (0, "7777/udp 7777" + chr(10) + "8088/tcp 18091" + chr(10))
+check("the exposed port's mapping is the one that counts",
+      derive_ports({"HOSTNAME": "a"}, inspect=many)[:2] == (CONTAINER_PORT, 18091),
+      derive_ports({"HOSTNAME": "a"}, inspect=many))
+
+check("an explicit STATUS_PORT still wins, for an upgrade",
+      derive_ports({"STATUS_PORT": "9000"}) == (9000, 9000, "environment"))
+check("no socket falls back to the exposed port rather than guessing",
+      derive_ports({"HOSTNAME": "a"}, inspect=lambda n: (1, "")) ==
+      (CONTAINER_PORT, CONTAINER_PORT, "assumed"))
+
+# a fresh install with only the three fields: the store learns the published port
+three_root = os.path.join(tempfile.mkdtemp(), "data")
+_real_derive = install_mod.derive_ports
+install_mod.derive_ports = lambda environ=None, inspect=None: (8088, 18091, "docker")
+st_three, _c, _code = bootstrap(os.path.join(three_root, "obelisk"), environ={})
+install_mod.derive_ports = _real_derive
+check("the store records the port the operator actually mapped",
+      st_three.get("status_port") == 18091, st_three.get("status_port"))
+
+st_three.patch({"appdata": "/mnt/user/appdata/obelisk-testcluster"}, source="install")
+st_three.patch({"maps": "island", "admin_password": "synthetic-pw",
+                "cluster_id": "threefield", "game_port_base": 7877,
+                "rcon_port_base": 27920})
+yml3 = generate_compose(st_three, project="threefield")
+check("the generated stack publishes the operator's port, not 8088",
+      '"18091:8088"' in yml3, [l for l in yml3.splitlines() if "18091" in l or "8088" in l])
+check("and never publishes 8088 on the host",
+      '"8088:8088"' not in yml3, yml3[-500:])
+check("no STATUS_PORT is passed to the generated container",
+      "STATUS_PORT" not in yml3, [l for l in yml3.splitlines() if "STATUS_PORT" in l])
+check("so nothing has to be hand-added to make the two agree",
+      yml3.count("18091") == 1, [l for l in yml3.splitlines() if "18091" in l])
 
 print("\nFAILURES: %s" % fails if fails else "\nall install tests passed")
 sys.exit(1 if fails else 0)

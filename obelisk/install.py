@@ -78,6 +78,74 @@ def container_root(environ=None):
     return (environ.get("OBELISK_DATA") or "/data").rstrip("/")
 
 
+def _self_names(environ):
+    """The names Docker might know this container by, best first."""
+    return [n for n in ((environ.get("HOSTNAME") or "").strip(),
+                        (environ.get("HOST_CONTAINERNAME") or "").strip()) if n]
+
+
+def _inspector(fmt):
+    """A function that runs `docker inspect -f fmt <name>` and returns (rc, out)."""
+    from . import dockerctl
+
+    def run(name):
+        return dockerctl._run(["docker", "inspect", "-f", fmt, name], timeout=20)
+    return run
+
+
+def derive_ports(environ=None, inspect=None):
+    """(listen, published, how) - the two ports that are not the same number.
+
+    `listen` is the port to bind inside this container. `published` is the port the
+    operator actually mapped on the host, which is what a generated stack has to publish
+    and what the browser connects to.
+
+    Conflating them is what forced a hand-added STATUS_PORT: the generated stack
+    published whatever the container was listening on, so an operator who mapped
+    18091 got a stack trying to bind 8088 and colliding with whatever was already there.
+    Docker knows both numbers, so ask it.
+    """
+    environ = os.environ if environ is None else environ
+
+    raw = (environ.get("STATUS_PORT") or "").strip()
+    if raw:
+        try:
+            n = int(raw)
+            return n, n, "environment"          # explicit still wins, for an upgrade
+        except ValueError:
+            pass
+
+    fmt = ("{{range $p, $conf := .NetworkSettings.Ports}}{{$p}} "
+           "{{range $conf}}{{.HostPort}}{{end}}" + chr(10) + "{{end}}")
+    run = inspect or _inspector(fmt)
+    for name in _self_names(environ):
+        rc, out = run(name)
+        if rc != 0:
+            continue
+        found = []
+        for line in out.splitlines():
+            bits = line.split()
+            if len(bits) < 2 or "/" not in bits[0]:
+                continue
+            try:
+                container_port = int(bits[0].split("/")[0])
+                host_port = int(bits[1])
+            except ValueError:
+                continue
+            found.append((container_port, host_port))
+        if not found:
+            continue
+        # Prefer the mapping for the port this image exposes; otherwise take the first.
+        for container_port, host_port in found:
+            if container_port == CONTAINER_PORT:
+                return container_port, host_port, "docker"
+        return found[0][0], found[0][1], "docker"
+
+    # No socket, or nothing published. Bind the exposed port and assume the operator
+    # mapped it straight through - the plan's port check is what catches it if not.
+    return CONTAINER_PORT, CONTAINER_PORT, "assumed"
+
+
 def host_path_of(container_path, environ=None, inspect=None):
     """Where a path inside this container comes from on the host.
 
@@ -90,17 +158,10 @@ def host_path_of(container_path, environ=None, inspect=None):
     """
     environ = os.environ if environ is None else environ
     if inspect is None:
-        from . import dockerctl
-
-        def inspect(name):
-            fmt = ("{{range .Mounts}}{{.Source}}" + chr(9) +
-                   "{{.Destination}}" + chr(10) + "{{end}}")
-            return dockerctl._run(["docker", "inspect", "-f", fmt, name], timeout=20)
-
-    me = (environ.get("HOSTNAME") or "").strip()
-    names = [n for n in (me, environ.get("HOST_CONTAINERNAME", "").strip()) if n]
+        inspect = _inspector("{{range .Mounts}}{{.Source}}" + chr(9) +
+                             "{{.Destination}}" + chr(10) + "{{end}}")
     want = container_path.rstrip("/")
-    for name in names:
+    for name in _self_names(environ):
         rc, out = inspect(name)
         if rc != 0:
             continue

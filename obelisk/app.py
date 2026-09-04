@@ -324,10 +324,13 @@ async def main():
         log.warning("the web UI still works - finish setup there; map containers "
                     "cannot be created until the socket is mounted")
 
-    port, _ = install.derive_status_port()
+    listen, published, _how = install.derive_ports()
     tasks = []
-    if port > 0:
-        tasks.append(asyncio.create_task(serve(store, port)))
+    if listen > 0:
+        if listen != published:
+            log.info("open http://<this-host>:%s/ - published from container port %s",
+                     published, listen)
+        tasks.append(asyncio.create_task(serve(store, listen)))
     else:
         log.warning("web UI disabled (port 0)")
 

@@ -96,9 +96,13 @@ def bootstrap(data_dir=None, environ=None):
                     "cluster's folder at the same path inside and out.",
                     BY_KEY["appdata"]["default"])
 
-    port, how = install.derive_status_port(environ)
-    from_env["status_port"] = port
-    log.info("web UI port: %s (from the %s)", port, how)
+    listen, published, how = install.derive_ports(environ)
+    from_env["status_port"] = published
+    if listen != published:
+        log.info("web UI: listening on %s inside the container, published as %s on the "
+                 "host (from %s)", listen, published, how)
+    else:
+        log.info("web UI port: %s (from the %s)", published, how)
 
     # One at a time, deliberately. store.patch() is all-or-nothing so a half-applied
     # change can never happen, which is right for a form submission and wrong here: a

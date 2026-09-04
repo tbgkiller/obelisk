@@ -10,7 +10,7 @@ The output is deliberately plain YAML with no anchors: it is meant to be read
 and, if Obelisk is ever broken or stopped, run by hand with `docker compose up`.
 """
 
-from . import layout
+from . import install, layout
 from . import maps as mapcat
 from .plan import build_plan
 
@@ -144,10 +144,12 @@ def generate_compose(store, project="ark", in_use_ports=None):
         "      RCON_PASSWORD: %s" % _q(store.get("admin_password")),
         "      DISCORD_TOKEN: %s" % _q(store.get("discord_token")),
         "      DISCORD_CHANNEL_ID: %s" % _q(store.get("discord_channel_id")),
-        "      STATUS_PORT: %s" % _q(store.get("status_port")),
+        # No STATUS_PORT: the container works out what it is published as by asking
+        # Docker, so there is no second number to keep in step with the mapping below.
         "      OBELISK_DATA: \"/data\"",
         "    ports:",
-        '      - "%s:%s"' % (store.get("status_port"), store.get("status_port")),
+        # host port the operator chose : the port the image listens on
+        '      - "%s:%s"' % (store.get("status_port"), install.CONTAINER_PORT),
         "    volumes:",
         # One mount: the whole data root. Obelisk finds the host path back out of
         # Docker, so the two sides do not have to be the same string - which is what
