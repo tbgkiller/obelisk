@@ -205,9 +205,10 @@ def _join_network(store, environ=None):
     return ok, detail
 
 def target_names(store):
-    """The container names this cluster would create."""
+    """The container names this cluster would create - one per instance."""
+    from . import maps as mapcat
     proj = project(store)
-    return [container_name(proj, key) for key in _map_keys(store)]
+    return [container_name(proj, i) for i in mapcat.instance_ids(_map_keys(store))]
 
 
 def name_conflicts(store, existing=None):

@@ -67,9 +67,11 @@ def build_plan(store, in_use_ports=None, host_ram_gb=None):
     rcon_port = int(store.get("rcon_port_base"))
 
     rows, taken, problems, notes = [], set(), [], []
+    ids = mapcat.instance_ids([m["key"] for m in chosen])
 
     for i, m in enumerate(chosen):
         key = m["key"]
+        instance = ids[i]
         g = _next_free(game_port, taken, in_use)
         taken.add(g)
         r = _next_free(rcon_port, taken, in_use)
@@ -85,7 +87,8 @@ def build_plan(store, in_use_ports=None, host_ram_gb=None):
             mem = _mb_to_mem(int(round(base_mb * w / 1024.0)) * 1024)
             why = "base" if w == 1.0 else "base x%.1f - this map runs heavy" % w
 
-        rows.append({"map": key, "name": m["name"], "map_id": m["map_id"],
+        rows.append({"map": key, "instance": instance,
+                     "name": m["name"], "map_id": m["map_id"],
                      "game_port": g, "rcon_port": r,
                      "memory": mem, "memory_mb": _mem_to_mb(mem), "memory_why": why,
                      "role": "update master" if i == 0 else "follower"})

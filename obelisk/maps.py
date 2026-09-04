@@ -48,3 +48,22 @@ def resolve(keys):
             raise KeyError("unknown map %r - known maps: %s" % (k, ", ".join(KEYS)))
         out.append(BY_KEY[k])
     return out
+
+def instance_ids(keys):
+    """Stable, unique ids for a list of chosen maps - one per *instance*, not per map.
+
+    A cluster is a list of instances, and the same map can appear more than once: an
+    events island beside the normal one, running different mods. So identity has to be
+    per instance. The first instance of a map keeps the plain key, later ones are
+    numbered - island, island-2 - so an existing single-instance cluster keeps the names
+    and folders it already has.
+
+    Everything a running instance owns is keyed off this: its container name, its ports
+    and its save folder. Keying any of those off the map type alone means two islands
+    fight over one of them.
+    """
+    seen, out = {}, []
+    for key in keys:
+        seen[key] = seen.get(key, 0) + 1
+        out.append(key if seen[key] == 1 else "%s-%d" % (key, seen[key]))
+    return out

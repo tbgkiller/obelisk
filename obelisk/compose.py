@@ -47,18 +47,19 @@ def generate_compose(store, project="ark", in_use_ports=None):
     game_base = int(store.get("game_port_base"))
     rcon_base = int(store.get("rcon_port_base"))
     net       = "%s-net" % project
-    master    = chosen[0]["key"]
+    master    = by_key[chosen[0]["key"]]["instance"]
 
     L = [HEADER.format(project=project), "services:"]
 
     for i, m in enumerate(chosen):
         key = m["key"]
         row = by_key[key]
+        instance = row["instance"]
         game_port, rcon_port, mem = row["game_port"], row["rcon_port"], row["memory"]
         L += [
-            "  %s:" % key,
+            "  %s:" % instance,
             "    image: %s" % image,
-            "    container_name: %s" % container_name(project, key),
+            "    container_name: %s" % container_name(project, instance),
             "    restart: unless-stopped",
             "    stop_grace_period: 210s",
             "    mem_limit: %s" % mem,
@@ -66,7 +67,7 @@ def generate_compose(store, project="ark", in_use_ports=None):
             "    ulimits:",
             "      nofile: {soft: 1000000, hard: 1000000}",
         ]
-        if key != master:
+        if instance != master:
             # The master downloads ~30 GB of server files once; the rest wait for
             # it rather than nine containers fetching the same thing at once.
             L += ["    depends_on:", "      %s: {condition: service_healthy}" % master]
@@ -78,7 +79,7 @@ def generate_compose(store, project="ark", in_use_ports=None):
             # across the cluster with the role/priority pair: the master fetches the
             # new build, the followers wait their turn instead of ten containers
             # downloading the same 30 GB at once.
-            "      INSTANCE_NAME: %s"         % _q(key),
+            "      INSTANCE_NAME: %s"         % _q(instance),
             "      UPDATE_COORDINATION_ROLE: %s" % _q("MASTER" if key == master else "FOLLOWER"),
             "      UPDATE_COORDINATION_PRIORITY: %s" % _q(i + 1),
             "      SESSION_NAME: %s"          % _q(_session_name(store, i, m)),
@@ -119,7 +120,7 @@ def generate_compose(store, project="ark", in_use_ports=None):
             # The game install sits outside the data root: 20+ GB that re-downloads,
             # and the one thing a portable backup must not carry.
             '      - "%s:/home/pok/arkserver"' % serverfiles,
-            '      - "%s:/home/pok/arkserver/ShooterGame/Saved"' % layout.instance_dir(ark, key),
+            '      - "%s:/home/pok/arkserver/ShooterGame/Saved"' % layout.instance_dir(ark, instance),
             '      - "%s:/home/pok/arkserver/ShooterGame/Saved/clusters"' % paths["cluster"],
             '      - "%s:/home/pok/shared"' % paths["shared"],
             "",
@@ -172,13 +173,14 @@ def _obelisk_host(store):
         return host
     return str(store.get("appdata")).rstrip("/") + "-obelisk"
 
-def container_name(project, map_key):
+def container_name(project, instance):
     """The container name for one map of one cluster.
 
-    Namespaced by cluster, because a bare `asa_island` is a name any other cluster on
-    the host would also pick. A generated stack once tried to claim exactly that name
-    from a hand-built cluster that was live at the time - Docker refused, which is the
-    only reason it was a failed launch rather than a clobbered game server. A name that
-    can only mean one cluster removes the question.
+    Keyed on cluster *and instance*, because both halves matter. A bare `asa_island` is
+    a name any other cluster on the host would also pick - a generated stack once tried
+    to claim exactly that from a live hand-built cluster, and Docker refusing is the only
+    reason it was a failed launch rather than a clobbered game server. And keying on the
+    map type alone would collide all over again the moment a cluster runs the same map
+    twice, which is a thing clusters do: an events island beside the normal one.
     """
-    return "asa-%s-%s" % (project, map_key)
+    return "asa-%s-%s" % (project, instance)

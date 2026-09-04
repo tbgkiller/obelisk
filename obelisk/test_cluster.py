@@ -381,5 +381,51 @@ check("launch refuses on a name conflict", not ok_l, msg_l)
 check("and never ran docker compose - no network, no half-built stack",
       calls == [], calls)
 
+
+# ---- identity is per instance, not per map type
+# A cluster is a list of instances and the same map can appear twice - an events island
+# beside the normal one. Keying a container name, a port or a save folder on the map
+# type alone means those two fight over it.
+from . import maps as mapcat
+
+check("one instance of a map keeps the plain name",
+      mapcat.instance_ids(["island", "ragnarok"]) == ["island", "ragnarok"])
+check("a repeated map gets distinct instance ids",
+      mapcat.instance_ids(["island", "island", "ragnarok", "island"]) ==
+      ["island", "island-2", "ragnarok", "island-3"],
+      mapcat.instance_ids(["island", "island", "ragnarok", "island"]))
+check("so an existing single-instance cluster is never renamed",
+      mapcat.instance_ids(["island"]) == ["island"])
+
+names_dup = [container_name("evt", i) for i in mapcat.instance_ids(["island", "island"])]
+check("two islands in one cluster get different container names",
+      names_dup == ["asa-evt-island", "asa-evt-island-2"], names_dup)
+check("and neither is the bare live-cluster name", "asa_island" not in names_dup)
+check("save folders differ per instance too",
+      layout.instance_dir("/ark", "island") != layout.instance_dir("/ark", "island-2"))
+
+# ports are already per instance, because the plan assigns them per row
+st_i, _di = fresh(maps="island,ragnarok", cluster_id="ports")
+pl_i = build_plan(st_i, in_use_ports=set())
+ids_i = [r["instance"] for r in pl_i["maps"]]
+game = [r["game_port"] for r in pl_i["maps"]]
+rcon = [r["rcon_port"] for r in pl_i["maps"]]
+check("every instance is identified in the plan", ids_i == ["island", "ragnarok"], ids_i)
+check("no two instances share a game port", len(set(game)) == len(game), game)
+check("no two instances share an RCON port", len(set(rcon)) == len(rcon), rcon)
+
+yml_i = generate_compose(st_i, project="ports")
+check("the compose service is the instance, not the map type",
+      "  island:" in yml_i and "container_name: asa-ports-island" in yml_i)
+check("INSTANCE_NAME is the instance id",
+      'INSTANCE_NAME: "island"' in yml_i, [l for l in yml_i.splitlines() if "INSTANCE_NAME" in l])
+check("the save mount is per instance",
+      "/instances/island/Saved:" in yml_i)
+
+# the preflight checks instance names, so a duplicate-map cluster is covered too
+check("preflight targets instance names",
+      clusterctl.target_names(st_i) == ["asa-ports-island", "asa-ports-ragnarok"],
+      clusterctl.target_names(st_i))
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)
