@@ -100,26 +100,40 @@ def _map_ids(store):
     return [m["map_id"] for m in mapcat.resolve(keys)]
 
 
-def create(store, when=None, flush=None):
+def create(store, when=None, flush=None, progress=None):
     """Write a verified backup. Returns (ok, message, path_or_None).
 
     `flush` is an optional callable run before the copy - Phase 2's RCON SaveWorld -
     so the archive catches the world as of now rather than the last autosave.
+
+    `progress` is called as progress(phase, done_bytes, total_bytes) as the work moves
+    through flushing, archiving and verifying. Compressing seventeen gigabytes takes
+    minutes, and a button that does nothing visible for minutes is indistinguishable
+    from a button that did nothing.
     """
+    say = progress or (lambda *a, **k: None)
     root = layout.root_of(store)
     ark = layout.ark_root_of(store)
     if not os.path.isdir(root):
         return False, "No Obelisk data folder at %s yet - nothing to back up." % root, None
 
-    flushed = ""
+    flushed, flush_failed = "", False
     if flush:
+        say("flushing", 0, 0)
         try:
             ok, detail = flush()
             flushed = (" Saved all maps first." if ok else
                        " Could not flush saves first (%s), so this is the last autosave."
                        % detail)
+            flush_failed = not ok
         except Exception as e:
             flushed = " Could not flush saves first (%s)." % e
+            flush_failed = True
+    if flush_failed:
+        # Loudly, because the quiet version of this ran for days: the archive is still
+        # written and still worth having, but it holds the last autosave rather than the
+        # world as it stands, and that difference is the whole point of the flush.
+        log.warning("backup is NOT flushed:%s", flushed)
 
     out_dir = backups_dir(store)
     os.makedirs(out_dir, exist_ok=True)
@@ -129,13 +143,25 @@ def create(store, when=None, flush=None):
     defn = definition(store)
     maps_expected = _map_ids(store)
 
+    total = _weigh(root, ark)
+    done = [0]
+
+    def counting(info):
+        """The real tar filter, plus the tally the progress bar is made of."""
+        kept = _skip_backups(info)
+        if kept is not None:
+            done[0] += getattr(kept, "size", 0) or 0
+            say("archiving", done[0], total)
+        return kept
+
+    say("archiving", 0, total)
     try:
         with tarfile.open(tmp, "w:gz") as tar:
             # All of Obelisk data: the definition is small and none of it can be
             # fetched again from anywhere.
             for name in sorted(os.listdir(root)):
                 tar.add(os.path.join(root, name), arcname="obelisk/" + name,
-                        filter=_skip_backups)
+                        filter=counting)
             # Only the irreplaceable part of Ark data. The server install and the mods
             # are left out on purpose: they are tens of gigabytes and they come back
             # from the mod ids stored above.
@@ -143,16 +169,22 @@ def create(store, when=None, flush=None):
                 src = os.path.join(ark, tree)
                 if not os.path.exists(src):
                     continue
-                tar.add(src, arcname="ark/" + tree, filter=_skip_backups)
+                tar.add(src, arcname="ark/" + tree, filter=counting)
             _add_bytes(tar, "cluster-definition.json",
                        json.dumps(defn, indent=2, sort_keys=True).encode("utf-8"))
     except Exception as e:
         _unlink(tmp)
+        # Logged as well as returned. The message used to exist only in the HTML the
+        # button rendered, so a backup that failed left no trace anywhere afterwards -
+        # and "there is no archive and no reason why" is the worst state to debug from.
+        log.warning("backup failed while writing: %s", e)
         return False, "Backup failed while writing: %s" % e, None
 
+    say("verifying", total, total)
     ok, detail, members = _read_back(tmp, maps_expected)
     if not ok:
         _unlink(tmp)
+        log.warning("backup discarded - it did not verify: %s", detail)
         return False, "Backup was written but failed verification, so it was discarded: %s" % detail, None
 
     try:
@@ -171,6 +203,7 @@ def create(store, when=None, flush=None):
         pass
 
     size = os.path.getsize(path)
+    say("done", size, size)
     log.info("backup ok: %s (%s, %d entries)", os.path.basename(path),
              human_size(size), len(members))
     return True, ("Backed up %d map%s and the cluster definition - %s, verified "
@@ -384,3 +417,25 @@ def human_size(n):
     if n < 1024 * 1024 * 1024:
         return "%.1f MB" % (n / 1048576.0)
     return "%.2f GB" % (n / 1073741824.0)
+
+
+def _weigh(root, ark):
+    """Bytes the archive is about to read, for the progress bar to divide by.
+
+    An estimate on purpose: it counts what goes in before compression, so the bar
+    tracks work done rather than bytes written - which is the honest thing to show,
+    since how far a gzip stream has got says nothing about how much is left.
+    """
+    total = 0
+    trees = [root] + [os.path.join(ark, t) for t in layout.ARK_PORTABLE]
+    for tree in trees:
+        for here, _dirs, files in os.walk(tree):
+            if os.path.basename(here) == layout.BACKUPS:
+                _dirs[:] = []
+                continue
+            for name in files:
+                try:
+                    total += os.path.getsize(os.path.join(here, name))
+                except OSError:
+                    pass
+    return total

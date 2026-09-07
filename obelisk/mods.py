@@ -92,3 +92,34 @@ def health(installs, listed):
                            "note": "on disk but not in the list - left over from a "
                                    "mod you removed"}
     return out
+
+
+def measure(root, walker=None, getsize=None):
+    """{mod_id: {"files": n, "kb": n}} for what is actually installed under `root`.
+
+    health() has always wanted this and never had it, which is why the Mods page could
+    be rendered but not reached: there was nothing to hand it. Missing folder is not an
+    error - it means the server has not downloaded anything yet, which is exactly what
+    the page is there to show.
+    """
+    import os
+    walker = walker or os.walk
+    getsize = getsize or os.path.getsize
+    out = {}
+    try:
+        entries = sorted(os.listdir(root))
+    except OSError:
+        return out
+    for name in entries:
+        if not name.isdigit():
+            continue
+        files, total = 0, 0
+        for here, _dirs, names in walker(os.path.join(root, name)):
+            for f in names:
+                files += 1
+                try:
+                    total += getsize(os.path.join(here, f))
+                except OSError:
+                    pass
+        out[name] = {"files": files, "kb": int(total / 1024)}
+    return out

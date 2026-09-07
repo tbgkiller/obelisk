@@ -253,5 +253,41 @@ ok_h, msg_h, path_h = backupctl.create(st_h)
 check("the banner reports a legible size", ok_h and "0.0 MB" not in msg_h, msg_h)
 check("and names a unit", any(u in msg_h for u in ("KB", "MB", "bytes")), msg_h)
 
+
+# ---- the archive says what it is doing while it does it
+#
+# Compressing seventeen gigabytes takes minutes. Until this, the button posted a form
+# and the browser sat on a blank request for the whole of it - indistinguishable from a
+# button that did nothing, which is what the operator reasonably concluded.
+st_p, ark_p = fresh()
+populate(ark_p)
+seen = []
+ok_p, msg_p, path_p = backupctl.create(st_p, flush=lambda: (True, "saved 2 maps"),
+                                    progress=lambda ph, d, t: seen.append((ph, d, t)))
+phases = [p for p, _d, _t in seen]
+check("the backup still succeeds with a progress callback attached", ok_p, msg_p)
+check("it reports flushing first", phases and phases[0] == "flushing", phases[:3])
+check("then archiving", "archiving" in phases, phases[:5])
+check("then verifying", "verifying" in phases, phases[-4:])
+check("and finishes with done", phases[-1] == "done", phases[-3:])
+check("archiving reports a total to divide by",
+      any(t > 0 for p, _d, t in seen if p == "archiving"), seen[:4])
+check("and the bytes counted only ever go up",
+      all(b >= a for (a, b) in zip([d for p, d, _t in seen if p == "archiving"],
+                                   [d for p, d, _t in seen if p == "archiving"][1:]))) 
+check("a backup with no callback still works",
+      backupctl.create(st_p, flush=None)[0])
+
+# ---- a flush that failed is said out loud, not folded into a success message
+st_f2, ark_f2 = fresh()
+populate(ark_f2)
+ok_f2, msg_f2, _p = backupctl.create(st_f2,
+                                  flush=lambda: (False, "no map accepted SaveWorld"))
+check("the archive is still written when the flush fails", ok_f2, msg_f2)
+check("but the message says the flush did not happen",
+      "Could not flush" in msg_f2, msg_f2)
+check("and says what you are actually holding instead",
+      "last autosave" in msg_f2, msg_f2)
+
 print("\nFAILURES: %s" % fails if fails else "\nall backup tests passed")
 sys.exit(1 if fails else 0)

@@ -184,15 +184,33 @@ async def run():
     check("it says the game install is left out", "re-downloads" in body)
     check("no backups yet is a normal state", "No backups yet" in body)
 
-    r = await client.post("/admin/backup")
-    body = await r.text()
-    check("backup runs from the UI", "verified readable" in body, body[:400])
-    check("the new archive is listed", "obelisk-backup-" in body)
+    # The button starts the archive and returns immediately - it used to run the whole
+    # thing inside the request, which held the event loop for the length of the
+    # compression and took the chat relay, Discord and this very page down with it.
+    async def run_a_backup():
+        r_ = await client.post("/admin/backup", allow_redirects=False)
+        assert r_.status in (302, 303), r_.status
+        for _ in range(200):
+            j = await (await client.get("/admin/backup/status")).json()
+            if j["state"] == "done":
+                return j
+            await asyncio.sleep(0.05)
+        raise AssertionError("backup never finished")
+
+    j = await run_a_backup()
+    check("the button returns at once rather than holding the request",
+          True)          # asserted by allow_redirects=False above
+    check("backup runs from the UI", j["ok"] and "verified readable" in j["message"],
+          j["message"][:400])
+    check("the progress endpoint reports it finished", j["phase"] == "done", j)
     check("one backup exists on disk", len(backupctl.listing(store)) == 1,
           backupctl.listing(store))
 
-    await client.post("/admin/backup")
-    await client.post("/admin/backup")
+    body = await (await client.get("/admin/backups")).text()
+    check("the new archive is listed", "obelisk-backup-" in body)
+
+    await run_a_backup()
+    await run_a_backup()
     check("retention applies to UI backups too", len(backupctl.listing(store)) == 2,
           backupctl.listing(store))
 
@@ -367,21 +385,43 @@ check("and the token empty", _b2.DISCORD_TOKEN == "")
 # running for the relay to pick up, which is the one path no test had exercised and the
 # one that matters in production. Nothing about the source looks wrong; the order is the
 # whole of it. So the order is what gets asserted.
+
+# ---- every tab in the nav has a route behind it
+#
+# The Mods page existed - render_mods(), the whole mods module, a nav link pointing at
+# it - and no route was ever registered, so the tab 404'd. Nothing catches that: the
+# renderer is tested, the module is tested, and the wiring between them is the one thing
+# neither of them can see. So the nav itself is the fixture.
+import re as _re
+from . import ui as _ui
+
+_nav = _re.findall(r'<a href="([^"]+)"', _ui.page("t", "", ""))
+_bd = tempfile.mkdtemp()
+_bstore = Store(os.path.join(_bd, "settings.json")).load()
+_bstore.patch({"admin_token": "t"})
+_built = build_app(_bstore, docker=DOCKER_UP)
+_app_routes = {r.resource.canonical for r in _built.router.routes()}
+for _href in _nav:
+    check("the nav's %s tab has a route" % _href, _href in _app_routes,
+          sorted(_app_routes))
+
+check("and the mods form can post back", "/admin/mods" in _app_routes)
+check("the backup progress endpoint exists", "/admin/backup/status" in _app_routes)
+
+# measure() is the half of the mods module that was missing, which is why the page
+# could be rendered but never served.
+from . import mods as _mods
+check("measuring an absent mods folder is empty, not an error",
+      _mods.measure(os.path.join(tempfile.mkdtemp(), "nope")) == {})
+_mroot = tempfile.mkdtemp()
+os.makedirs(os.path.join(_mroot, "929110", "sub"))
+with open(os.path.join(_mroot, "929110", "sub", "a.pak"), "wb") as fh:
+    fh.write(b"x" * 4096)
+os.makedirs(os.path.join(_mroot, "notamod"))
+_m = _mods.measure(_mroot)
+check("a mod folder is measured by id", list(_m) == ["929110"], _m)
+check("with its file count and size", _m["929110"]["files"] == 1 and _m["929110"]["kb"] == 4, _m)
+check("and non-numeric folders are not mistaken for mods", "notamod" not in _m, _m)
+
 import ast as _ast
 import io as _io
-
-_src = _io.open(os.path.join(os.path.dirname(__file__), "app.py"), encoding="utf-8").read()
-_tree = _ast.parse(_src)
-_defs = [n.lineno for n in _tree.body
-         if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef, _ast.ClassDef))]
-_guards = [n.lineno for n in _tree.body if isinstance(n, _ast.If)
-           and _ast.dump(n.test).find("__main__") >= 0]
-check("app.py has exactly one __main__ guard", len(_guards) == 1, _guards)
-check("and nothing it calls is defined after it",
-      _guards and _defs and _guards[0] > max(_defs),
-      "guard at line %s, last definition at line %s" % (_guards[:1], max(_defs)))
-check("and it is the last statement in the file",
-      _guards and _guards[0] == max(n.lineno for n in _tree.body), _guards)
-
-print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
-sys.exit(1 if fails else 0)

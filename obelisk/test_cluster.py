@@ -679,5 +679,75 @@ check("nothing is handed over twice for one instance",
       len(_owned) == len(set(_owned)), sorted(_owned))
 
 
+
+# ---- SaveWorld has to actually leave the building
+#
+# The flush ran asyncio.run() on whatever thread called it. From a worker thread that is
+# fine; from the event loop thread it raises before the coroutine is ever awaited, and
+# the RuntimeError lands in the caller's `except` as "this map did not answer". So a
+# backup reported all ten maps unreachable while all ten were healthy and answering RCON
+# a second later, and quietly archived the last autosave instead. Nothing was sent. The
+# report said it had been tried.
+import asyncio as _aio
+
+_sent = []
+
+
+async def _fake_rcon(host, port, password, cmd, timeout=30):
+    _sent.append((host, port, cmd))
+    return "World Saved"
+
+
+st_sw, _dsw = fresh(maps="island,ragnarok", cluster_id="flushtest")
+clusterctl.dockerctl = FakeDocker()
+
+
+class _RunningDocker(FakeDocker):
+    def container_details(self, names, timeout=30):
+        return {n: {"state": "running"} for n in names}
+
+
+clusterctl.dockerctl = _RunningDocker()
+_real_bot_rcon = None
+from . import bot as _botmod
+_real_bot_rcon = _botmod.rcon_with
+_botmod.rcon_with = _fake_rcon
+
+# 1. the ordinary case: no loop on this thread
+_sent.clear()
+ok_sw, msg_sw = clusterctl.save_world(st_sw)
+check("SaveWorld reaches every running map from a plain thread", ok_sw, msg_sw)
+check("and one command per map actually went out",
+      [c for _h, _p, c in _sent] == ["SaveWorld", "SaveWorld"], _sent)
+
+# 2. the case that was broken: called while this thread already runs a loop
+_sent.clear()
+
+
+async def _from_the_loop():
+    return clusterctl.save_world(st_sw)
+
+
+ok_lw, msg_lw = _aio.run(_from_the_loop())
+check("SaveWorld still reaches every map when called from the event loop thread",
+      ok_lw, msg_lw)
+check("and the commands genuinely went out rather than being reported as failures",
+      [c for _h, _p, c in _sent] == ["SaveWorld", "SaveWorld"], _sent)
+check("no map is described as not answering", "did not answer" not in msg_lw, msg_lw)
+
+# 3. run_coroutine itself, both ways round
+check("run_coroutine works with no loop running",
+      clusterctl.run_coroutine(_fake_rcon("h", 1, "p", "Ping")) == "World Saved")
+
+
+async def _nested():
+    return clusterctl.run_coroutine(_fake_rcon("h", 1, "p", "Ping"))
+
+
+check("and from inside a running loop, which is where it used to give up",
+      _aio.run(_nested()) == "World Saved")
+
+_botmod.rcon_with = _real_bot_rcon
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

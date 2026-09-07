@@ -13,12 +13,13 @@ being unreachable is a banner on the page, not a reason to die. The chat relay s
 only when there is a cluster to relay between, which on a fresh install there isn't.
 """
 
-import asyncio, logging, os, sys
+import asyncio, logging, os, sys, time
 
 from . import backup as backupctl
 from . import cloud as cloudctl
 from . import cluster as clusterctl
-from . import dockerctl, install, ui
+from . import dockerctl, install, layout, ui
+from . import mods as modsctl
 from .firstrun import bootstrap
 from .plan import build_plan
 from .settings import Invalid
@@ -202,19 +203,84 @@ def build_app(store, docker=None):
         return chrome(ui.render_backups(store, backupctl.listing(store)),
                       "Backups", "/admin/backups")
 
-    async def backup_now(request):
-        if not authed(request):
-            raise web.HTTPFound("/setup")
-        ok, msg, _path = backupctl.create(store, flush=_flush_for(store))
+    # One backup at a time, and what it is currently doing. Held here rather than in
+    # backup.py because it is a property of this running manager, not of the archive.
+    job = {"state": "idle", "phase": "", "done": 0, "total": 0, "message": "",
+           "ok": None, "started": 0.0}
+
+    def _note(phase, done, total):
+        job.update(phase=phase, done=done, total=total)
+
+    def _run_backup():
+        """The whole archive, start to finish, on a worker thread."""
+        ok, msg, _path = backupctl.create(store, flush=_flush_for(store),
+                                          progress=_note)
         if ok:
             removed = backupctl.prune(store)
             if removed:
                 msg += " Removed %d older backup%s." % (
                     len(removed), "" if len(removed) == 1 else "s")
-        return chrome(ui.render_backups(store, backupctl.listing(store),
-                                        message=msg if ok else "",
-                                        problem="" if ok else msg),
-                      "Backups", "/admin/backups")
+        return ok, msg
+
+    async def _backup_task():
+        try:
+            ok, msg = await asyncio.to_thread(_run_backup)
+        except Exception as e:                       # noqa: BLE001 - surfaced below
+            ok, msg = False, "Backup failed: %s" % e
+            log.exception("backup failed")
+        job.update(state="done", ok=ok, message=msg,
+                   phase="done" if ok else "failed")
+
+    async def backup_now(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        if job["state"] == "running":
+            raise web.HTTPFound("/admin/backups")
+        # Started, not awaited. Compressing the data root takes minutes, and doing that
+        # inside the request handler ran it on the event loop - which stopped the chat
+        # relay, dropped Discord's heartbeat and made the web UI itself unanswerable for
+        # the whole archive. The one thing a backup must not do is take the manager down.
+        job.update(state="running", phase="starting", done=0, total=0,
+                   message="", ok=None, started=time.time())
+        asyncio.create_task(_backup_task())
+        raise web.HTTPFound("/admin/backups")
+
+    async def backup_status(request):
+        if not authed(request):
+            return web.json_response({"state": "denied"}, status=403)
+        out = dict(job)
+        out["elapsed"] = int(time.time() - job["started"]) if job["started"] else 0
+        out["human"] = backupctl.human_size(job["done"]) if job["done"] else ""
+        out["percent"] = (round(100.0 * job["done"] / job["total"], 1)
+                          if job["total"] else None)
+        return web.json_response(out)
+
+    # ---- mods
+    async def mods_page(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        return chrome(ui.render_mods(store, modsctl.measure(layout.mods_dir(store))),
+                      "Mods", "/admin/mods")
+
+    async def mods_edit(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        listed = str(store.get("mod_ids") or "")
+        if form.get("addmod"):
+            listed = modsctl.add(listed, str(form.get("addmod")).strip())
+        elif form.get("drop"):
+            listed = modsctl.remove(listed, str(form.get("drop")))
+        elif form.get("up"):
+            listed = modsctl.move(listed, str(form.get("up")), -1)
+        elif form.get("down"):
+            listed = modsctl.move(listed, str(form.get("down")), 1)
+        try:
+            store.patch({"mod_ids": listed})
+            store.save()
+        except Exception as e:                       # noqa: BLE001 - shown to the user
+            log.warning("mod list rejected: %s", e)
+        raise web.HTTPFound("/admin/mods")
 
     # ---- cloud
     async def cloud_page(request):
@@ -307,6 +373,9 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/stop", cluster_stop)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)
+    app.router.add_get("/admin/backup/status", backup_status)
+    app.router.add_get("/admin/mods", mods_page)
+    app.router.add_post("/admin/mods", mods_edit)
     app.router.add_get("/admin/cloud", cloud_page)
     app.router.add_post("/admin/cloud/connect", cloud_connect)
     app.router.add_post("/admin/cloud/disconnect", cloud_disconnect)

@@ -333,6 +333,51 @@ def render_mods(store, health=None):
             'added last so they cannot silently outrank something that already works.'
             '</div></div></fieldset></form>' % (banner, "".join(rows)))
 
+# The backup runs on a worker thread now, so the page it was started from is free to
+# say what it is doing. Same rule as the launch phases: name the step, show how far in,
+# and never show a bar that is really just an animation - the percentage comes from
+# bytes actually read, and when there is no total to divide by it says so instead.
+BACKUP_PROGRESS = """
+<div id=bkwrap hidden>
+  <div class=note><strong id=bkphase>Working</strong> <span id=bkdetail></span></div>
+  <div style="background:#2a2f36;border-radius:6px;height:10px;overflow:hidden;margin:8px 0">
+    <div id=bkbar style="height:100%;width:0;background:#5b9;transition:width .4s"></div>
+  </div>
+</div>
+<div id=bkresult></div>
+<script>
+(function(){
+  var W=["flushing","Asking every map to save its world"],
+      A=["archiving","Copying and compressing"],
+      V=["verifying","Reading the archive back to prove it works"];
+  var words={flushing:W[1],archiving:A[1],verifying:V[1],starting:"Starting"};
+  function tick(){
+    fetch("/admin/backup/status",{credentials:"same-origin"})
+      .then(function(r){return r.json()}).then(function(j){
+        var wrap=document.getElementById("bkwrap"),
+            btn=document.getElementById("bkbtn"),
+            res=document.getElementById("bkresult");
+        if(j.state==="running"){
+          wrap.hidden=false; if(btn){btn.disabled=true;btn.textContent="Backing up..."}
+          document.getElementById("bkphase").textContent=words[j.phase]||j.phase;
+          var d=document.getElementById("bkdetail");
+          d.textContent=(j.percent!=null?j.percent+"% of "+(j.human||"")+" read":
+                         (j.human?j.human+" read":""))+" - "+j.elapsed+"s";
+          document.getElementById("bkbar").style.width=(j.percent!=null?j.percent:5)+"%";
+          setTimeout(tick,1500);
+        } else if(j.state==="done"){
+          wrap.hidden=true; if(btn){btn.disabled=false;btn.textContent="Back up now"}
+          res.innerHTML='<div class="'+(j.ok?"note":"problem")+'"></div>';
+          res.firstChild.textContent=j.message;
+        }
+      }).catch(function(){setTimeout(tick,4000)});
+  }
+  tick();
+})();
+</script>
+"""
+
+
 def render_backups(store, rows, message="", problem=""):
     """Backups: make one now, see what exists, and what the schedule will do.
 
@@ -365,7 +410,8 @@ def render_backups(store, rows, message="", problem=""):
     return (banner +
             '<form method=post action="/admin/backup">'
             '<fieldset><legend>Back up now</legend>'
-            '<div class=f><button type=submit>Back up now</button>'
+            + BACKUP_PROGRESS +
+            '<div class=f><button type=submit id=bkbtn>Back up now</button>'
             '<div class=help>Copies the whole data root - every map’s saves, the '
             'shared config, the transfer data - plus the cluster definition with your '
             'mod list, so a rebuild knows what to load. The game install is left out '

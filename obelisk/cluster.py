@@ -249,6 +249,28 @@ def running_instances(store):
     return [t for t in targets if (details.get(t[1], {}).get("state") == "running")]
 
 
+def run_coroutine(coro):
+    """Run a coroutine and return its result, from a worker thread or the loop thread.
+
+    asyncio.run() refuses outright when the calling thread already has a running loop.
+    The coroutine handed to it is then never awaited - Python logs "coroutine was never
+    awaited" to stderr, the RuntimeError is caught by whatever except wraps the call,
+    and the operation is recorded as having been tried and failed. It was never sent.
+    That is how a backup came to report every map as not answering SaveWorld while all
+    ten were healthy and answering RCON perfectly well.
+
+    So: use the simple path when this thread has no loop, and hand the work to a thread
+    of its own when it does.
+    """
+    import asyncio, concurrent.futures
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        return asyncio.run(coro)                    # no loop here - the ordinary case
+    with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+        return pool.submit(asyncio.run, coro).result()
+
+
 def save_world(store, rcon=None):
     """Ask every running map to write its world to disk. Returns (ok, detail).
 
@@ -263,10 +285,8 @@ def save_world(store, rcon=None):
 
     password = str(store.get("admin_password") or "")
     if rcon is None:
-        import asyncio
-
         def rcon(host, port, cmd):
-            return asyncio.run(bot.rcon_with(host, port, password, cmd, timeout=30))
+            return run_coroutine(bot.rcon_with(host, port, password, cmd, timeout=30))
 
     done, failed = [], []
     for label, host, port in targets:
