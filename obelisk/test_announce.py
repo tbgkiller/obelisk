@@ -127,6 +127,87 @@ check("oldest first, so the story reads in order",
       [i["event"] for i in later] == ["update.start", "update.done"],
       [i["event"] for i in later])
 
+
+# ---- the UI feed is a second reader, not a second queue
+#
+# The complaint that produced this was that Discord knew more than the UI, which is
+# backwards. The fix has to be one source with two readers, or the two drift - and the
+# specific way it would drift is if the UI read from the queue the relay drains, and
+# started stealing announcements out of the channel.
+drain()
+cap.lines[:] = []
+# Everything above has been filling the ring, which is the point of it - so the mark is
+# taken here and only what comes after is looked at.
+mark = announce.newest_id()
+announce.say("backup.start", "Backing up", archive="a.tar.gz")
+announce.say("ark.update_unsafe", "Not safe", level="error",
+             detail="mod 929420 never loaded\nmod 929902 never loaded", build="25200000")
+
+feed = announce.recent(since=mark)
+check("the feed has both events", len(feed) == 2, [i["event"] for i in feed])
+check("newest first, which is how a person reads a log",
+      feed[0]["event"] == "ark.update_unsafe", [i["event"] for i in feed])
+check("with the level, so an error can look like one", feed[0]["level"] == "error",
+      feed[0]["level"])
+check("and the fields", "build=25200000" in feed[0]["fields"], feed[0]["fields"])
+
+posted = drain()
+check("Discord got both as well", len(posted) == 2, [i["event"] for i in posted])
+check("and draining Discord does not empty the feed - they are separate readers",
+      len(announce.recent(since=mark)) == 2,
+      [i["event"] for i in announce.recent(since=mark)])
+
+# ---- detail: the UI gets more than the channel, on purpose
+check("the feed carries the long version",
+      "929902" in feed[0]["detail"], feed[0]["detail"])
+line = announce.format_for_discord(posted[1])
+check("Discord gets the sentence, not the whole thing", "929902" not in line, line)
+check("but is told where the rest is", "Activity page" in line, line)
+check("the detail is in the log too, since the log is the record",
+      any("929902" in l for l in cap.lines), cap.lines)
+
+# ---- ids, so a polling UI can ask for only what is new
+newest = announce.newest_id()
+announce.say("cluster.launch", "Cluster starting")
+fresh = announce.recent(since=newest)
+check("asking for what is newer than an id returns only that",
+      [i["event"] for i in fresh] == ["cluster.launch"], [i["event"] for i in fresh])
+check("and the id climbs", announce.newest_id() > newest)
+check("a nonsense since is treated as 'everything' rather than crashing the page",
+      len(announce.recent(since="banana")) >= 3)
+
+# ---- secrets are scrubbed out of detail as well as text
+announce.guard_secrets(["hunter2-the-admin-password"])
+announce.say("restore.failed", "it went wrong", level="error",
+             detail="RCON said: password hunter2-the-admin-password rejected")
+check("a secret inside the long detail is redacted too",
+      "hunter2" not in announce.recent()[0]["detail"], announce.recent()[0]["detail"])
+announce.guard_secrets([])
+
+# ---- surviving a restart, which is the difference between a feed and a live tail
+import json, os, tempfile
+
+_dir = tempfile.mkdtemp()
+_path = os.path.join(_dir, "events.json")
+before = announce.recent(limit=500)
+ok_save, why = announce.save_to(_path)
+check("the feed can be written out", ok_save, why)
+
+announce.load_from(_path)
+after = announce.recent(limit=500)
+check("and read back whole", len(after) == len(before), (len(after), len(before)))
+check("with the detail intact",
+      any(i.get("detail") for i in after), [i["event"] for i in after])
+check("ids carry on climbing after a restore, so a polling page is not re-sent old rows",
+      (announce.say("x.after", "after") or announce.newest_id()) >
+      max(i["id"] for i in before), announce.newest_id())
+
+check("a missing file is not an error - a first run has no history",
+      announce.load_from(os.path.join(_dir, "nope.json")) == 0)
+with open(_path, "w", encoding="utf-8") as fh:
+    fh.write("{ this is not json")
+check("and neither is a corrupt one", announce.load_from(_path) == 0)
+
 announce.log.removeHandler(cap)
 print("\nFAILURES: %s" % fails if fails else "\nall announce tests passed")
 sys.exit(1 if fails else 0)

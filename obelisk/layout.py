@@ -37,6 +37,11 @@ SERVER_GID = 7777
 # ---- Obelisk data: the definition. Small, and entirely worth keeping.
 STORE_NAME = "settings.json"
 BACKUPS = "backups"
+# The activity feed, beside the definition rather than inside it. Kept out of
+# settings.json because it changes on every announcement and the store does not - a
+# history that rewrites the file holding the cluster's identity every few seconds is a
+# history that eventually corrupts something worth keeping.
+EVENTS = "events.json"
 
 # ---- Ark data: the bulk.
 SERVERFILES = "ServerFiles"   # the game install - re-downloads
@@ -61,6 +66,7 @@ def obelisk_paths(root):
     root = str(root).rstrip("/")
     return {"root": root,
             "store": "%s/%s" % (root, STORE_NAME),
+            "events": "%s/%s" % (root, EVENTS),
             "backups": "%s/%s" % (root, BACKUPS)}
 
 

@@ -336,6 +336,42 @@ def build_app(store, docker=None):
         asyncio.create_task(_apply_task(bool(form.get("force"))))
         raise web.HTTPFound("/admin/cluster")
 
+    # ---- the activity feed
+    #
+    # Everything that reaches the Discord admin channel, and more of it. The complaint
+    # that produced this was exactly right: the channel knew more than the UI, which is
+    # backwards for a product whose premise is that the UI is enough on its own.
+    def _jobs():
+        """The operations that can be in flight, named the way a person would say them."""
+        return {"Backup": job, "Restore": rjob,
+                ("Update" if ujob.get("what") != "prime" else "Priming"): ujob}
+
+    async def activity_page(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        items = announce.recent(limit=200)
+        body = ui.render_events(items, jobs=_jobs())
+        body = body.replace("<div id=feed>",
+                            '<div id=feed data-newest="%d">' % announce.newest_id(), 1)
+        return chrome(body + ui.FEED_LIVE, "Activity", "/admin/activity")
+
+    async def activity_feed(request):
+        """Only what the page has not already got, so polling is cheap."""
+        if not authed(request):
+            return web.json_response({"html": ""}, status=403)
+        try:
+            since = int(request.query.get("since") or 0)
+        except ValueError:
+            since = 0
+        fresh = announce.recent(limit=50, since=since)
+        # The same builders the page used, so the rows appended by polling cannot look
+        # or behave differently from the ones rendered server-side.
+        return web.json_response({
+            "html": ui.event_rows(fresh, compact=True) if fresh else "",
+            "newest": announce.newest_id(),
+            "running": ui.running_rows(_jobs()),
+        })
+
     async def update_status(request):
         if not authed(request):
             return web.json_response({"state": "denied"}, status=403)
@@ -713,7 +749,16 @@ def build_app(store, docker=None):
             body = ('<div class=note>Cluster not running. %s</div>'
                     % (("Still to set: " + ", ".join(b["label"] for b in todo))
                        if todo else "Launch it from the Cluster tab."))
-        body += _connect_panel() + body_version
+        # The last few events on the front page, because "what has Obelisk been doing"
+        # should not need a tab - that was the shape of the complaint. The full history
+        # and the detail live on Activity.
+        recent = ui.render_events(announce.recent(limit=6), jobs=_jobs(), compact=True)
+        recent = recent.replace("<div id=feed>",
+                                '<div id=feed data-newest="%d">' % announce.newest_id(), 1)
+        recent = recent.replace("</fieldset>",
+                                '<a href="/admin/activity">See everything</a>'
+                                "</fieldset>", 1)
+        body += recent + _connect_panel() + body_version + ui.FEED_LIVE
         return chrome(body, "Obelisk", "/")
 
     async def healthz(_request):
@@ -746,6 +791,8 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/cloud/disconnect", cloud_disconnect)
     app.router.add_post("/admin/cloud/push", cloud_push)
     app.router.add_post("/admin/cloud/pull", cloud_pull)
+    app.router.add_get("/admin/activity", activity_page)
+    app.router.add_get("/admin/activity/feed", activity_feed)
     app.router.add_post("/admin/update/prime", update_prime)
     app.router.add_post("/admin/update/apply", update_apply)
     app.router.add_get("/admin/update/status", update_status)
@@ -820,6 +867,30 @@ async def version_watch():
         except Exception as e:                           # noqa: BLE001 - never fatal
             log.info("version check skipped: %s", e)
         await asyncio.sleep(6 * 3600)
+
+
+async def events_persist(store, interval=5):
+    """Write the activity feed out when it changes, so it survives a restart.
+
+    On a timer against a revision counter rather than on every announcement: a prime
+    emits a phase line every twenty seconds for forty minutes, and rewriting the file
+    for each one would be a lot of disk for no more information. Five seconds is well
+    inside how long anybody takes to notice something happened.
+    """
+    path = layout.obelisk_paths(layout.root_of(store))["events"]
+    last = announce.revision()
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            now = announce.revision()
+            if now != last:
+                ok, why = await asyncio.to_thread(announce.save_to, path)
+                if ok:
+                    last = now
+                else:
+                    log.warning("could not write the activity feed: %s", why)
+        except Exception as e:                          # noqa: BLE001 - never fatal
+            log.warning("activity feed not saved: %s", e)
 
 
 async def ark_update_watch(store, interval=1800, panel=None):
@@ -928,6 +999,17 @@ async def main():
     from .backup import SECRET_KEYS
     announce.guard_secrets([store.get(k) for k in SECRET_KEYS])
 
+    # The activity feed from last time, put back before anything announces - so an admin
+    # opening the UI after a restart sees the backup that ran last night, not an empty
+    # page implying nothing ever happens. Ids carry on climbing from where they left off.
+    try:
+        restored = announce.load_from(
+            layout.obelisk_paths(layout.root_of(store))["events"])
+        if restored:
+            log.info("activity feed: %d earlier event(s) restored", restored)
+    except Exception as e:                               # never a reason not to start
+        log.warning("could not read the activity feed: %s", e)
+
     # Which Obelisk this is, and whether it just changed. The store remembers the last
     # version it saw, so coming back on a different one is reported as an update having
     # landed - which is the question somebody actually has after clicking Apply Update.
@@ -968,6 +1050,7 @@ async def main():
     tasks.append(asyncio.create_task(backup_scheduler(store)))
     tasks.append(asyncio.create_task(version_watch()))
     tasks.append(asyncio.create_task(ark_update_watch(store)))
+    tasks.append(asyncio.create_task(events_persist(store)))
 
     from . import bot
     # The relay used to learn its maps from a SERVERS environment variable, which only

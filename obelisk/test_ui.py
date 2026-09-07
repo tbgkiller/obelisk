@@ -295,5 +295,190 @@ check("nothing is disabled except the install-time fields",
       "%d disabled controls for %d locked fields" % (len(_dis), len(_locked)))
 check("and filtering hides rather than disables", "f.hidden=!ok" in _h)
 
+
+# ---- the ARK update panel: three states, and never a false green
+#
+# The whole panel exists because a checker somewhere reported "up to date" about a
+# question it never asked. So the property under test is that an unanswered row and an
+# answered-and-current row do not render the same.
+class _PanelStore:
+    def __init__(self, **kw):
+        self.values = dict(staging_mode="always", ark_update_mode="obelisk",
+                           curseforge_api_key="", mod_ids="")
+        self.values.update(kw)
+        self.data = {"cluster": {}, "maps": {}}
+
+    def get(self, key, map_name=None):
+        return self.values.get(key)
+
+
+_ps = _PanelStore()
+_status = {
+    "build": {"running": "25117056", "latest": "25200000", "newer": True, "problem": ""},
+    "mods": [
+        {"id": "929110", "name": "TG Stacking", "running": "7738786",
+         "latest": "7738786", "newer": False, "url": "", "problem": ""},
+        {"id": "929420", "name": "Spyglass", "running": "8160173",
+         "latest": "8210044", "newer": True, "url": "", "problem": ""},
+        {"id": "928621", "name": "Utilities Plus", "running": "6621162",
+         "latest": None, "newer": None, "url": "", "problem": "could not ask CurseForge"},
+    ],
+    "mods_newer": [], "any_newer": True, "unknown": True,
+}
+from . import ui
+
+_p = ui.render_ark_update(_ps, _status)
+check("the panel shows the running build and the newer one",
+      "25117056" in _p and "25200000" in _p)
+check("a current mod says current", "current</span>" in _p)
+check("a newer mod says update available", "update available</span>" in _p)
+check("a mod that could not be checked says so, in its own state",
+      "could not check</span>" in _p)
+check("that state is not the current state - a false green is the bug this answers",
+      _p.count("class=current") == 1 and _p.count("class=unknown") == 1,
+      (_p.count("class=current"), _p.count("class=unknown")))
+check("and the reason is shown", "could not ask CurseForge" in _p)
+check("every configured mod gets a row",
+      all(i in _p for i in ("929110", "929420", "928621")))
+check("with nothing staged, Apply is disabled", "disabled>Apply now" in _p)
+
+_ready = {"ok": True, "build": "25200000", "when": 1757260000,
+          "loaded": {"929110": "7738786", "929420": "8210044"}}
+_p2 = ui.render_ark_update(_ps, _status, ready=_ready)
+check("a staged update says so", "Staged and verified" in _p2)
+check("with the timestamp of the boot that proved it",
+      "verified by staging boot at" in _p2)
+check("and the file ids it proved", "8210044" in _p2)
+check("and Apply is offered", "disabled>Apply now" not in _p2)
+
+_p3 = ui.render_ark_update(_ps, _status, ready=_ready, owns=False)
+check("while the image owns updates, Apply stays disabled", "disabled>Apply now" in _p3)
+check("and the panel explains which system is in charge", "two update systems" in _p3)
+
+_p4 = ui.render_ark_update(_ps, _status, staging_on=False)
+check("with the staging server off, Prime is disabled", "disabled>Prime update" in _p4)
+
+_p5 = ui.render_ark_update(_ps, {})
+check("before the first check the panel says it has not looked, not that it failed",
+      "Not checked yet" in _p5 and "could not check" not in _p5)
+
+_bad = _PanelStore()
+_bad.data = {"ark_update": {"primed": {"ok": False, "build": "25200000",
+                                       "problems": ["mod 929420 never loaded"]}}}
+_p6 = ui.render_ark_update(_bad, _status)
+check("a failed rehearsal is shown as a failure, not as nothing staged",
+      "last rehearsal failed" in _p6 and "929420" in _p6)
+check("and Apply is still disabled after one", "disabled>Apply now" in _p6)
+
+_busyp = ui.render_ark_update(_ps, _status,
+                              job={"state": "running", "step": "downloading"})
+check("while something is running the buttons are replaced by what it is doing",
+      "downloading" in _busyp and "Prime update</button>" not in _busyp)
+
+
+# ---- who owns updates decides UPDATE_SERVER, and that is the whole coordination story
+from obelisk.compose import generate_compose
+from obelisk.schema import BY_KEY as _BYKEY
+
+
+def _cstore(mode):
+    """A real Store, because build_plan wants one - and the point of this check is the
+    compose file a real cluster would get, not a fixture's idea of one."""
+    st = Store(os.path.join(tempfile.mkdtemp(), "s.json"))
+    st.patch({"admin_password": "pw", "maps": "island,center",
+              "ark_update_mode": mode})
+    st.patch({"appdata": "/ark"}, source="install")
+    return st
+
+
+_auto = generate_compose(_cstore("automatic"), project="p")
+_obel = generate_compose(_cstore("obelisk"), project="p")
+check("with the image in charge the maps update themselves",
+      'UPDATE_SERVER: "TRUE"' in _auto and 'UPDATE_SERVER: "FALSE"' not in _auto)
+check("with Obelisk in charge they do not",
+      'UPDATE_SERVER: "FALSE"' in _obel and 'UPDATE_SERVER: "TRUE"' not in _obel)
+check("and every map is switched, not just the master",
+      _obel.count('UPDATE_SERVER: "FALSE"') == 2, _obel.count('UPDATE_SERVER: "FALSE"'))
+
+
+# ---- the UI must never know less than the Discord channel
+#
+# The bar, in the owner's words: "the Discord admin channel shows more info than our
+# UI", which is backwards for a product whose premise is that the UI is enough. The
+# structural half of the fix is that both read one list of announcements. This is the
+# half a test can hold: for every event the codebase actually emits, whatever Discord
+# would put in front of a person appears in the feed too.
+import glob as _glob
+import os as _os
+
+from obelisk import announce as _ann
+
+_names = set()
+for _path in _glob.glob(_os.path.join(_os.path.dirname(ui.__file__), "*.py")):
+    if _os.path.basename(_path).startswith("test_"):
+        continue
+    _src_any = open(_path, encoding="utf-8").read()
+    for _m in re.finditer(r'announce\.say\(\s*"([a-z_]+\.[a-z_]+)"', _src_any):
+        _names.add(_m.group(1))
+# Two are built as "cluster.%s" % fn.__name__ rather than written out, so they are
+# named here instead of being quietly missed by the scan.
+_names |= {"cluster.launch", "cluster.stop", "cluster.launch.done",
+           "cluster.stop.failed"}
+_names.discard("spam.event")
+
+check("the audit found the events this codebase emits", len(_names) >= 20, len(_names))
+
+_missing_ui = []
+for _name in sorted(_names):
+    _item = {"id": 1, "event": _name, "text": "something happened",
+             "fields": "build=25200000 map=island", "level": "error", "at": 1757270000,
+             "detail": "the long version, line one\nline two"}
+    _html = ui.event_rows([_item])
+    _chat = _ann.format_for_discord(_item)
+    if not (_name in _html and "something happened" in _html):
+        _missing_ui.append(_name)
+    for _word in ("something happened", "build=25200000"):
+        if _word in _chat and _word not in _html:
+            _missing_ui.append("%s (%s)" % (_name, _word))
+
+check("every announced event renders in the activity feed", not _missing_ui,
+      _missing_ui[:6])
+check("and the feed carries detail the channel deliberately leaves out",
+      "line two" in ui.event_rows([_item]) and
+      "line two" not in _ann.format_for_discord(_item))
+check("while the channel says where the rest is",
+      "Activity page" in _ann.format_for_discord(_item))
+
+check("an error is styled as one rather than reading like news",
+      "ev err" in ui.event_rows([{"id": 1, "event": "x.failed", "text": "t",
+                                  "fields": "", "level": "error", "at": 0,
+                                  "detail": ""}]))
+check("and an ordinary event is not",
+      "ev err" not in ui.event_rows([{"id": 1, "event": "x.done", "text": "t",
+                                      "fields": "", "level": "info", "at": 0,
+                                      "detail": ""}]))
+check("an event nobody wrote an icon for still renders",
+      "totally.unheardof" in ui.event_rows([{"id": 1, "event": "totally.unheardof",
+                                             "text": "t", "fields": "", "level": "info",
+                                             "at": 0, "detail": ""}]))
+check("an empty feed says so rather than rendering nothing at all",
+      "Nothing has happened yet" in ui.render_events([]))
+
+# ---- in-flight operations are visible here too, not only in Discord
+_bz = ui.running_rows({"Backup": {"state": "running", "phase": "compressing",
+                                  "done": 50, "total": 200},
+                       "Restore": {"state": "idle"}})
+check("a running job is shown", "Backup in progress" in _bz, _bz)
+check("with the phase it is on", "compressing" in _bz, _bz)
+check("and a bar when there is a real percentage to show",
+      "evbar" in _bz and "25.0%" in _bz, _bz)
+check("an idle job is not shown at all", "Restore" not in _bz, _bz)
+check("a job with no total gets no invented bar - the backup lesson, again",
+      "evbar" not in ui.running_rows({"Prime": {"state": "running",
+                                                "step": "downloading"}}))
+check("a feed with only a running job still renders rather than saying nothing happened",
+      "Prime in progress" in ui.render_events(
+          [], jobs={"Prime": {"state": "running", "step": "downloading"}}))
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

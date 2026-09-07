@@ -35,6 +35,12 @@ log = logging.getLogger("obelisk.updates")
 STATE = "ark_update"          # store.data[STATE] - manager state, not a setting
 
 
+def _lines(parts):
+    """Join for an event's `detail`. The feed renders it as a block; Discord never
+    sees it."""
+    return "\n".join(str(p) for p in parts)
+
+
 # ---------------------------------------------------------------- state
 
 def state(store):
@@ -214,13 +220,24 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
                      "Build %s is staged and verified: it booted on the staging server "
                      "with all %d mod(s) loaded. Apply it whenever you like."
                      % (target, len(result["loaded"])),
-                     build=target, mods=",".join("%s=%s" % (m, f) for m, f
-                                                 in sorted(result["loaded"].items())))
+                     build=target,
+                     mods=",".join("%s=%s" % (m, f) for m, f
+                                   in sorted(result["loaded"].items())),
+                     detail="\n".join(
+                         ["build %s staged and proved by a real boot" % target] +
+                         ["mod %s loaded from file %s" % (m, f)
+                          for m, f in sorted(result["loaded"].items())]))
     else:
+        # Discord gets the first three problems; the feed gets every one of them, plus
+        # the tail of the log they came out of. This is the case where "go and read
+        # Discord" is least useful and the difference matters most.
         announce.say("ark.update_unsafe",
                      "Build %s is NOT safe to apply - the staging server did not come "
                      "up cleanly: %s" % (target, "; ".join(problems[:3])),
-                     level="error", build=target)
+                     level="error", build=target,
+                     detail="\n".join(problems +
+                                      ["", "--- last lines from the staging server ---"] +
+                                      (container_log() or "").splitlines()[-25:]))
 
     if staging.mode(store) == "on_demand":
         step("stopping the staging server")
@@ -344,13 +361,18 @@ def apply_update(store, ark_root, warn=None, save=None, stop_all=None, start_all
         announce.say("ark.update_failed",
                      "Build %s is live but %s did not pass verification. The previous "
                      "build is still on disk as ServerFiles.staging if it has to go "
-                     "back." % (build, bad or "some maps"), level="error", build=build)
+                     "back." % (build, bad or "some maps"), level="error", build=build,
+                     detail=_lines("%-14s %s" % (k, "passed" if v else "FAILED")
+                                   for k, v in sorted((per_map or {}).items())))
         return False, "applied, but verification failed on: %s" % (bad or "some maps"), {
             "swapped": True, "maps": per_map}
 
     announce.say("ark.update_applied",
                  "ARK build %s is live and every map passed verification." % build,
-                 build=build)
+                 build=build,
+                 detail=_lines(["build %s applied" % build] +
+                               ["%-14s passed the six gates" % k
+                                for k in sorted(per_map or {})]))
     return True, "build %s applied and verified" % build, {"maps": per_map}
 
 

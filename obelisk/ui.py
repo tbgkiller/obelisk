@@ -62,6 +62,22 @@ tr:last-child td{border-bottom:none}
 .current{color:#7fd18f;font-size:12px}
 .newer{color:#ffc46b;font-size:12px;font-weight:600}
 .unknown{color:#c9a0ff;font-size:12px;font-weight:600}
+.ev{border-left:3px solid #2b3542;background:#161b22;border-radius:0 8px 8px 0;padding:8px 12px;margin:0 0 8px}
+.ev.err{border-left-color:#e5534b;background:#1e1618}
+.ev.warn{border-left-color:#d29922}
+.ev.busy{border-left-color:#2f6feb;background:#151d2b}
+.evhead{display:flex;gap:8px;align-items:baseline;flex-wrap:wrap}
+.evtime{color:#5b6472;font-size:11px;font-variant-numeric:tabular-nums}
+.evicon{font-size:12px}
+.evname{color:#8b94a3;font-size:11px}
+.evtext{margin-top:2px}
+.evfields{margin-top:4px;color:#8b94a3;font-size:12px;word-break:break-all}
+.ev details{margin-top:6px}
+.ev summary{color:#8b94a3;font-size:12px;cursor:pointer}
+.evbar{background:#2a2f36;border-radius:5px;height:6px;overflow:hidden;margin-top:7px;max-width:320px}
+.evbar div{height:100%;background:#5b9;transition:width .5s}
+.ev pre{background:#0f1620;border:1px solid #232b36;border-radius:6px;padding:8px 10px;
+  margin:6px 0 0;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-word}
 .card{display:flex;gap:14px;align-items:flex-start;background:#12151a;border:1px solid #303845;border-radius:10px;padding:12px 14px;margin:10px 0}
 .staged{background:#16241b;color:#a9d8b5;border:1px solid #27452f;border-radius:8px;padding:10px 13px;margin:10px 0;font-size:13px}
 label.inline{display:inline-block;margin-left:10px;font-size:12px;color:#8b94a3}
@@ -104,7 +120,8 @@ def _e(v):
 
 def page(title, body, nav_on=""):
     tabs = [("/", "Status"), ("/admin", "Settings"), ("/admin/cluster", "Cluster"),
-            ("/admin/mods", "Mods"), ("/admin/backups", "Backups"),
+            ("/admin/mods", "Mods"), ("/admin/activity", "Activity"),
+            ("/admin/backups", "Backups"),
             ("/admin/restore", "Restore"),
             ("/admin/cloud", "Cloud")]
     nav = "".join('<a href="%s"%s>%s</a>' % (h, ' class=on' if h == nav_on else "", _e(t))
@@ -559,6 +576,123 @@ def render_ark_update(store, status, ready=None, job=None, owns=True, staging_on
             '<table class=versions>%s</table>%s'
             '<div style="margin-top:14px">%s</div></fieldset></form>'
             % (warn, "".join(rows), staged, buttons))
+
+
+def render_events(items, jobs=None, limit=None, compact=False):
+    """The activity feed: everything that reached the admin channel, and more of it.
+
+    The bar this answers is a complaint that was exactly right - the Discord channel
+    knew more than the UI did, which is backwards for a product whose whole premise is
+    that the UI is enough. Discord is a convenience mirror; this is the record.
+
+    Both are fed by the same announcements, so they cannot disagree about what happened.
+    Where they differ is depth: a channel gets one readable line, and this gets the
+    line, the fields, and the `detail` - every problem rather than the first three, the
+    whole per-mod list, the tail of the log a failure came out of.
+    """
+    if not items and not any((j or {}).get("state") == "running"
+                             for j in (jobs or {}).values()):
+        return ('<fieldset><legend>Activity</legend><div class=note>Nothing has '
+                'happened yet. Backups, updates, restores and cluster changes all '
+                'appear here as they run.</div></fieldset>')
+
+    return ('<fieldset><legend>Activity</legend><div id=feed>%s%s</div>'
+            '<div class=help style="margin-top:10px">Everything here also goes to the '
+            'Discord admin channel, from the same source - so the two cannot drift. '
+            'This one keeps the detail.</div></fieldset>'
+            % (running_rows(jobs), event_rows(items, limit=limit, compact=compact)))
+
+
+def event_rows(items, limit=None, compact=False):
+    """Just the rows. The live feed appends these straight into the page, so it renders
+    them with the same function the page did rather than a second implementation that
+    can drift from it."""
+    rows = []
+    for item in (items[:limit] if limit else items):
+        level = item.get("level") or "info"
+        when = time.strftime("%d %b %H:%M:%S", time.localtime(item.get("at") or 0))
+        icon = _EVENT_ICONS.get(item.get("event", "").rsplit(".", 1)[-1], "•")
+        cls = "ev err" if level == "error" else ("ev warn" if level == "warning" else "ev")
+        body = ('<div class="%s"><div class=evhead>'
+                '<span class=evtime>%s</span> <span class=evicon>%s</span> '
+                '<code class=evname>%s</code></div>'
+                '<div class=evtext>%s</div>'
+                % (cls, _e(when), icon, _e(item.get("event")), _e(item.get("text"))))
+        if item.get("fields"):
+            body += '<div class=evfields><code>%s</code></div>' % _e(item["fields"])
+        if item.get("detail"):
+            # Folded rather than hidden. The failure case is the one where somebody is
+            # actually reading this, and making them click twice to see why is how a
+            # UI ends up less useful than a chat channel.
+            body += ('<details%s><summary>details</summary><pre>%s</pre></details>'
+                     % (" open" if level == "error" and not compact else "",
+                        _e(item["detail"])))
+        rows.append(body + "</div>")
+    return "".join(rows)
+
+
+def running_rows(jobs):
+    """What is happening right now, above the history.
+
+    Discord gets a phase line per step; this gets the same phases plus the percentage
+    the existing progress readers already produce, so a forty-minute prime is watchable
+    here rather than only in a chat window.
+    """
+    out = ""
+    for name, job in (jobs or {}).items():
+        if (job or {}).get("state") != "running":
+            continue
+        step = job.get("step") or job.get("phase") or "starting"
+        bar = ""
+        percent = job.get("percent")
+        if percent is None and job.get("total"):
+            percent = round(100.0 * (job.get("done") or 0) / job["total"], 1)
+        if percent is not None:
+            bar = ('<div class=evbar><div style="width:%s%%"></div></div>'
+                   % _e(min(100, max(0, percent))))
+        out += ('<div class="ev busy"><div class=evhead><span class=evicon>…</span> '
+                '<code class=evname>%s in progress</code></div>'
+                '<div class=evtext>%s</div>%s</div>' % (_e(name), _e(step), bar))
+    return out
+
+
+_EVENT_ICONS = {"start": "▶", "done": "✅", "failed": "❌", "unsafe": "❌",
+                "applied": "✅", "primed": "✅", "up": "✅", "degraded": "⚠",
+                "warning": "⚠", "phase": "…", "available": "⬆", "updated": "⬆",
+                "stop": "■", "note": "•"}
+
+
+# Polls for events newer than the newest one on the page and prepends them, so an
+# operation that takes forty minutes is watchable without reloading. Same idea as the
+# backup progress block, generalised: the page says what is happening now, not what was
+# happening when it was opened.
+FEED_LIVE = """
+<script>
+(function(){
+  const feed = document.getElementById('feed');
+  if (!feed) return;
+  let newest = Number(feed.dataset.newest || 0);
+  async function tick(){
+    try{
+      const r = await fetch('/admin/activity/feed?since=' + newest, {cache:'no-store'});
+      if (r.ok){
+        const d = await r.json();
+        if (d.html && d.newest > newest){
+          newest = d.newest;
+          feed.insertAdjacentHTML('afterbegin', d.html);
+        }
+        if (d.running !== undefined){
+          document.querySelectorAll('.ev.busy').forEach(e => e.remove());
+          if (d.running) feed.insertAdjacentHTML('afterbegin', d.running);
+        }
+      }
+    }catch(e){}
+    setTimeout(tick, 4000);
+  }
+  setTimeout(tick, 4000);
+})();
+</script>
+"""
 
 
 def render_settings(store):
