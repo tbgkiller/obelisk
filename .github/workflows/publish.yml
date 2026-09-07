@@ -49,24 +49,14 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Docker Hub as well, because Unraid's update checker cannot reliably read GHCR.
-      # It needs a bearer-token exchange even for a public pull, and Unraid appears to
-      # skip it - so the checker records a stale digest and reports "up to date" when an
-      # update exists. A confident wrong answer is worse than an error: the user is
-      # never told there is anything to apply. Hub needs no token dance.
+      # Docker Hub as well, because Unraid's update checker cannot reliably read GHCR:
+      # a public pull there still needs a bearer-token exchange, which the checker
+      # appears to skip, so it keeps a stale digest and reports "up to date" while an
+      # update sits published. Hub needs no token dance.
       #
-      # Staged: with no DOCKERHUB_USERNAME secret this step is skipped and the build
-      # publishes to GHCR exactly as before, so adding the mirror cannot break CI. Once
-      # the secrets exist, one build pushes to both and the tags cannot drift.
-      - name: Log in to Docker Hub (skipped until the secrets exist)
-        if: ${{ secrets.DOCKERHUB_USERNAME != '' }}
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      # Built as a list rather than inlined, so that with no Hub secret the images list
-      # is GHCR alone rather than GHCR plus a blank line, which metadata-action rejects.
+      # Staged, and gated on a step output rather than on the secret directly - the
+      # secrets context is not available in a step-level `if`, and using it there is a
+      # workflow that fails to parse rather than one that skips a step.
       - id: registries
         env:
           HUB_USER: ${{ secrets.DOCKERHUB_USERNAME }}
@@ -76,7 +66,17 @@ jobs:
             echo "ghcr.io/${GITHUB_REPOSITORY}"
             if [ -n "$HUB_USER" ]; then echo "docker.io/${HUB_USER}/obelisk"; fi
             echo "EOF"
+            if [ -n "$HUB_USER" ]; then echo "hub=yes"; else echo "hub=no"; fi
           } >> "$GITHUB_OUTPUT"
+
+      # Skipped entirely until the owner adds the secrets, so the mirror cannot break
+      # the build before it exists.
+      - name: Log in to Docker Hub
+        if: steps.registries.outputs.hub == 'yes'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       - id: meta
         uses: docker/metadata-action@v5
