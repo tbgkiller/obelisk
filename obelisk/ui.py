@@ -78,6 +78,10 @@ legend .gtoggle:hover{color:#e6e9ef}
 table.grid{max-width:420px;margin:6px 0}
 table.grid input{max-width:120px;padding:4px 8px}
 table.grid td,table.grid th{padding:4px 10px}
+table.rows{min-width:640px}
+table.rows td,table.rows th{padding:4px 8px}
+table.rows input[type=text]{min-width:230px}
+table.rows input[type=number]{max-width:100px}
 """
 
 
@@ -270,6 +274,62 @@ def render_stat_grids(store):
             % (len(STAT_FAMILIES), "".join(blocks)))
 
 
+
+def render_row_arrays(store):
+    """The repeated-key arrays, as tables of rows.
+
+    Columns come from the reference, but a row only writes the fields it has a value
+    for - which is how three of this operator's seventeen engram entries keep their two
+    fields instead of quietly acquiring five.
+    """
+    from .gamesettings import ROW_ARRAYS
+    held = store.data.get("rows", {}) or {}
+    blocks = []
+    for spec in ROW_ARRAYS:
+        rows = held.get(spec["key"], []) or []
+        head = "".join("<th>%s</th>" % _e(lbl) for _f, lbl, _k in spec["fields"])
+        body = []
+        for i, row in enumerate(list(rows) + [[]]):     # one blank row to add with
+            got = {k: v for k, v in row}
+            cells = []
+            for field, _lbl, kind in spec["fields"]:
+                raw = str(got.get(field, ""))
+                if kind == "text":
+                    raw = raw.strip('"')
+                if kind == "bool":
+                    cells.append(
+                        '<td><select name="row:%s:%d:%s">'
+                        '<option value=""%s>-</option>'
+                        '<option value="True"%s>Yes</option>'
+                        '<option value="False"%s>No</option></select></td>'
+                        % (_e(spec["key"]), i, _e(field),
+                           "" if raw else " selected",
+                           " selected" if raw == "True" else "",
+                           " selected" if raw == "False" else ""))
+                else:
+                    cells.append('<td><input type=%s name="row:%s:%d:%s" value="%s"%s></td>'
+                                 % ("number" if kind == "int" else "text",
+                                    _e(spec["key"]), i, _e(field), _e(raw),
+                                    ' placeholder="new row - name an engram to add it"'
+                                    if i == len(rows) and field == spec["fields"][0][0]
+                                    else ""))
+            body.append("<tr>%s</tr>" % "".join(cells))
+        blocks.append(
+            '<div class=f data-k="%s" data-hay="%s" data-changed="0">'
+            '<label>%s <span class=count>%d row%s</span></label>'
+            '<div style="overflow-x:auto"><table class=rows><tr>%s</tr>%s</table></div>'
+            '<div class=help>%s Clear the first column to delete a row; fill the blank '
+            'row to add one. Empty fields are left out of the line entirely.</div></div>'
+            % (_e(spec["key"]),
+               _e((spec["label"] + " " + spec["key"] + " " + spec["help"]).lower()),
+               _e(spec["label"]), len(rows), "" if len(rows) == 1 else "s",
+               head, "".join(body), _e(spec["help"])))
+    return ('<fieldset id="g-engrams" class=grp data-group="Engrams">'
+            '<legend><button type=button class="ghost gtoggle" aria-expanded="true">'
+            'Engrams &amp; lists</button><span class=count>%d</span></legend>'
+            '<div class=gbody>%s</div></fieldset>' % (len(ROW_ARRAYS), "".join(blocks)))
+
+
 def render_settings(store):
     """The settings page: 194 of them, so finding one has to be a first-class job.
 
@@ -304,6 +364,8 @@ def render_settings(store):
     blocks.append(render_stat_grids(store))
     index.append('<a href="#g-per-level-stats">Per-level stats '
                  '<span class=count>5</span></a>')
+    blocks.append(render_row_arrays(store))
+    index.append('<a href="#g-engrams">Engrams &amp; lists</a>')
 
     todo = store.readiness()
     banner = ""

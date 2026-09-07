@@ -49,6 +49,8 @@ PerLevelStatsMultiplier_DinoTamed[0]=1.0
 PerLevelStatsMultiplier_DinoTamed[8]=1.0
 OverrideNamedEngramEntries=(EngramClassName="EngramEntry_A_C",EngramLevelRequirement=2)
 OverrideNamedEngramEntries=(EngramClassName="EngramEntry_B_C",EngramLevelRequirement=2)
+OverrideNamedEngramEntries=(EngramClassName="EngramEntry_C_C",EngramHidden=True,EngramPointsCost=1,EngramLevelRequirement=0,RemoveEngramPreReq=False)
+OverrideNamedEngramEntries=(EngramClassName="EngramEntry_D_C",EngramHidden=True,EngramPointsCost=10,EngramLevelRequirement=0,RemoveEngramPreReq=False)
 """
 
 
@@ -135,7 +137,7 @@ gamecfg.apply(st)
 after_game = open(os.path.join(conf, "Game.ini"), encoding="utf-8").read()
 check("the repeated engram lines survive a write to Game.ini",
       len(ini.parse(after_game).get_all("/Script/ShooterGame.ShooterGameMode",
-                                        "OverrideNamedEngramEntries")) == 2, after_game)
+                                        "OverrideNamedEngramEntries")) == 4, after_game)
 check("and the curated key wrote through its own name",
       "BabyMatureSpeedMultiplier=50.0" in after_game, after_game)
 
@@ -248,7 +250,7 @@ check("no stat the file never mentioned has appeared",
       and "PerLevelStatsMultiplier_DinoWild" not in _after5, _after5)
 check("the repeated engram lines survive a grid write",
       len(ini.parse(_after5).get_all(gamesettings.GAME_MODE,
-                                     "OverrideNamedEngramEntries")) == 2, _after5)
+                                     "OverrideNamedEngramEntries")) == 4, _after5)
 check("and the scalars beside them are untouched",
       "BabyMatureSpeedMultiplier=1000.0" in _after5)
 
@@ -303,6 +305,113 @@ check("and leaves the other family alone",
 check("no stat cell is modelled as a scalar setting",
       not any("[" in k for _s, _w, _sec, k in gamecfg.targets()),
       [k for _s, _w, _sec, k in gamecfg.targets() if "[" in k])
+
+
+# ---------------------------------------------------------------- repeated-key arrays
+#
+# The shape that is easiest to destroy. configparser would collapse these four lines to
+# one; this operator has seventeen of them, fourteen with five fields and three with two,
+# and both facts have to survive a save that changes none of them.
+st8, conf8 = fresh()
+_g8 = os.path.join(conf8, "Game.ini")
+_b8 = open(_g8, encoding="utf-8").read()
+
+n = gamecfg.adopt_rows(st8)
+check("every row is read", n == 4, n)
+rows8 = st8.data["rows"]["OverrideNamedEngramEntries"]
+check("in file order",
+      [dict(r)["EngramClassName"] for r in rows8]
+      == ['"EngramEntry_A_C"', '"EngramEntry_B_C"',
+          '"EngramEntry_C_C"', '"EngramEntry_D_C"'],
+      [dict(r)["EngramClassName"] for r in rows8])
+check("a two-field row keeps two fields", len(rows8[0]) == 2, rows8[0])
+check("a five-field row keeps five", len(rows8[2]) == 5, rows8[2])
+check("field order inside a row is preserved",
+      [k for k, _v in rows8[2]] == ["EngramClassName", "EngramHidden",
+                                    "EngramPointsCost", "EngramLevelRequirement",
+                                    "RemoveEngramPreReq"], rows8[2])
+
+ok8, msg8 = gamecfg.apply(st8)
+check("a full round trip of the array writes nothing", "already match" in msg8, msg8)
+check("and the file is byte-identical", open(_g8, encoding="utf-8").read() == _b8)
+check("nothing was collapsed or deduplicated",
+      len(ini.parse(open(_g8, encoding="utf-8").read())
+          .get_all(gamesettings.GAME_MODE, "OverrideNamedEngramEntries")) == 4)
+
+# ---- edit one row: one line
+st8.data["rows"]["OverrideNamedEngramEntries"][1][1][1] = "7"     # LevelRequirement
+gamecfg.apply(st8)
+_a8 = open(_g8, encoding="utf-8").read()
+check("editing a row rewrites exactly one line",
+      sum(1 for a, b in zip(_b8.splitlines(), _a8.splitlines()) if a != b) == 1,
+      [(a, b) for a, b in zip(_b8.splitlines(), _a8.splitlines()) if a != b])
+check("and the file is the same length",
+      len(_a8.splitlines()) == len(_b8.splitlines()))
+check("the two-field row is still two fields",
+      'OverrideNamedEngramEntries=(EngramClassName="EngramEntry_A_C",'
+      'EngramLevelRequirement=2)' in _a8, _a8)
+
+# ---- add one row: one line
+st8.data["rows"]["OverrideNamedEngramEntries"].append(
+    [["EngramClassName", '"EngramEntry_NEW_C"'], ["EngramLevelRequirement", "5"]])
+gamecfg.apply(st8)
+_a9 = open(_g8, encoding="utf-8").read()
+check("adding a row adds exactly one line",
+      len(_a9.splitlines()) == len(_a8.splitlines()) + 1)
+check("the new row is there", 'EngramEntry_NEW_C' in _a9)
+check("and it landed with the others, not at the end of the file",
+      _a9.splitlines().index(
+          [l for l in _a9.splitlines() if "EngramEntry_NEW_C" in l][0])
+      == _a9.splitlines().index(
+          [l for l in _a9.splitlines() if "EngramEntry_D_C" in l][0]) + 1, _a9)
+
+# ---- remove one row: one line, and only that one
+del st8.data["rows"]["OverrideNamedEngramEntries"][2]           # the C row
+gamecfg.apply(st8)
+_a10 = open(_g8, encoding="utf-8").read()
+check("removing a row removes exactly one line",
+      len(_a10.splitlines()) == len(_a9.splitlines()) - 1)
+check("the right row went", "EngramEntry_C_C" not in _a10)
+check("and every other row is untouched",
+      all(x in _a10 for x in ("EngramEntry_A_C", "EngramEntry_B_C",
+                              "EngramEntry_D_C", "EngramEntry_NEW_C")), _a10)
+check("order is still the file's",
+      [l.split('"')[1] for l in _a10.splitlines() if "OverrideNamedEngram" in l
+       and l.startswith("Override")]
+      == ["EngramEntry_A_C", "EngramEntry_B_C", "EngramEntry_D_C", "EngramEntry_NEW_C"])
+
+# ---- the Phase 3 trap again: a store that has not adopted must not wipe the array
+st9, conf9 = fresh()
+_g9 = os.path.join(conf9, "Game.ini")
+_b9 = open(_g9, encoding="utf-8").read()
+gamecfg.adopt(st9)                       # scalars only - no adopt_rows
+check("a store with no rows says nothing about them",
+      "rows" not in st9.data or not st9.data.get("rows"))
+gamecfg.apply(st9)
+check("so the array is left completely alone",
+      open(_g9, encoding="utf-8").read() == _b9)
+check("all four engram lines are still there",
+      len(ini.parse(open(_g9, encoding="utf-8").read())
+          .get_all(gamesettings.GAME_MODE, "OverrideNamedEngramEntries")) == 4)
+
+# ---- shapes we refuse to model are left to the passthrough
+check("a nested tuple is refused rather than half-parsed",
+      gamecfg.split_fields('(A=1,B=(C=2))') is None)
+check("so is a malformed one", gamecfg.split_fields("not a tuple") is None)
+check("a quoted comma does not split a field",
+      gamecfg.split_fields('(Name="a,b",N=1)') ==
+      [("Name", '"a,b"'), ("N", "1")],
+      gamecfg.split_fields('(Name="a,b",N=1)'))
+check("the deeply nested arrays are deliberately not modelled",
+      not any(a["key"] in ("ConfigOverrideSupplyCrateItems",
+                           "ConfigOverrideItemCraftingCosts")
+              for a in gamesettings.ROW_ARRAYS),
+      [a["key"] for a in gamesettings.ROW_ARRAYS])
+check("the engram fields are the five the reference gives",
+      [f for f, _l, _k in gamesettings.ROW_BY_KEY[
+          "OverrideNamedEngramEntries"]["fields"]]
+      == ["EngramClassName", "EngramHidden", "EngramPointsCost",
+          "EngramLevelRequirement", "RemoveEngramPreReq"])
 
 print("\nFAILURES: %s" % fails if fails else "\nall gamecfg tests passed")
 sys.exit(1 if fails else 0)

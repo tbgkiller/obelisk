@@ -146,6 +146,11 @@ def apply(store, backup=True, merge=None):
     for target, value in grid_changes(store, docs["Game"]).items():
         changes["Game"][target] = value
 
+    # Arrays are lists of lines rather than one line, so they are handed over as such -
+    # ini.py turns them into the smallest edit that gets from one to the other.
+    for (which, section, key), values in row_changes(store, docs).items():
+        changes[which][(section, key)] = values
+
     written, notes = [], []
     for which in FILES:
         if not changes[which]:
@@ -246,3 +251,101 @@ def _fmt(value):
     """Numbers the way the file writes them: 3.0, not 3."""
     text = ("%f" % value).rstrip("0")
     return text + "0" if text.endswith(".") else text
+
+
+# ---------------------------------------------------------------------------------
+# Repeated-key arrays, as rows.
+#
+# The shape that is easiest to destroy: seventeen lines sharing one key, which
+# configparser would collapse to the last one. ini.py keeps them, and everything here
+# is arranged so that a row survives untouched unless somebody edits that row.
+
+def split_fields(body):
+    """(Field=Value, ...) -> [(field, raw)], respecting quotes. None if it is nested.
+
+    Nested tuples are refused rather than half-understood. A row editor that flattened
+    ConfigOverrideSupplyCrateItems would be guessing at a shape it cannot put back.
+    """
+    text = body.strip()
+    if not (text.startswith("(") and text.endswith(")")):
+        return None
+    inner, out, buf, quoted, depth = text[1:-1], [], "", False, 0
+    for ch in inner:
+        if ch == '"':
+            quoted = not quoted
+        elif not quoted and ch in "([":
+            depth += 1
+        elif not quoted and ch in ")]":
+            depth -= 1
+        if ch == "," and not quoted and depth == 0:
+            out.append(buf)
+            buf = ""
+            continue
+        buf += ch
+    if buf.strip():
+        out.append(buf)
+    if depth != 0:
+        return None
+    pairs = []
+    for part in out:
+        if "=" not in part:
+            return None
+        name, _eq, value = part.partition("=")
+        if "(" in value or "[" in value:
+            return None                      # nested: not ours to edit
+        pairs.append((name.strip(), value.strip()))
+    return pairs
+
+
+def join_fields(pairs):
+    return "(%s)" % ",".join("%s=%s" % (k, v) for k, v in pairs)
+
+
+def read_rows(store, docs=None):
+    """{array key: [[(field, raw)], ...]} exactly as the file has them, in file order."""
+    docs = docs or {w: ini.read(path_of(store, w)) for w in FILES}
+    out = {}
+    for spec in gamesettings.ROW_ARRAYS:
+        raws = docs[spec["file"]].get_all(spec["section"], spec["key"])
+        rows = []
+        for raw in raws:
+            pairs = split_fields(raw)
+            if pairs is None:                # leave the whole array alone if any row
+                rows = None                  # is a shape we cannot put back
+                break
+            rows.append(pairs)
+        if rows:
+            out[spec["key"]] = rows
+    return out
+
+
+def adopt_rows(store, docs=None):
+    """Pull the arrays into the store. Returns how many rows were found."""
+    rows = read_rows(store, docs)
+    store.data.setdefault("rows", {})
+    total = 0
+    for key, value in rows.items():
+        store.data["rows"][key] = [[[k, v] for k, v in row] for row in value]
+        total += len(value)
+    return total
+
+
+def row_changes(store, docs=None):
+    """{(section, key): [line values]} for arrays whose rows actually differ."""
+    docs = docs or {w: ini.read(path_of(store, w)) for w in FILES}
+    held = store.data.get("rows", {}) or {}
+    changes = {}
+    for spec in gamesettings.ROW_ARRAYS:
+        key = spec["key"]
+        # An array the store says nothing about is one we do not touch. Without this a
+        # store that had not adopted the rows yet is indistinguishable from an operator
+        # who deleted every one of them - the same trap the stat grids sprang in Phase 3.
+        if key not in held:
+            continue
+        current = docs[spec["file"]].get_all(spec["section"], key)
+        if any(split_fields(r) is None for r in current):
+            continue                          # a shape we refused to read, so do not write
+        wanted = [join_fields([(k, v) for k, v in row]) for row in held[key]]
+        if wanted != current:
+            changes[(spec["file"], spec["section"], key)] = wanted
+    return changes

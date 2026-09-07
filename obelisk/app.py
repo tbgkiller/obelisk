@@ -105,8 +105,38 @@ def build_app(store, docker=None):
         if any(n.startswith("stat:") for n in form):
             store.data["stats"] = stats
 
+        # Arrays post as row:<key>:<index>:<field>. A row whose first field is blank is
+        # a deleted row; a blank field inside a kept row simply is not written, which is
+        # how a two-field engram entry stays a two-field engram entry.
+        from .gamesettings import ROW_ARRAYS, ROW_BY_KEY
+        posted = {}
+        for name, raw in form.items():
+            if not name.startswith("row:"):
+                continue
+            _tag, akey, index, field = name.split(":", 3)
+            posted.setdefault(akey, {}).setdefault(index, {})[field] = str(raw).strip()
+        if posted:
+            rows_out = {}
+            for spec in ROW_ARRAYS:
+                akey = spec["key"]
+                if akey not in posted:
+                    continue
+                order = sorted(posted[akey], key=lambda x: int(x))
+                built = []
+                for index in order:
+                    got = posted[akey][index]
+                    first = spec["fields"][0][0]
+                    if not got.get(first):
+                        continue                     # no class name: the row is gone
+                    built.append([[f, _row_value(kind, got[f])]
+                                  for f, _lbl, kind in spec["fields"]
+                                  if got.get(f) not in (None, "")])
+                rows_out[akey] = built
+            store.data.setdefault("rows", {}).update(rows_out)
+
         changes = {k: v for k, v in form.items()
-                   if k != "code" and not k.startswith("stat:")}
+                   if k != "code" and not k.startswith("stat:")
+                   and not k.startswith("row:")}
         # Settings Docker fixed at create time are shown here read-only. A browser that
         # posts them back - an older page, an autofill, a field that was not disabled -
         # must not be able to fail the whole save: the user changed something else and
@@ -413,6 +443,16 @@ def build_app(store, docker=None):
     return app
 
 
+def _row_value(kind, text):
+    """A form field as the file spells it: strings quoted, bools capitalised."""
+    text = str(text).strip()
+    if kind == "text":
+        return text if text.startswith('"') else '"%s"' % text.strip('"')
+    if kind == "bool":
+        return "True" if text.lower() in ("true", "yes", "on", "1") else "False"
+    return text
+
+
 def _is_password(key):
     from .schema import BY_KEY
     return BY_KEY.get(key, {}).get("type") == "password"
@@ -458,9 +498,12 @@ async def main():
     try:
         adopted, unreadable = gamecfg.adopt(store)
         cells = gamecfg.adopt_grids(store)
+        rows = gamecfg.adopt_rows(store)
         if cells:
             log.info("game settings: %d per-level stat cell(s) read", cells)
-        if adopted or cells:
+        if rows:
+            log.info("game settings: %d array row(s) read", rows)
+        if adopted or cells or rows:
             store.save()
             log.info("game settings: %d read from the INI files", adopted)
         if unreadable:

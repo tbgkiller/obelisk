@@ -398,3 +398,36 @@ STAT_FAMILIES = [
     ("PerLevelStatsMultiplier_DinoWild", "Wild creatures",
      "How much each stat gains per level on wild creatures."),
 ]
+
+
+# ---------------------------------------------------------------------------------
+# Open-ended arrays: settings written as the same key repeated, one line per row.
+#
+# OverrideNamedEngramEntries is the one this cluster actually uses, seventeen times.
+# Its five fields are the game's, confirmed against the configuration reference, and
+# they match the file exactly. Columns are still taken from what each row contains, so
+# a row that only sets two fields keeps only two - the reference decides what may be
+# offered, never what gets written.
+#
+# The deeply nested arrays are deliberately absent. ConfigOverrideSupplyCrateItems and
+# ConfigOverrideItemCraftingCosts nest tuples inside tuples inside lists, and a row
+# editor that flattened them would be guessing at a shape it cannot round-trip. They
+# stay in the Extra*.ini passthrough, where they work today and cannot be damaged.
+ROW_ARRAYS = [
+    dict(key="OverrideNamedEngramEntries", file="Game", section=GAME_MODE,
+         label="Engram overrides", group="Engrams",
+         help="One row per engram: hide it, change what it costs, or change the level "
+              "it unlocks at. A row only writes the fields you fill in.",
+         fields=[("EngramClassName", "Engram class", "text"),
+                 ("EngramHidden", "Hidden", "bool"),
+                 ("EngramPointsCost", "Points cost", "int"),
+                 ("EngramLevelRequirement", "Level required", "int"),
+                 ("RemoveEngramPreReq", "Drop prerequisites", "bool")]),
+    dict(key="EngramEntryAutoUnlocks", file="Game", section=GAME_MODE,
+         label="Auto-unlocked engrams", group="Engrams",
+         help="Engrams handed out automatically at a level.",
+         fields=[("EngramClassName", "Engram class", "text"),
+                 ("LevelToAutoUnlock", "Unlocks at level", "int")]),
+]
+
+ROW_BY_KEY = {a["key"]: a for a in ROW_ARRAYS}

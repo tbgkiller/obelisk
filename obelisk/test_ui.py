@@ -151,14 +151,41 @@ _h = render_settings(_st)
 
 # The stat grids are rendered as searchable blocks too, so the page holds one entry per
 # setting plus one per stat family - not one per cell, which was the Phase 1 mistake.
-from .gamesettings import STAT_FAMILIES, STATS
-check("every setting is still on the page, plus one block per stat family",
-      len(re.findall(r"class=f data-k=", _h)) == len(SETTINGS) + len(STAT_FAMILIES),
-      "%d blocks for %d settings + %d families"
-      % (len(re.findall(r"class=f data-k=", _h)), len(SETTINGS), len(STAT_FAMILIES)))
+from .gamesettings import STAT_FAMILIES, STATS, ROW_ARRAYS
+check("every setting is on the page, plus a block per stat family and per array",
+      len(re.findall(r"class=f data-k=", _h))
+      == len(SETTINGS) + len(STAT_FAMILIES) + len(ROW_ARRAYS),
+      "%d blocks for %d settings + %d families + %d arrays"
+      % (len(re.findall(r"class=f data-k=", _h)), len(SETTINGS),
+         len(STAT_FAMILIES), len(ROW_ARRAYS)))
 check("no stat cell is a setting of its own any more",
       not any("[" in s["key"] for s in SETTINGS),
       [s["key"] for s in SETTINGS if "[" in s["key"]])
+
+# ---- the row editors
+_str = Store(os.path.join(tempfile.mkdtemp(), "s.json")).load()
+_str.patch({"status_port": 8088}, source="install")
+_str.data["rows"] = {"OverrideNamedEngramEntries": [
+    [["EngramClassName", '"EngramEntry_A_C"'], ["EngramLevelRequirement", "2"]],
+    [["EngramClassName", '"EngramEntry_B_C"'], ["EngramHidden", "True"],
+     ["EngramPointsCost", "1"]]]}
+_hr = render_settings(_str)
+check("there is a table per array", _hr.count("class=rows") == len(ROW_ARRAYS))
+check("the engram columns are the reference's five",
+      all(c in _hr for c in ("Engram class", "Hidden", "Points cost",
+                             "Level required", "Drop prerequisites")))
+check("his rows are shown unquoted, as something you can type over",
+      'value="EngramEntry_A_C"' in _hr and '"EngramEntry_A_C"' not in
+      _hr.split('value="EngramEntry_A_C"')[0][-40:], "class name is editable text")
+check("a blank row is offered to add with", "name an engram to add it" in _hr)
+check("the row count is shown", ">2 rows<" in _hr)
+check("bools are a three-way choice so a field can stay unset",
+      len(re.findall(r'<option value=""[^>]*>-</option>', _hr)) >= 2,
+      len(re.findall(r'<option value=""[^>]*>-</option>', _hr)))
+check("the arrays are searchable", 'data-k="OverrideNamedEngramEntries" data-hay=' in _hr)
+check("and claim no default, since none is documented for a list",
+      re.search(r'data-k="OverrideNamedEngramEntries"[^>]*data-changed="0"', _hr)
+      is not None)
 
 # ---- the grids themselves
 _stg = Store(os.path.join(tempfile.mkdtemp(), "s.json")).load()

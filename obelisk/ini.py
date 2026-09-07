@@ -129,18 +129,48 @@ class Doc:
         return self._insert(section, key, value)
 
     def set_all(self, section, key, values):
-        """Replace a repeated key with exactly these values, in this order."""
+        """Replace a repeated key with exactly these values, in this order.
+
+        As a minimal edit, not a rewrite. Deleting seventeen lines and writing seventeen
+        back produces a seventeen-line diff for a one-word change, and buries the edit
+        somebody actually made in noise - in a file they will read again later, and in
+        the .bak they would have to compare against if something went wrong. Adding a row
+        adds a line, removing one removes a line, changing one changes a line.
+        """
+        import difflib
         rows = self._rows(section, key)
-        values = list(values)
+        values = [str(v) for v in values]
         if not rows:
             for v in values:
                 self._insert(section, key, v)
             return self
-        at = rows[0][0]
-        for i, _k in reversed(rows):
-            del self.lines[i]
-        for offset, v in enumerate(values):
-            self.lines.insert(at + offset, "%s=%s%s" % (key, v, self.eol))
+
+        at = [i for i, _k in rows]
+        current = [_ENTRY.match(self.lines[i].rstrip("\r\n")).group(4) for i in at]
+        line_for = lambda v: "%s=%s%s" % (key, v, self.eol)   # noqa: E731 - one shape
+
+        # Work back to front so earlier indices stay valid as lines move.
+        ops = difflib.SequenceMatcher(a=current, b=values, autojunk=False).get_opcodes()
+        for tag, i1, i2, j1, j2 in reversed(ops):
+            if tag == "equal":
+                continue
+            if tag == "replace":
+                for off in range(min(i2 - i1, j2 - j1)):
+                    body = self.lines[at[i1 + off]].rstrip("\r\n")
+                    end = self.lines[at[i1 + off]][len(body):] or self.eol
+                    self.lines[at[i1 + off]] = "%s=%s%s" % (key, values[j1 + off], end)
+                for i in reversed(range(i1 + (j2 - j1), i2)):
+                    del self.lines[at[i]]
+                for off in range(i2 - i1, j2 - j1):
+                    self.lines.insert(at[i2 - 1] + 1 + (off - (i2 - i1)),
+                                      line_for(values[j1 + off]))
+            elif tag == "delete":
+                for i in reversed(range(i1, i2)):
+                    del self.lines[at[i]]
+            elif tag == "insert":
+                where = (at[i1] if i1 < len(at) else at[-1] + 1)
+                for off, v in enumerate(values[j1:j2]):
+                    self.lines.insert(where + off, line_for(v))
         return self
 
     def unset(self, section, key):
