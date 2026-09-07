@@ -611,5 +611,64 @@ check("and Obelisk's own points at the Docker page",
       "needs Obelisk restarted" in _page)
 check("the old one-size-fits-all badge is gone", "needs recreate" not in _page)
 
+
+# ---- the pending panel, and the field that must not look like the save failed
+from obelisk import pending as _pend
+
+_pst = store()
+_pend.stage(_pst, {"max_players": 250, "mod_ids": "929110,940003"})
+_pend.stage(_pst, {"mem_limit": "36g"}, map_name="astraeos")
+
+_pp = ui.render_pending(_pend.rows(_pst), when_text="as soon as the cluster is empty")
+check("the panel counts what is waiting", "3 changes waiting" in _pp, _pp[:250])
+check("and says they land in one restart", "one restart" in _pp)
+check("and when", "as soon as the cluster is empty" in _pp)
+check("each change shows what it is changing from and to",
+      "70" in _pp and "250" in _pp, _pp[:600])
+check("a per-map change says which map", "astraeos only" in _pp, _pp)
+check("each one can be discarded on its own", _pp.count("name=drop") == 3,
+      _pp.count("name=drop"))
+check("and all at once", 'name=discard value=all' in _pp)
+check("Apply now is offered", "Apply now" in _pp)
+
+_pp2 = ui.render_pending(_pend.rows(_pst), players=(3, {"island": 3}, []))
+check("players online are called out before applying",
+      "3 player(s) are online" in _pp2 and "island (3)" in _pp2, _pp2[-700:])
+_pp3 = ui.render_pending(_pend.rows(_pst), players=(0, {}, [("genesis", "timeout")]))
+check("and so is a map that did not answer - silence is not empty",
+      "did not answer" in _pp3 and "genesis" in _pp3, _pp3[-500:])
+
+_pp4 = ui.render_pending([], primed={"build": "25200000", "running": "25117056"})
+check("a staged update rides in the same batch", "ARK build" in _pp4 and
+      "25200000" in _pp4, _pp4)
+check("nothing waiting renders nothing", ui.render_pending([]) == "")
+
+_loud = store()
+_pend.stage(_loud, {"cluster_id": "renamed-cluster"})
+check("a change that is not ordinary says so in the panel",
+      "compose project" in ui.render_pending(_pend.rows(_loud)))
+
+_sec = store()
+_pend.stage(_sec, {"admin_password": "a-brand-new-secret-value"})
+check("a queued password is never rendered",
+      "a-brand-new-secret-value" not in ui.render_pending(_pend.rows(_sec)))
+
+_busyp = ui.render_pending(_pend.rows(_pst),
+                           job={"state": "running", "step": "stopping the cluster"})
+check("while the batch is applying the buttons are replaced by the phase",
+      "stopping the cluster" in _busyp and "Apply now" not in _busyp)
+
+# The field itself. Showing the live value after a save reads as the save having failed.
+_fld = store()
+_before = render_settings(_fld)
+check("no pending badge when nothing is queued", "tag pend" not in _before)
+_pend.stage(_fld, {"max_players": 250})
+_after = render_settings(_fld)
+check("the field shows what was asked for", 'value="250"' in _after, "250 not in field")
+check("with a badge saying it is waiting", "tag pend" in _after)
+check("while the live value is untouched", _fld.get("max_players") == 70)
+check("a setting that is not queued is unaffected",
+      'value="20g"' in _after or "20g" in _after)
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

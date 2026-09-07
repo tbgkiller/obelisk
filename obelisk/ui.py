@@ -127,6 +127,7 @@ legend .gtoggle{background:none;color:#8b94a3;font:inherit;font-size:11px;
   text-transform:uppercase;letter-spacing:.6px;padding:0;cursor:pointer}
 legend .gtoggle:hover{color:#e6e9ef}
 .tag.chg{background:#17324a;color:#7fb2ff}
+.tag.pend{background:#3a2f14;color:#ffc46b}
 table.grid{max-width:420px;margin:6px 0}
 table.grid input{max-width:120px;padding:4px 8px}
 table.grid td,table.grid th{padding:4px 10px}
@@ -137,6 +138,13 @@ table.rows input[type=number]{max-width:100px}
 table.permap{width:100%;max-width:560px;margin:4px 0}
 table.permap td{padding:4px 8px}
 """
+
+
+class _Unset(object):
+    """No pending value, which is not the same as a pending value of ""."""
+
+
+_UNSET = _Unset()
 
 
 def _e(v):
@@ -159,7 +167,7 @@ def page(title, body, nav_on=""):
             % (_e(title), CSS, _e(title), nav, body))
 
 
-def _field(s, value, locked):
+def _field(s, value, locked, pending_value=_UNSET):
     """One control, from the schema.
 
     A locked field is disabled rather than merely readonly, because readonly still
@@ -169,6 +177,12 @@ def _field(s, value, locked):
     """
     t, key = s["type"], s["key"]
     ro = " readonly disabled" if locked else ""
+    # Show what was asked for, not what is running. Rendering the live value here would
+    # mean typing 250, saving, and being shown 70 again - which reads as the save having
+    # failed. The badge below says the difference is deliberate and when it lands.
+    waiting = not isinstance(pending_value, _Unset)
+    if waiting:
+        value = pending_value
     if t == "bool":
         ctrl = ('<select name="%s"%s><option value="true"%s>Yes</option>'
                 '<option value="false"%s>No</option></select>'
@@ -214,6 +228,9 @@ def _field(s, value, locked):
         tags += ('<span class=tag title="applied from the Unraid Docker page - Obelisk '
                  'cannot replace its own container mid-flight">needs Obelisk restarted'
                  '</span>')
+    if waiting:
+        tags += ('<span class="tag pend" title="saved, and waiting for a safe moment '
+                 'to restart the cluster">pending</span>')
     help_txt = _e(s.get("help", ""))
     if locked:
         help_txt += (" <strong>Set when the container was created</strong> - change it in "
@@ -812,6 +829,70 @@ def render_dashboard(status=None, ready=None, failed=None, job=None, relay=None,
             % "".join(blocks))
 
 
+def render_pending(rows, when_text="", job=None, players=None, primed=None):
+    """What is waiting, why it is waiting, and how to stop waiting.
+
+    A panel rather than a banner, because the useful thing is not "something is pending"
+    - it is *which* things, what each one is changing from and to, and that they will all
+    land in one restart rather than one each.
+    """
+    if not rows and not primed:
+        return ""
+
+    lines = []
+    for row in rows:
+        where = ('<span class=help>%s only</span>' % _e(row["map"])) if row["map"] else \
+                '<span class=help>all maps</span>'
+        lines.append(
+            '<tr><td>%s %s</td><td><code>%s</code> &rarr; <code>%s</code></td>'
+            '<td class=num><button class=ghost type=submit name=drop value="%s">'
+            'discard</button></td></tr>%s'
+            % (_e(row["label"]), where, _e(row["from"]), _e(row["to"]),
+               _e("%s|%s" % (row["map"], row["key"])),
+               ('<tr><td colspan=3><div class=problem>%s</div></td></tr>'
+                % _e(row["warning"])) if row.get("warning") else ""))
+
+    if primed:
+        lines.append('<tr><td>ARK build <span class=help>staged &amp; verified</span>'
+                     '</td><td><code>%s</code> &rarr; <code>%s</code></td>'
+                     '<td class=num></td></tr>'
+                     % (_e(primed.get("running") or "current"),
+                        _e(primed.get("build"))))
+
+    n = len(rows) + (1 if primed else 0)
+    head = ('<div class=note><b>%d change%s waiting.</b> They will all be applied in '
+            'one restart%s.</div>' % (n, "" if n == 1 else "s",
+                                      (" " + when_text) if when_text else ""))
+
+    busy = (job or {}).get("state") == "running"
+    if busy:
+        buttons = ('<div class=note>Applying now: %s</div>'
+                   % _e(job.get("step") or "starting"))
+    else:
+        warn = ""
+        total, counts, silent = players or (0, {}, [])
+        if silent:
+            warn = ('<div class=problem>%d map(s) did not answer, so it is not known '
+                    'whether anyone is on them: %s.</div>'
+                    % (len(silent), _e(", ".join(l for l, _ in silent))))
+        elif total:
+            warn = ('<div class=problem><b>%d player(s) are online</b> right now: %s. '
+                    'Applying will restart their servers.</div>'
+                    % (total, _e(", ".join("%s (%d)" % (m, c)
+                                           for m, c in sorted(counts.items()) if c))))
+        buttons = (warn +
+                   '<button type=submit name=apply value=1>Apply now</button> '
+                   '<button class=ghost type=submit name=discard value=all>'
+                   'Discard all</button>'
+                   '<label class=inline><input type=checkbox name=force value=1> '
+                   'apply even with players online</label>')
+
+    return ('<form method=post action="/admin/pending">'
+            '<fieldset><legend>Waiting to be applied</legend>%s'
+            '<table>%s</table><div style="margin-top:14px">%s</div>'
+            '</fieldset></form>' % (head, "".join(lines), buttons))
+
+
 def render_events(items, jobs=None, limit=None, compact=False):
     """The activity feed: everything that reached the admin channel, and more of it.
 
@@ -946,6 +1027,11 @@ def render_settings(store):
     and a filter for the ones that differ from the game's defaults - which is how you
     read a cluster somebody else configured, including your own from a year ago.
     """
+    # Cluster-level queued changes, so a field shows what was asked for rather than
+    # what is still running. Per-map ones live on the overrides table and are shown there.
+    from .pending import queued as _queued
+    waiting = _queued(store)["cluster"] if hasattr(store, "data") else {}
+
     blocks, index, total_changed = [], [], 0
     for g in GROUPS:
         rows = [s for s in SETTINGS if s["group"] == g]
@@ -955,8 +1041,10 @@ def render_settings(store):
         changed_here = sum(1 for s in rows
                            if is_changed(s, store.get(s["key"])))
         total_changed += changed_here
-        fields = "".join(_field(s, store.get(s["key"]), s["key"] in INSTALL_KEYS)
-                         for s in rows)
+        fields = "".join(
+            _field(s, store.get(s["key"]), s["key"] in INSTALL_KEYS,
+                   pending_value=(waiting[s["key"]] if s["key"] in waiting else _UNSET))
+            for s in rows)
         index.append('<a href="#%s">%s <span class=count>%d</span></a>'
                      % (gid, _e(g), len(rows)))
         blocks.append(

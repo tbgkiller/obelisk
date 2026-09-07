@@ -380,6 +380,21 @@ SETTINGS = [
               "for someone to click Apply. Only ever applies something that already "
               "booted cleanly on the staging server."),
 
+    dict(key="apply_when_empty", label="Apply waiting changes when nobody is on",
+         group="Cluster", type="bool", default=True,
+         target="obelisk:apply_when_empty", apply="none",
+         help="Settings that restart your servers wait for a moment that costs nobody "
+              "anything. With this on, Obelisk applies them as soon as every map "
+              "reports zero players for a few minutes running. Turn it off to apply "
+              "them only in the update window or by hand."),
+
+    dict(key="apply_empty_hours", label="Only apply between", group="Cluster",
+         type="text", default="", target="obelisk:apply_empty_hours", apply="none",
+         pattern=r"^$|^\d{1,2}:\d{2} ?[AaPp][Mm]-\d{1,2}:\d{2} ?[AaPp][Mm]$",
+         help="Optional. Restricts the empty-cluster apply to a time range, e.g. "
+              "\"2:00 AM-10:00 AM\". Leave blank to apply whenever the cluster happens "
+              "to be empty - an empty cluster at midday is still an empty cluster."),
+
     # ---- the staging server
     #
     # Off by default in spirit and on_demand by default in fact: it costs nothing until

@@ -61,7 +61,9 @@ def _state(store):
 
 
 def _save(store, data):
-    if data.get("cluster") or data.get("maps"):
+    data["maps"] = {m: v for m, v in (data.get("maps") or {}).items() if v}
+    data["clears"] = {m: v for m, v in (data.get("clears") or {}).items() if v}
+    if data.get("cluster") or data.get("maps") or data.get("clears"):
         store.data[STATE] = data
     else:
         store.data.pop(STATE, None)
@@ -73,20 +75,51 @@ def _save(store, data):
 
 
 def queued(store):
-    """{"cluster": {...}, "maps": {map: {...}}, "since": ts} - never the live values."""
+    """{"cluster": {...}, "maps": {map: {...}}, "clears": {map: [key]}, "since": ts}.
+
+    `clears` is its own structure rather than a magic value in `maps`, because removing
+    a per-map override changes what that map runs just as much as setting one does - and
+    a sentinel string would have to be a value no setting could ever legitimately hold,
+    which is not true of a free-text field like the message of the day.
+    """
     got = _state(store)
     return {"cluster": dict(got.get("cluster") or {}),
             "maps": {m: dict(v) for m, v in (got.get("maps") or {}).items()},
+            "clears": {m: list(v) for m, v in (got.get("clears") or {}).items() if v},
             "since": got.get("since") or 0}
 
 
 def count(store):
     got = queued(store)
-    return len(got["cluster"]) + sum(len(v) for v in got["maps"].values())
+    return (len(got["cluster"]) + sum(len(v) for v in got["maps"].values())
+            + sum(len(v) for v in got["clears"].values()))
 
 
 def any_pending(store):
     return count(store) > 0
+
+
+def clear_override(store, key, map_name, now=None):
+    """Queue the removal of a per-map override. Returns True if there was one to remove.
+
+    Blank means inherit, and inheriting is a different effective value - so it waits for
+    the same safe moment a set does. A map with no override to begin with queues nothing,
+    for the same reason setting a value to what it already is queues nothing.
+    """
+    now = now or time.time
+    if not stageable(key):
+        return False
+    if key not in (store.data.get("maps", {}).get(map_name) or {}):
+        return False
+    data = queued(store)
+    (data["maps"].get(map_name) or {}).pop(key, None)
+    holder = data["clears"].setdefault(map_name, [])
+    if key not in holder:
+        holder.append(key)
+    if not data.get("since"):
+        data["since"] = int(now())
+    _save(store, data)
+    return True
 
 
 def stageable(key):
@@ -144,8 +177,7 @@ def stage(store, changes, map_name=None, now=None):
             continue
         holder[key] = value
         staged[key] = value
-    data["maps"] = {m: v for m, v in data["maps"].items() if v}
-    if (data["cluster"] or data["maps"]) and not data.get("since"):
+    if (data["cluster"] or data["maps"] or data["clears"]) and not data.get("since"):
         data["since"] = int(now())
     _save(store, data)
     return staged
@@ -153,17 +185,24 @@ def stage(store, changes, map_name=None, now=None):
 
 def discard(store, key=None, map_name=None):
     """Drop one queued change, or all of them. Returns how many went."""
+    def size(d):
+        return (len(d["cluster"]) + sum(len(v) for v in d["maps"].values())
+                + sum(len(v) for v in d["clears"].values()))
+
     data = queued(store)
-    before = len(data["cluster"]) + sum(len(v) for v in data["maps"].values())
+    before = size(data)
     if key is None:
-        data = {"cluster": {}, "maps": {}, "since": 0}
+        data = {"cluster": {}, "maps": {}, "clears": {}, "since": 0}
     elif map_name:
         (data["maps"].get(map_name) or {}).pop(key, None)
-        data["maps"] = {m: v for m, v in data["maps"].items() if v}
+        data["clears"][map_name] = [k for k in data["clears"].get(map_name, [])
+                                    if k != key]
     else:
         data["cluster"].pop(key, None)
-    after = len(data["cluster"]) + sum(len(v) for v in data["maps"].values())
-    if not (data["cluster"] or data["maps"]):
+    data["maps"] = {m: v for m, v in data["maps"].items() if v}
+    data["clears"] = {m: v for m, v in data["clears"].items() if v}
+    after = size(data)
+    if not (data["cluster"] or data["maps"] or data["clears"]):
         data["since"] = 0
     _save(store, data)
     return before - after
@@ -178,6 +217,12 @@ def rows(store):
     for map_name in sorted(data["maps"]):
         for key, value in sorted(data["maps"][map_name].items()):
             out.append(_row(store, key, value, map_name))
+    for map_name in sorted(data["clears"]):
+        for key in sorted(data["clears"][map_name]):
+            row = _row(store, key, None, map_name)
+            row["to"] = "inherit from the cluster"
+            row["clears"] = True
+            out.append(row)
     return out
 
 
@@ -193,6 +238,7 @@ def _row(store, key, value, map_name):
         "from": "(unchanged)" if secret else store.get(key, map_name=map_name),
         "to": "(new password)" if secret else value,
         "secret": secret,
+        "clears": False,
         "warning": LOUD.get(key, ""),
     }
 
@@ -214,9 +260,17 @@ def snapshot(store):
         "cluster": {k: (store.data.get("cluster", {}).get(k, _MISSING))
                     for k in data["cluster"]},
         "maps": {m: {k: (store.data.get("maps", {}).get(m, {}).get(k, _MISSING))
-                     for k in keys}
-                 for m, keys in data["maps"].items()},
+                     for k in list(keys) + list(data["clears"].get(m, []))}
+                 for m, keys in _touched(data).items()},
     }
+
+
+def _touched(data):
+    """Every map the batch changes, whether by setting or by clearing."""
+    out = {m: dict(v) for m, v in data["maps"].items()}
+    for m in data["clears"]:
+        out.setdefault(m, {})
+    return out
 
 
 class _Missing(object):
@@ -253,6 +307,13 @@ def commit(store, validate=None):
     store.data.setdefault("cluster", {}).update(data["cluster"])
     for map_name, values in data["maps"].items():
         store.data.setdefault("maps", {}).setdefault(map_name, {}).update(values)
+    for map_name, keys in data["clears"].items():
+        holder = store.data.setdefault("maps", {}).setdefault(map_name, {})
+        for key in keys:
+            holder.pop(key, None)
+    for map_name in list(store.data.get("maps", {})):
+        if not store.data["maps"][map_name]:
+            del store.data["maps"][map_name]
     store.data.pop(STATE, None)
     try:
         store.save()
@@ -297,6 +358,8 @@ def restore(store, before, requeue=None):
         store.data[STATE] = {"cluster": dict(requeue.get("cluster") or {}),
                              "maps": {m: dict(v)
                                       for m, v in (requeue.get("maps") or {}).items()},
+                             "clears": {m: list(v) for m, v
+                                        in (requeue.get("clears") or {}).items()},
                              "since": requeue.get("since") or int(time.time())}
     try:
         store.save()

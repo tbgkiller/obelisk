@@ -26,9 +26,10 @@ from . import mods as modsctl
 from . import curseforge as cfctl
 from . import staging as stagingctl
 from . import updates as updatesctl
+from . import pending as pendingctl
 from .firstrun import bootstrap
 from .plan import build_plan
-from .settings import Invalid
+from .settings import Invalid, validate as validate_setting
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                     stream=sys.stdout)
@@ -172,14 +173,28 @@ def build_app(store, docker=None):
         for name in map_fields:
             _tag, map_key, setting = name.split(":", 2)
             text = str(form.get(name)).strip()
-            holder = store.data.setdefault("maps", {}).setdefault(map_key, {})
+            # Overrides restart the map they belong to, so they queue like everything
+            # else that does - including clearing one, because inheriting the cluster
+            # value is a different effective value and costs the same restart.
             if text == "":
-                holder.pop(setting, None)
+                if not (_running_now()
+                        and pendingctl.clear_override(store, setting, map_key)):
+                    store.data.setdefault("maps", {}).setdefault(
+                        map_key, {}).pop(setting, None)
                 continue
             try:
-                store.patch({setting: text}, map_name=map_key)
+                value = validate_setting(setting, text)
             except Invalid as e:
                 log.info("per-map override rejected for %s/%s: %s", map_key, setting, e)
+                continue
+            if pendingctl.stageable(setting) and _running_now():
+                pendingctl.stage(store, {setting: value}, map_name=map_key)
+            else:
+                try:
+                    store.patch({setting: value}, map_name=map_key)
+                except Invalid as e:
+                    log.info("per-map override rejected for %s/%s: %s",
+                             map_key, setting, e)
         for map_key in list(store.data.get("maps", {})):
             if not store.data["maps"][map_key]:
                 del store.data["maps"][map_key]
@@ -197,9 +212,24 @@ def build_app(store, docker=None):
         for key, value in list(changes.items()):
             if value == "" and _is_password(key):
                 changes.pop(key)
+        # Changes that restart servers people are playing on do not happen here. They
+        # queue, and the batch lands once - when the cluster is empty, when the window
+        # opens, or when somebody decides it is worth interrupting people for. Which is
+        # what these settings already did, except invisibly: the value went into the
+        # store and waited for whatever Launch came next.
+        live, later = _stage_or_apply(changes)
         try:
-            store.patch(changes)
+            store.patch(live)
             store.save()
+            if later:
+                staged = pendingctl.stage(store, later)
+                if staged:
+                    announce.say(
+                        "change.staged",
+                        "%d setting(s) saved and waiting for a safe moment to restart "
+                        "the cluster: %s." % (len(staged), ", ".join(sorted(staged))),
+                        detail=_pending_detail(),
+                        count=pendingctl.count(store))
             install.apply_timezone(store.get("timezone"))
             # Push the game settings back into the INI files the servers actually read.
             # Only the keys the operator has set, only through the line editor, and only
@@ -252,7 +282,7 @@ def build_app(store, docker=None):
             banner = '<div class=problem>%s</div>' % ui._e(problem)
         elif message:
             banner = '<div class=note>%s</div>' % ui._e(message)
-        return (banner + _update_panel() +
+        return (banner + _pending_panel() + _update_panel() +
                 ui.render_cluster(store, plan, status=st))
 
     # The last poll, so opening the page does not go to the network before it renders.
@@ -272,10 +302,87 @@ def build_app(store, docker=None):
             log.warning("could not render the update panel: %s", e)
             return ""
 
+    def _running_now():
+        try:
+            return int(clusterctl.status(store).get("running") or 0)
+        except Exception:                            # noqa: BLE001 - assume nothing runs
+            return 0
+
+    def _stage_or_apply(changes, map_name=None):
+        """(applied now, queued). Queues only what a running cluster would be hurt by.
+
+        A cluster that is not running has nobody to disturb, so nothing waits - which
+        matters most on a fresh install, where every setting is being chosen before the
+        first launch and a queue would hold all of them behind an empty-cluster trigger
+        that can never fire.
+        """
+        live, later = pendingctl.split(changes, store, map_name=map_name)
+        if later and not _running_now():
+            live.update(later)
+            later = {}
+        return live, later
+
+    def _pending_detail():
+        """Every queued change, one per line, for the feed's expandable detail."""
+        return "\n".join(
+            "%-26s %s -> %s%s" % (r["label"], r["from"], r["to"],
+                                  ("  [%s]" % r["map"]) if r["map"] else "")
+            for r in pendingctl.rows(store))
+
+    def _when_text():
+        """When the batch will land, in the words of whatever will actually land it."""
+        bits = []
+        if store.get("apply_when_empty"):
+            bits.append("as soon as the cluster is empty")
+        if store.get("update_apply_in_window") and updatesctl.owns_updates(store):
+            bits.append("at %s" % store.get("update_window_start"))
+        if not bits:
+            return "when you apply them"
+        return " or ".join(bits)
+
+    def _pending_panel(players=None):
+        try:
+            ready = updatesctl.primed(store)
+            primed = None
+            if ready:
+                primed = dict(ready,
+                              running=(ARK_UPDATE.get("build") or {}).get("running"))
+            return ui.render_pending(pendingctl.rows(store), when_text=_when_text(),
+                                     job=ujob, players=players, primed=primed)
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.warning("could not render pending changes: %s", e)
+            return ""
+
     async def cluster_page(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
         return chrome(_cluster_body(request), "Cluster", "/admin/cluster")
+
+    async def pending_post(request):
+        """Discard one, discard all, or apply the batch now."""
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        if form.get("drop"):
+            map_key, _, key = str(form["drop"]).partition("|")
+            gone = pendingctl.discard(store, key, map_name=map_key or None)
+            if gone:
+                announce.say("change.discarded",
+                             "Dropped a queued change to %s%s."
+                             % (key, (" on " + map_key) if map_key else ""),
+                             remaining=pendingctl.count(store))
+        elif form.get("discard") == "all":
+            gone = pendingctl.discard(store)
+            if gone:
+                announce.say("change.discarded",
+                             "Dropped all %d queued change(s)." % gone)
+        elif form.get("apply"):
+            if ujob["state"] == "running" or cluster_busy.locked():
+                raise web.HTTPFound("/admin/cluster")
+            ujob.update(state="running", ok=None, message="", step="starting",
+                        what="apply", started=time.time())
+            asyncio.create_task(_apply_task(bool(form.get("force"))))
+        raise web.HTTPFound("/admin/cluster")
 
     # ---- ARK updates: prime, apply, and what either is doing
     def _ark_root():
@@ -449,7 +556,14 @@ def build_app(store, docker=None):
         else:
             chosen = form.getall("maps", [])
         try:
-            store.patch({"maps": ",".join(chosen)})
+            live, later = _stage_or_apply({"maps": ",".join(chosen)})
+            store.patch(live)
+            if later:
+                pendingctl.stage(store, later)
+                announce.say("change.staged",
+                             "Map selection saved and waiting for a safe moment: %s."
+                             % ", ".join(chosen), detail=_pending_detail(),
+                             count=pendingctl.count(store))
             store.save()
         except Invalid as e:
             return chrome(_cluster_body(request, problem=str(e)), "Cluster", "/admin/cluster")
@@ -612,7 +726,15 @@ def build_app(store, docker=None):
         elif form.get("down"):
             listed = modsctl.move(listed, str(form.get("down")), 1)
         try:
-            store.patch({"mod_ids": listed})
+            live, later = _stage_or_apply({"mod_ids": listed})
+            store.patch(live)
+            if later:
+                pendingctl.stage(store, later)
+                announce.say("change.staged",
+                             "Mod list saved and waiting for a safe moment to restart "
+                             "the cluster: %s." % listed,
+                             detail=_pending_detail(),
+                             count=pendingctl.count(store))
             store.save()
         except Exception as e:                       # noqa: BLE001 - shown to the user
             log.warning("mod list rejected: %s", e)
@@ -850,6 +972,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/cloud/disconnect", cloud_disconnect)
     app.router.add_post("/admin/cloud/push", cloud_push)
     app.router.add_post("/admin/cloud/pull", cloud_pull)
+    app.router.add_post("/admin/pending", pending_post)
     app.router.add_get("/admin/activity", activity_page)
     app.router.add_get("/admin/activity/feed", activity_feed)
     app.router.add_post("/admin/update/prime", update_prime)
