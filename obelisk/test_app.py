@@ -391,6 +391,41 @@ check("and leaves the channel ids at zero rather than crashing",
 check("and the token empty", _b2.DISCORD_TOKEN == "")
 
 
+# ---- restore: the archive name comes from a form, so it is not a path
+#
+# "Which archive" arrives as a posted string. Anything that turns a posted string into
+# a filesystem path has to be told the answer can only be inside one folder, or the
+# answer becomes "any file on the host that tarfile will open".
+from . import restore as _restoremod
+
+_rd = tempfile.mkdtemp()
+_rstore = Store(os.path.join(_rd, "settings.json")).load()
+_rstore.patch({"admin_token": "t"})
+_rapp = build_app(_rstore, docker=DOCKER_UP)
+_rroutes = {r.resource.canonical for r in _rapp.router.routes()}
+check("the restore page has a route", "/admin/restore" in _rroutes)
+check("inspecting an archive has a route", "/admin/restore/inspect" in _rroutes)
+check("and running one has its own", "/admin/restore/run" in _rroutes)
+
+_appsrc = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
+                  encoding="utf-8").read()
+check("the posted archive name is stripped to a basename",
+      "os.path.basename" in _appsrc.split("_archive_path")[1][:400], "no basename call")
+check("and the result is confined to the backups folder",
+      "startswith(base" in _appsrc.split("_archive_path")[1][:400], "no prefix check")
+check("a restore never runs alongside another cluster action",
+      "cluster_busy" in _appsrc.split("async def restore_run")[1][:1200])
+_runsrc = _appsrc.split("async def restore_run")[1].split("# ---- cloud")[0]
+check("and it runs off the event loop like the backup does",
+      "to_thread" in _runsrc, _runsrc[-200:])
+
+# Phase 1 is worlds-only: the definition restore is not wired up at all yet.
+check("Phase 1 does not restore the cluster definition",
+      "definition" not in _runsrc.lower())
+check("restore.py says the definition is deliberately out of scope",
+      "does not restore the cluster definition"
+      in io.open(_restoremod.__file__, encoding="utf-8").read())
+
 # ---- the from-scratch INI renderer must stay gone
 #
 # generate_ini() rendered GameUserSettings.ini and Game.ini from the schema and headed

@@ -16,6 +16,7 @@ only when there is a cluster to relay between, which on a fresh install there is
 import asyncio, logging, os, sys, time
 
 from . import backup as backupctl
+from . import restore as restorectl
 from . import cloud as cloudctl
 from . import cluster as clusterctl
 from . import dockerctl, gamecfg, install, layout, ui
@@ -370,6 +371,68 @@ def build_app(store, docker=None):
             log.warning("mod list rejected: %s", e)
         raise web.HTTPFound("/admin/mods")
 
+
+    # ---- restore
+    _looked = {"archive": None, "info": None, "notes": []}
+
+    def _archive_path(name):
+        """Resolve a posted name inside the backups folder, and nowhere else."""
+        base = os.path.abspath(backupctl.backups_dir(store))
+        p = os.path.abspath(os.path.join(base, os.path.basename(str(name or ""))))
+        return p if p.startswith(base + os.sep) and os.path.isfile(p) else None
+
+    def _restore_body(message="", problem=""):
+        return ui.render_restore(store, backupctl.listing(store),
+                                 chosen=_looked["archive"], info=_looked["info"],
+                                 notes=_looked["notes"], message=message, problem=problem)
+
+    async def restore_page(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        return chrome(_restore_body(), "Restore", "/admin/restore")
+
+    async def restore_inspect(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        path = _archive_path(form.get("archive"))
+        if not path:
+            return chrome(_restore_body(problem="No such archive."), "Restore",
+                          "/admin/restore")
+        info = restorectl.inspect(path)
+        _looked.update(archive=os.path.basename(path), info=info if info["ok"] else None,
+                       notes=restorectl.compare(store, info) if info["ok"] else [])
+        return chrome(_restore_body(problem="" if info["ok"] else info["problem"]),
+                      "Restore", "/admin/restore")
+
+    async def restore_run(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        path = _archive_path(form.get("archive"))
+        map_key = str(form.get("map") or "")
+        if not path:
+            return chrome(_restore_body(problem="No such archive."), "Restore",
+                          "/admin/restore")
+        if cluster_busy.locked():
+            return chrome(_restore_body(problem="Something else is already working on "
+                                                "the cluster - this was ignored rather "
+                                                "than run alongside it."),
+                          "Restore", "/admin/restore")
+
+        def go():
+            return restorectl.restore_map(
+                store, path, map_key,
+                stop=lambda k: clusterctl.stop_one(store, k),
+                start=lambda k: clusterctl.start_one(store, k),
+                verify=None)
+
+        async with cluster_busy:
+            ok, msg, _detail = await asyncio.to_thread(go)
+        return chrome(_restore_body(message=msg if ok else "",
+                                    problem="" if ok else msg),
+                      "Restore", "/admin/restore")
+
     # ---- cloud
     async def cloud_page(request):
         if not authed(request):
@@ -462,6 +525,9 @@ def build_app(store, docker=None):
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)
     app.router.add_get("/admin/backup/status", backup_status)
+    app.router.add_get("/admin/restore", restore_page)
+    app.router.add_post("/admin/restore/inspect", restore_inspect)
+    app.router.add_post("/admin/restore/run", restore_run)
     app.router.add_get("/admin/mods", mods_page)
     app.router.add_post("/admin/mods", mods_edit)
     app.router.add_get("/admin/cloud", cloud_page)

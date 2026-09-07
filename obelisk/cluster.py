@@ -375,3 +375,30 @@ def other_ports_in_use(store):
     cluster's plan drift to the next free pair, which reads as though something moved.
     """
     return dockerctl.ports_in_use(exclude_names=target_names(store))
+
+
+def stop_one(store, map_key):
+    """Stop a single map, leaving the rest of the cluster serving. (ok, message).
+
+    `--no-deps` matters: the first map is the update master and every other service
+    declares it as a dependency, so without it compose would happily start the island
+    in order to stop something else.
+    """
+    ok, why = dockerctl.available()
+    if not ok:
+        return False, "Docker isn't reachable. %s" % why
+    rc, out = _compose(store, "stop", map_key, timeout=420)
+    if rc != 0:
+        return False, "could not stop %s: %s" % (map_key, out[-400:])
+    return True, "stopped"
+
+
+def start_one(store, map_key):
+    """Bring a single map back up, without touching the others. (ok, message)."""
+    ok, why = dockerctl.available()
+    if not ok:
+        return False, "Docker isn't reachable. %s" % why
+    rc, out = _compose(store, "up", "-d", "--no-deps", map_key, timeout=420)
+    if rc != 0:
+        return False, "could not start %s: %s" % (map_key, out[-400:])
+    return True, "started"

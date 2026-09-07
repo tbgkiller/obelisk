@@ -94,6 +94,7 @@ def _e(v):
 def page(title, body, nav_on=""):
     tabs = [("/", "Status"), ("/admin", "Settings"), ("/admin/cluster", "Cluster"),
             ("/admin/mods", "Mods"), ("/admin/backups", "Backups"),
+            ("/admin/restore", "Restore"),
             ("/admin/cloud", "Cloud")]
     nav = "".join('<a href="%s"%s>%s</a>' % (h, ' class=on' if h == nav_on else "", _e(t))
                   for h, t in tabs)
@@ -709,6 +710,82 @@ BACKUP_PROGRESS = """
 })();
 </script>
 """
+
+
+
+def render_restore(store, archives, chosen=None, info=None, notes=(),
+                   message="", problem=""):
+    """Restore one map from one archive, with what is in it shown before committing.
+
+    The order on the page is the order of the decision: which archive, what is in it,
+    how it differs from what is running, and only then which map - because "this archive
+    is from a different cluster" is something you want to read before choosing a map,
+    not after.
+    """
+    from . import maps as mapcat
+    from .backup import human_size
+    banner = ""
+    if problem:
+        banner = '<div class=problem>%s</div>' % _e(problem)
+    elif message:
+        banner = '<div class=note>%s</div>' % _e(message)
+
+    if not archives:
+        return (banner + '<fieldset><legend>Restore</legend><div class=help>No backups '
+                'on disk yet. Make one from the Backups tab first - there is nothing to '
+                'restore from.</div></fieldset>')
+
+    opts = "".join('<option value="%s"%s>%s &mdash; %s</option>'
+                   % (_e(a["name"]), " selected" if a["name"] == chosen else "",
+                      _e(a["name"]), _e(human_size(a["bytes"])))
+                   for a in archives)
+
+    detail = ""
+    if info:
+        rows = [("Taken", info.get("created") or "unknown"),
+                ("Cluster id", info.get("cluster_id") or "-"),
+                ("Maps inside", ", ".join(info["maps"]) or "none"),
+                ("Mods, in order", info.get("mod_ids") or "none")]
+        detail = ('<table>%s</table>'
+                  % "".join("<tr><td>%s</td><td><code>%s</code></td></tr>"
+                            % (_e(k), _e(v)) for k, v in rows))
+        if notes:
+            detail += ('<div class=problem><strong>Differences from this cluster</strong>'
+                       '<ul>%s</ul></div>'
+                       % "".join("<li>%s</li>" % _e(n) for n in notes))
+        else:
+            detail += ('<div class=note>Nothing in this archive disagrees with the '
+                       'cluster you are running.</div>')
+
+    keys = [k.strip() for k in str(store.get("maps") or "").split(",") if k.strip()]
+    inside = set(info["maps"]) if info else set()
+    picks = "".join(
+        '<option value="%s"%s>%s%s</option>'
+        % (_e(k), "" if (not info or mapcat.BY_KEY[k]["map_id"] in inside) else " disabled",
+           _e(mapcat.BY_KEY[k]["name"]),
+           "" if (not info or mapcat.BY_KEY[k]["map_id"] in inside) else " - not in this archive")
+        for k in keys if k in mapcat.BY_KEY)
+
+    return (banner +
+            '<form method=post action="/admin/restore/inspect">'
+            '<fieldset><legend>1. Choose an archive</legend><div class=f>'
+            '<select name=archive>%s</select> '
+            '<button type=submit>Look inside</button>'
+            '<div class=help>Nothing is changed by looking. The archive is opened and '
+            'read, which is also how it is checked.</div></div></fieldset></form>'
+            '%s'
+            '<form method=post action="/admin/restore/run" data-busy>'
+            '<input type=hidden name=archive value="%s">'
+            '<fieldset><legend>2. Restore one map</legend><div class=f>'
+            '<select name=map>%s</select> '
+            '<button type=submit%s>Restore this map</button>'
+            '<div class=help>Only the map you pick is stopped; the rest of the cluster '
+            'keeps serving. Its current world is copied first, and the world being '
+            'replaced is kept on disk afterwards - nothing is deleted. Worlds only: '
+            'your mod list, ports and cluster id are not touched.</div>'
+            '</div></fieldset></form>'
+            % (opts, detail, _e(chosen or ""), picks,
+               "" if info else " disabled"))
 
 
 def render_backups(store, rows, message="", problem=""):
