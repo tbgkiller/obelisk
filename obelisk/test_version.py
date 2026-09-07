@@ -48,6 +48,33 @@ def opener_for(digest, fail_token=False, fail_manifest=False):
     return opener
 
 
+# ---- the default inspector must actually be a docker command
+#
+# It was not. running() built ["inspect", ...] and handed it to dockerctl._run(), which
+# executes exactly the argv it is given - so the OS was asked for a binary called
+# `inspect` and the panel reported "not started from a published image" on a container
+# that plainly was. Every test here injected its own inspector, so the default path was
+# never exercised until a live host ran it. Now the default is the thing under test.
+_argv = []
+
+
+def _spy(args, timeout=None):
+    _argv.append(list(args))
+    return 127, "pretend it failed - the argv is what matters"
+
+
+import obelisk.dockerctl as _dockerctl
+_real_run = _dockerctl._run
+_dockerctl._run = _spy
+version.running(environ={"HOST_CONTAINERNAME": "Obelisk"})
+_dockerctl._run = _real_run
+
+check("the default inspector shells out to docker", _argv and _argv[0][0] == "docker",
+      _argv[:1])
+check("and asks it to inspect", _argv and _argv[0][1] == "inspect", _argv[:1])
+check("naming the container it is running in", "Obelisk" in _argv[0], _argv[:1])
+
+
 # ---- what is running
 run = version.running(inspect=inspector(), environ={"HOST_CONTAINERNAME": "Obelisk"})
 check("the running commit is read from the image label", run["commit"] == "fc81c2c", run)
@@ -86,6 +113,46 @@ st = version.status(inspect=inspector(digest=None), opener=opener_for(NEW),
 check("a container built locally has nothing to compare against",
       st["update_available"] is None, st)
 check("and says so rather than guessing", "nothing to compare" in st["problem"], st)
+
+# ---- the registry is chosen from the image reference, not hardcoded
+#
+# This asked GHCR about everything. After the template moved to Docker Hub it was
+# therefore asking the wrong registry - and getting the right answer, because the two
+# are published in lockstep from one build. Right by luck stops being right the moment
+# somebody runs only one of them.
+check("a bare owner/name is Docker Hub, as Docker itself reads it",
+      version.split_ref("tbgkiller/obelisk") == ("docker.io", "tbgkiller/obelisk"))
+check("a hostname with a dot is a registry",
+      version.split_ref("ghcr.io/a/b") == ("ghcr.io", "a/b"))
+check("an explicit docker.io is Hub too",
+      version.split_ref("docker.io/a/b") == ("docker.io", "a/b"))
+check("and a port makes it a host as well",
+      version.split_ref("localhost:5000/a/b") == ("localhost:5000", "a/b"))
+
+_urls = []
+
+
+def _spy_opener(url, token):
+    _urls.append(url)
+    return '{"token": "t"}' if token is None else NEW
+
+
+version.published("tbgkiller/obelisk", opener=_spy_opener)
+check("a Hub image is asked of Docker Hub",
+      all("docker.io" in u for u in _urls), _urls)
+check("using Hub's own token service", "auth.docker.io" in _urls[0], _urls[0])
+check("and Hub's registry for the manifest", "registry-1.docker.io" in _urls[1], _urls[1])
+
+_urls[:] = []
+version.published("ghcr.io/tbgkiller/obelisk", opener=_spy_opener)
+check("a GHCR image is still asked of GHCR",
+      all("ghcr.io" in u for u in _urls), _urls)
+check("and the repository path drops the host",
+      _urls[1].endswith("/v2/tbgkiller/obelisk/manifests/latest"), _urls[1])
+
+_d, _p = version.published("some.registry.example/a/b", opener=_spy_opener)
+check("a registry we have no recipe for is refused, not guessed at",
+      _d is None and "does not know how to ask" in _p.replace("this ", ""), _p)
 
 # ---- the token exchange is the whole point
 seen = []

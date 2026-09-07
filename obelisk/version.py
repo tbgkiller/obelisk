@@ -24,9 +24,22 @@ import urllib.request
 
 log = logging.getLogger("obelisk.version")
 
-REGISTRY = "ghcr.io"
-TOKEN_URL = ("https://ghcr.io/token?scope=repository%3A{repo}%3Apull&service=ghcr.io")
-MANIFEST_URL = "https://ghcr.io/v2/{repo}/manifests/{tag}"
+# Where to ask, per registry. The image reference says which one it came from, so that
+# is what decides - hardcoding a registry meant that after the template moved to Docker
+# Hub this asked GHCR about a Hub image and got the right answer only because the two
+# are published in lockstep. Right by luck is not right.
+REGISTRIES = {
+    "ghcr.io": {
+        "token": "https://ghcr.io/token?scope=repository%3A{path}%3Apull&service=ghcr.io",
+        "manifest": "https://ghcr.io/v2/{repo}/manifests/{tag}",
+    },
+    "docker.io": {
+        "token": ("https://auth.docker.io/token?service=registry.docker.io"
+                  "&scope=repository%3A{path}%3Apull"),
+        "manifest": "https://registry-1.docker.io/v2/{repo}/manifests/{tag}",
+    },
+}
+DEFAULT_REGISTRY = "docker.io"
 ACCEPT = ("application/vnd.oci.image.index.v1+json,"
           "application/vnd.docker.distribution.manifest.list.v2+json,"
           "application/vnd.oci.image.manifest.v1+json,"
@@ -44,7 +57,12 @@ def running(inspect=None, environ=None):
         from . import dockerctl
 
         def inspect(args):
-            return dockerctl._run(["inspect"] + args, timeout=20)
+            # "docker" first: _run() executes exactly the argv it is given, it does not
+            # prepend anything. Leaving it off asked the OS to run a binary called
+            # `inspect`, which reported "not installed in this image" - and because the
+            # tests injected their own inspector, the real default was never once
+            # exercised until it ran on a live host.
+            return dockerctl._run(["docker", "inspect"] + args, timeout=20)
 
     rc, text = inspect([name, "--format",
                         "{{index .Config.Labels \"org.opencontainers.image.revision\"}}"
@@ -69,18 +87,36 @@ def published(repo, tag="latest", opener=None):
     The token exchange is the whole point of this function - it is the step whose
     absence produces the wrong answer everybody else is getting.
     """
-    path = repo.split("/", 1)[-1] if repo.startswith(REGISTRY + "/") else repo
+    host, path = split_ref(repo)
+    urls = REGISTRIES.get(host)
+    if not urls:
+        return None, ("%s is a registry this does not know how to ask (%s)"
+                      % (host, repo))
     opener = opener or _fetch
     try:
-        raw = opener(TOKEN_URL.format(repo=path.replace("/", "%2F")), None)
+        raw = opener(urls["token"].format(path=path.replace("/", "%2F")), None)
         token = json.loads(raw)["token"]
     except Exception as e:                        # noqa: BLE001 - reported, never raised
         return None, "could not get a registry token: %s" % e
     try:
-        digest = opener(MANIFEST_URL.format(repo=path, tag=tag), token)
+        digest = opener(urls["manifest"].format(repo=path, tag=tag), token)
     except Exception as e:                        # noqa: BLE001
         return None, "could not read the published manifest: %s" % e
     return digest, ""
+
+
+def split_ref(repo):
+    """(registry host, repository path) from an image reference.
+
+    Docker writes a Hub image as `owner/name` with no host at all, so "has no dot in the
+    first segment" is what distinguishes a Hub repository from a registry hostname -
+    the same rule Docker itself uses.
+    """
+    first = repo.split("/", 1)[0]
+    if "." in first or ":" in first or first == "localhost":
+        host, _, path = repo.partition("/")
+        return host, path
+    return DEFAULT_REGISTRY, repo
 
 
 def _fetch(url, token):
