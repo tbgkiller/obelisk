@@ -742,13 +742,21 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
 
     detail = ""
     if info:
+        expected = info.get("from_manifest")
         rows = [("Taken", info.get("created") or "unknown"),
                 ("Cluster id", info.get("cluster_id") or "-"),
-                ("Maps inside", ", ".join(info["maps"]) or "none"),
+                ("Maps inside" if not expected else "Maps expected",
+                 ", ".join(info["maps"]) or "none"),
                 ("Mods, in order", info.get("mod_ids") or "none")]
         detail = ('<table>%s</table>'
                   % "".join("<tr><td>%s</td><td><code>%s</code></td></tr>"
                             % (_e(k), _e(v)) for k, v in rows))
+        if expected:
+            detail += ('<div class=help>Read from the archive’s manifest, which '
+                       'lists the maps the cluster held when it was taken. A map that '
+                       'had never booted has no save to be in there - the archive itself '
+                       'is checked for the map you pick, before anything is '
+                       'stopped.</div>')
         if notes:
             detail += ('<div class=problem><strong>Differences from this cluster</strong>'
                        '<ul>%s</ul></div>'

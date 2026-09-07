@@ -84,6 +84,27 @@ def inspect(path):
         out["bytes"] = os.path.getsize(path)
     except OSError:
         pass
+    # The sidecar manifest first, because it is a few hundred bytes sitting next to the
+    # archive. Reading the archive itself means decompressing the entire gzip stream to
+    # list what is in it - minutes for a few gigabytes - and describing a backup should
+    # not cost that. Archives written before the manifest carried this fall through to
+    # the slow path, which still works.
+    man = {}
+    try:
+        with open(path + ".json", encoding="utf-8") as fh:
+            man = json.load(fh)
+    except (OSError, ValueError):
+        man = {}
+    if man.get("maps_expected"):
+        out["maps"] = list(man["maps_expected"])
+        out["cluster_id"] = man.get("cluster_id")
+        out["mod_ids"] = man.get("mod_ids") or ""
+        out["created"] = man.get("created")
+        out["has_secrets"] = bool(man.get("contains_secrets"))
+        out["ok"] = True
+        out["from_manifest"] = True
+        return out
+
     try:
         with tarfile.open(path, "r:gz") as tar:
             members = tar.getnames()

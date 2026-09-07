@@ -86,6 +86,11 @@ def _manifest(store, members, maps_expected):
         "excluded": ["ark/%s - the game install, re-downloaded on restore" % layout.SERVERFILES,
                      "ark/%s - re-downloaded from the mod ids in the definition" % layout.MODS],
         "maps_expected": list(maps_expected),
+        # Enough for the restore page to describe this archive without decompressing it.
+        # Enumerating a multi-gigabyte .tar.gz means unpacking the whole stream, which
+        # took minutes and blocked the manager while it did.
+        "cluster_id": store.get("cluster_id"),
+        "mod_ids": store.get("mod_ids"),
         "entries": len(members),
         "contains_secrets": bool(definition(store)["secrets_required"]),
         "secret_keys": list(definition(store)["secrets_required"]),

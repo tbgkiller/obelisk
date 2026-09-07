@@ -182,6 +182,35 @@ check("and the message says what the archive does hold",
 ok_p3, probs3 = restore.preflight(st, bad, "island")
 check("a corrupt archive is refused before anything is stopped", not ok_p3, probs3)
 
+# ---- the manifest is a fast description, not proof
+#
+# inspect() reads the sidecar manifest so that describing a multi-gigabyte archive does
+# not mean decompressing it. But the manifest lists the maps the cluster was configured
+# with, and a map that had never booted has no save to be in there. So the manifest can
+# name a map the archive does not contain, and the authority has to be the archive.
+st_m, ark_m = fresh()
+make_world(os.path.join(ark_m, "shared", "SavedArks", "TheIsland_WP",
+                        "TheIsland_WP.ark"), marker="only-island")
+ok, _m, arc_m = backup.create(st_m)          # ragnarok is configured but never booted
+info_m = restore.inspect(arc_m)
+check("inspect used the manifest", info_m.get("from_manifest"), info_m)
+check("which lists both configured maps",
+      set(info_m["maps"]) == {"TheIsland_WP", "Ragnarok_WP"}, info_m["maps"])
+
+ok_i, probs_i = restore.preflight(st_m, arc_m, "island")
+check("the map that really is in there passes preflight", ok_i, probs_i)
+
+ok_r2, probs_r = restore.preflight(st_m, arc_m, "ragnarok")
+check("the map the manifest names but the archive lacks is refused", not ok_r2, probs_r)
+check("and it is refused before anything is stopped - preflight opens the archive",
+      any("does not verify" in p or "not in this archive" in p for p in probs_r), probs_r)
+
+_stopped_m = []
+ok_x, msg_x, _d = restore.restore_map(st_m, arc_m, "ragnarok",
+                                      stop=lambda k: (_stopped_m.append(k) or (True, "")))
+check("so restoring it never gets as far as stopping the map",
+      not ok_x and _stopped_m == [], (msg_x, _stopped_m))
+
 # ---------------------------------------------------------------- the happy path
 st3, ark3 = fresh()
 worlds(ark3, "current")                       # what is live right now

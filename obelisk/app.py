@@ -399,7 +399,10 @@ def build_app(store, docker=None):
         if not path:
             return chrome(_restore_body(problem="No such archive."), "Restore",
                           "/admin/restore")
-        info = restorectl.inspect(path)
+        # Off the loop regardless: an archive written before the manifest carried a map
+        # list still has to be decompressed to describe it, and the relay, Discord and
+        # this page all live on the thread that would be doing it.
+        info = await asyncio.to_thread(restorectl.inspect, path)
         _looked.update(archive=os.path.basename(path), info=info if info["ok"] else None,
                        notes=restorectl.compare(store, info) if info["ok"] else [])
         return chrome(_restore_body(problem="" if info["ok"] else info["problem"]),
