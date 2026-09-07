@@ -346,6 +346,14 @@ SETTINGS = [
          target="obelisk:restart_notice_minutes", apply="recreate",
          help="Minutes of in-game warning before a scheduled restart or update."),
 
+    dict(key="curseforge_api_key", label="CurseForge API key", group="Advanced",
+         type="password", default="", target="obelisk:curseforge_api_key",
+         apply="none", max_len=200,
+         help="Optional, and free from console.curseforge.com. With a key the Mods "
+              "page can search and browse CurseForge; without one you can still add "
+              "any mod by pasting its Project ID, which is what the keyless lookup "
+              "can answer. Stored like any other secret and never logged."),
+
     # ---- who applies ARK updates
     #
     # There is no safe way for both to. The server image fetches a new build and

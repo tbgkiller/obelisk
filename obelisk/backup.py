@@ -31,8 +31,11 @@ SUFFIX = ".tar.gz"
 STAMP = "%Y%m%dT%H%M%SZ"
 MANIFEST = "manifest.json"
 
-# Keys whose values must never appear in a log line or a manifest.
-SECRET_KEYS = ("admin_password", "server_password", "discord_token", "admin_token")
+# Keys whose values must never appear in a log line or a manifest. Also what gets
+# registered with announce.guard_secrets at boot, so a credential that turns up inside
+# an exception message is redacted rather than posted to Discord.
+SECRET_KEYS = ("admin_password", "server_password", "discord_token", "admin_token",
+               "curseforge_api_key")
 
 
 def backups_dir(store):

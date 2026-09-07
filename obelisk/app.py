@@ -23,6 +23,7 @@ from . import cloud as cloudctl
 from . import cluster as clusterctl
 from . import dockerctl, gamecfg, install, layout, ui
 from . import mods as modsctl
+from . import curseforge as cfctl
 from . import staging as stagingctl
 from . import updates as updatesctl
 from .firstrun import bootstrap
@@ -480,11 +481,27 @@ def build_app(store, docker=None):
         return web.json_response(out)
 
     # ---- mods
+    # What the last lookup found, so the card survives the redirect that adds it and
+    # the operator sees the mod they just added rather than an empty box.
+    _found = {"card": None, "problem": ""}
+
     async def mods_page(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        return chrome(ui.render_mods(store, modsctl.measure(layout.mods_dir(store))),
+        return chrome(ui.render_mods(store, modsctl.measure(layout.mods_dir(store)),
+                                     found=_found["card"], problem=_found["problem"]),
                       "Mods", "/admin/mods")
+
+    async def mods_find(request):
+        """Look a mod up before it can be added. Never writes anything."""
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        # Off the loop: this is two DNS lookups and an HTTPS round trip to a service
+        # that is somebody else's, and the chat relay lives on this thread.
+        card, problem = await asyncio.to_thread(cfctl.lookup, form.get("ref"))
+        _found.update(card=card, problem=problem)
+        raise web.HTTPFound("/admin/mods")
 
     async def mods_edit(request):
         if not authed(request):
@@ -493,6 +510,7 @@ def build_app(store, docker=None):
         listed = str(store.get("mod_ids") or "")
         if form.get("addmod"):
             listed = modsctl.add(listed, str(form.get("addmod")).strip())
+            _found["problem"] = ""
         elif form.get("drop"):
             listed = modsctl.remove(listed, str(form.get("drop")))
         elif form.get("up"):
@@ -722,6 +740,7 @@ def build_app(store, docker=None):
     app.router.add_get("/admin/restore/status", restore_status)
     app.router.add_get("/admin/mods", mods_page)
     app.router.add_post("/admin/mods", mods_edit)
+    app.router.add_post("/admin/mods/find", mods_find)
     app.router.add_get("/admin/cloud", cloud_page)
     app.router.add_post("/admin/cloud/connect", cloud_connect)
     app.router.add_post("/admin/cloud/disconnect", cloud_disconnect)

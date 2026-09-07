@@ -62,6 +62,7 @@ tr:last-child td{border-bottom:none}
 .current{color:#7fd18f;font-size:12px}
 .newer{color:#ffc46b;font-size:12px;font-weight:600}
 .unknown{color:#c9a0ff;font-size:12px;font-weight:600}
+.card{display:flex;gap:14px;align-items:flex-start;background:#12151a;border:1px solid #303845;border-radius:10px;padding:12px 14px;margin:10px 0}
 .staged{background:#16241b;color:#a9d8b5;border:1px solid #27452f;border-radius:8px;padding:10px 13px;margin:10px 0;font-size:13px}
 label.inline{display:inline-block;margin-left:10px;font-size:12px;color:#8b94a3}
 .callout{background:#17324a;border:1px solid #2f6feb;border-radius:10px;padding:14px 16px;margin:0 0 18px}
@@ -756,7 +757,7 @@ STATUS_STYLE = {"ok": ("ok", "installed"),
                 "orphan": ("warn", "leftover")}
 
 
-def render_mods(store, health=None):
+def render_mods(store, health=None, found=None, problem=""):
     """The mod list, in load order, with what is actually on disk beside each one.
 
     Order is the first thing people get wrong and install health is the second, so both
@@ -805,13 +806,77 @@ def render_mods(store, health=None):
             'conflicting changes, which is why stacking mods have to be first. '
             'Reordering takes effect on the next cluster recreate.</div>'
             '</fieldset>'
+            '</form>' + _add_a_mod(store, found, problem)) % (banner, "".join(rows))
+
+
+def _mod_card(card, listed):
+    """What the operator is about to add, shown before they add it.
+
+    A number is not recognisable and never was. The picture, the author and the download
+    count are how a person tells the mod they meant from the one with a similar name -
+    which is the actual failure being prevented, because a wrong id is only noticed
+    later, as a server fetching something nobody wanted.
+    """
+    already = card["id"] in modlib.parse(listed)
+    picture = ('<img src="%s" alt="" width=64 height=64 style="border-radius:8px;'
+               'flex:0 0 auto;background:#12151a">' % _e(card["thumbnail"])
+               if card.get("thumbnail") else "")
+    who = ", ".join(a for a in card.get("authors") or [] if a)
+    bits = []
+    if who:
+        bits.append("by %s" % _e(who))
+    if card.get("downloads"):
+        bits.append("%s downloads" % format(card["downloads"], ","))
+    if card.get("file_id"):
+        bits.append("latest file <code>%s</code>%s" % (
+            _e(card["file_id"]),
+            " (%s)" % _e(card["file_date"]) if card.get("file_date") else ""))
+    name = _e(card["name"])
+    if card.get("url"):
+        name = '<a href="%s" target=_blank rel=noopener>%s</a>' % (_e(card["url"]), name)
+
+    if already:
+        action = '<span class=current>already in this cluster</span>'
+    else:
+        action = ('<button type=submit name=addmod value="%s">Add to cluster</button>'
+                  % _e(card["id"]))
+    return ('<div class=card>%s<div style="flex:1 1 auto;min-width:0">'
+            '<div><b>%s</b> <span class=help>%s</span></div>'
+            '<div class=help>%s</div><div class=help>%s</div>'
+            '<div style="margin-top:9px">%s</div></div></div>'
+            % (picture, name, _e(card["id"]), _e(card.get("summary") or ""),
+               " &middot; ".join(bits), action))
+
+
+def _add_a_mod(store, found=None, problem=""):
+    """Look it up, look at it, then add it.
+
+    The button that actually changes the mod list only exists once something has been
+    found, so "added" is always a thing the operator saw first. The keyed search sits
+    behind the same form when there is a key; without one this says so rather than
+    offering a worse search that looks like the real one.
+    """
+    body = ""
+    if problem:
+        body += '<div class=problem>%s</div>' % problem
+    if found:
+        body += _mod_card(found, str(store.get("mod_ids") or ""))
+    keyed = bool(str(store.get("curseforge_api_key") or "").strip())
+    note = ('Paste the mod&rsquo;s CurseForge address or its Project ID. Obelisk looks '
+            'it up first, so you can see what you are adding. New mods go last so they '
+            'cannot silently outrank something that already works &mdash; and the '
+            'staging server fetches and checks it before your cluster ever loads it.')
+    if not keyed:
+        note += ('<br>Searching CurseForge from here needs a free API key from '
+                 '<code>console.curseforge.com</code>; add it under <b>Advanced</b>. '
+                 'Adding by Project ID works without one.')
+    return ('<form method=post action="/admin/mods/find">'
             '<fieldset><legend>Add a mod</legend><div class=f>'
-            '<label>CurseForge mod ID</label>'
-            '<input type=text name=addmod placeholder="e.g. 929110" inputmode=numeric> '
-            '<button type=submit name=action value=add>Add</button>'
-            '<div class=help>The number in the mod\u2019s CurseForge URL. New mods are '
-            'added last so they cannot silently outrank something that already works.'
-            '</div></div></fieldset></form>' % (banner, "".join(rows)))
+            '<label>CurseForge address or Project ID</label>'
+            '<input type=text name=ref placeholder="929110 or '
+            'https://www.curseforge.com/ark-survival-ascended/mods/...">'
+            ' <button type=submit class=ghost>Look up</button>'
+            '<div class=help>%s</div></div>%s</fieldset></form>' % (note, body))
 
 # The backup runs on a worker thread now, so the page it was started from is free to
 # say what it is doing. Same rule as the launch phases: name the step, show how far in,
