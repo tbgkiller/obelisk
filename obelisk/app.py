@@ -282,7 +282,15 @@ def build_app(store, docker=None):
             banner = '<div class=problem>%s</div>' % ui._e(problem)
         elif message:
             banner = '<div class=note>%s</div>' % ui._e(message)
-        return (banner + _pending_panel() + _update_panel() +
+        drifted = ""
+        if st.get("running"):
+            try:
+                differs, why = pendingctl.drift(store)
+                if differs:
+                    drifted = '<div class=problem>%s</div>' % ui._e(why)
+            except Exception as e:                   # noqa: BLE001 - never a blank page
+                log.info("could not check for drift: %s", e)
+        return (banner + drifted + _pending_panel() + _update_panel() +
                 ui.render_cluster(store, plan, status=st))
 
     # The last poll, so opening the page does not go to the network before it renders.

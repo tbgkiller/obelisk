@@ -368,6 +368,43 @@ def restore(store, before, requeue=None):
     return True, ""
 
 
+def drift(store, read=None, generate=None):
+    """(differs, sentence) - does the running cluster match the settings on disk?
+
+    A safety net rather than part of the queue, and it exists because of what this
+    replaces. Recreate-class settings used to go straight into the store and wait for
+    whatever Launch came next, so a cluster upgrading to the queue may already be
+    running a compose file that its own settings no longer describe - and nothing would
+    ever say so. The queue cannot know about changes made before it existed; this can,
+    by comparing the file that is running against the file the settings would produce.
+
+    Compared as text, deliberately. The generator is deterministic, so any difference is
+    a real difference - and reasoning about which YAML differences matter is exactly the
+    sort of cleverness that reports "no drift" on a cluster running the wrong ports.
+    """
+    from . import cluster
+    read = read or (lambda p: open(p, encoding="utf-8").read())
+    generate = generate or (
+        lambda: cluster.generate_compose(store, project=cluster.project(store)))
+    try:
+        running = read(cluster.compose_path(store))
+    except OSError:
+        return False, ""                  # never launched: nothing to have drifted from
+    try:
+        wanted = generate()
+    except Exception as e:                # noqa: BLE001 - a bad plan is a different alarm
+        return False, "could not work out what this cluster should look like: %s" % e
+    if _norm(running) == _norm(wanted):
+        return False, ""
+    return True, ("The running cluster does not match your settings. Something was "
+                  "changed without being applied - apply the waiting changes, or use "
+                  "Apply and restart, to bring them back into line.")
+
+
+def _norm(text):
+    return "\n".join(l.rstrip() for l in str(text or "").strip().splitlines())
+
+
 def summary(store):
     """One sentence for an announcement."""
     n = count(store)

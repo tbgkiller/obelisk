@@ -229,5 +229,44 @@ check("one change is singular", "1 change waiting" in pending.summary(st),
 pending.stage(st, {"mod_ids": "1234"})
 check("two are plural", "2 changes waiting" in pending.summary(st), pending.summary(st))
 
+
+# ---- drift: the cluster that stopped matching its own settings
+#
+# The safety net for what this replaces. Recreate-class settings used to go into the
+# store and wait for whatever Launch came next, so a cluster upgrading to the queue may
+# already be running a compose file its settings no longer describe - and the queue
+# cannot know, because those changes happened before it existed.
+st = store()
+differs, why = pending.drift(st, read=lambda p: "services:\n  a: {}\n",
+                             generate=lambda: "services:\n  a: {}\n")
+check("a cluster that matches its settings reports no drift", not differs, why)
+
+differs, why = pending.drift(st, read=lambda p: "services:\n  a: {}\n",
+                             generate=lambda: "services:\n  a: {}\n  b: {}\n")
+check("one that does not, does", differs, why)
+check("and says what to do about it", "apply" in why.lower(), why)
+
+check("trailing whitespace is not drift",
+      not pending.drift(st, read=lambda p: "services:  \n  a: {}\n",
+                        generate=lambda: "services:\n  a: {}")[0])
+
+
+def _missing(path):
+    raise OSError("no such file")
+
+
+differs, why = pending.drift(st, read=_missing, generate=lambda: "anything")
+check("a cluster that has never been launched has nothing to have drifted from",
+      not differs and why == "", (differs, why))
+
+
+def _broken():
+    raise ValueError("this cluster will not boot")
+
+
+differs, why = pending.drift(st, read=lambda p: "x", generate=_broken)
+check("a plan that will not generate is not reported as drift - a different alarm",
+      not differs and "could not work out" in why, why)
+
 print("\nFAILURES: %s" % fails if fails else "\nall pending tests passed")
 sys.exit(1 if fails else 0)
