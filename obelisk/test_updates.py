@@ -42,6 +42,7 @@ class FakeStore:
     def __init__(self, **kw):
         self.values = dict(
             ark_update_mode="obelisk", update_apply_in_window=False,
+            apply_when_empty=True, apply_empty_hours="",
             staging_mode="always", staging_map="scorched", staging_memory="10g",
             update_window_start="4:00 AM", update_window_end="6:00 AM",
             restart_notice_minutes=30, mod_ids="929110,940003,929420",
@@ -441,7 +442,8 @@ from .settings import Store as _Store
 def real_store(**kw):
     st = _Store(_os.path.join(_tf.mkdtemp(), "s.json"))
     base = {"admin_password": "pw", "maps": "island,astraeos", "max_players": 70,
-            "ark_update_mode": "obelisk", "restart_notice_minutes": 0}
+            "ark_update_mode": "obelisk", "restart_notice_minutes": 0,
+            "apply_when_empty": True}
     base.update(kw)
     st.patch(base)
     return st
@@ -569,6 +571,47 @@ check("and moved nothing", calls == [], calls)
 
 check("apply_update is still the same routine, under its old name",
       updates.apply_update is updates.apply_batch)
+
+
+# ---- applying to an empty cluster, and the debounce that keeps it honest
+s = FakeStore()
+check("one empty poll is a moment, not a state",
+      not updates.empty_enough(s, 1)[0], updates.empty_enough(s, 1))
+check("and it says how far along it is",
+      "1 of the 3" in updates.empty_enough(s, 1)[1], updates.empty_enough(s, 1))
+check("two is still not enough", not updates.empty_enough(s, 2)[0])
+check("three consecutive empty checks is", updates.empty_enough(s, 3)[0],
+      updates.empty_enough(s, 3))
+check("with the setting off it never fires",
+      not updates.empty_enough(FakeStore(apply_when_empty=False), 9)[0])
+
+check("no hours set means any hour - an empty cluster at midday is still empty",
+      updates.in_hours(FakeStore(apply_empty_hours=""), 12 * 60))
+_h = FakeStore(apply_empty_hours="2:00 AM-10:00 AM")
+check("inside the hours", updates.in_hours(_h, 5 * 60))
+check("outside them", not updates.in_hours(_h, 20 * 60))
+_hn = FakeStore(apply_empty_hours="10:00 PM-6:00 AM")
+check("a range that crosses midnight works",
+      updates.in_hours(_hn, 23 * 60) and updates.in_hours(_hn, 3 * 60)
+      and not updates.in_hours(_hn, 12 * 60))
+check("an unparseable range does not lock it out for ever",
+      updates.in_hours(FakeStore(apply_empty_hours="whenever-ish"), 12 * 60))
+
+# ---- due() now fires for queued settings, not only a staged build
+st = real_store(update_apply_in_window=True)
+_pend.stage(st, {"max_players": 250})
+ok, why = updates.due(st, now=lambda: at(5))
+check("the window applies queued settings even with nothing staged", ok, why)
+check("and says what it is applying", "setting change" in why, why)
+
+st = real_store(update_apply_in_window=True, ark_update_mode="automatic")
+_pend.stage(st, {"max_players": 250})
+ok, why = updates.due(st, now=lambda: at(5))
+check("queued settings apply in the window whoever owns updates", ok, why)
+
+st = real_store(update_apply_in_window=True)
+ok, why = updates.due(st, now=lambda: at(5))
+check("with nothing queued and nothing staged it does not fire", not ok, why)
 
 
 # ---- apply: a swap that fails is put back, and the cluster comes up on the old build

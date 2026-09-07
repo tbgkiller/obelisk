@@ -580,6 +580,45 @@ def in_window(store, now_minutes):
     return now_minutes >= start or now_minutes <= end
 
 
+def in_hours(store, now_minutes):
+    """Is the clock inside the optional empty-apply hours? Blank means always.
+
+    Separate from the update window on purpose. The window is "when it is acceptable to
+    restart people"; this is "when it is acceptable to restart an *empty* cluster", and
+    an empty cluster at midday is still an empty cluster - so the default is no
+    restriction at all.
+    """
+    raw = str(store.get("apply_empty_hours") or "").strip()
+    if not raw or "-" not in raw:
+        return True
+    start, _, end = raw.partition("-")
+    a, b = parse_time(start), parse_time(end)
+    if a is None or b is None:
+        return True                # unparseable is not a reason to refuse for ever
+    if a <= b:
+        return a <= now_minutes <= b
+    return now_minutes >= a or now_minutes <= b
+
+
+def empty_enough(store, streak, needed=3):
+    """(may we apply now, why) given how many consecutive polls found nobody.
+
+    The debounce is the whole point. One poll returning zero is a moment, not a state -
+    somebody is loading a map, somebody disconnected to swap servers - and restarting on
+    it would kick the person who was about to be back. Consecutive empty polls are a
+    cheap way of asking "is this cluster actually idle".
+    """
+    if not store.get("apply_when_empty"):
+        return False, "applying when the cluster is empty is switched off"
+    if streak < needed:
+        return False, ("the cluster has been empty for %d of the %d checks needed"
+                       % (streak, needed))
+    when = time.localtime()
+    if not in_hours(store, when.tm_hour * 60 + when.tm_min):
+        return False, "outside the hours set for applying to an empty cluster"
+    return True, "the cluster has been empty for %d checks running" % streak
+
+
 def due(store, now=None):
     """(due, why) - should the scheduler apply the staged update right now?
 
@@ -587,11 +626,15 @@ def due(store, now=None):
     only while Obelisk owns updates, only inside the window, and only once per build -
     every one of those is a way for a scheduler to restart a cluster for no reason.
     """
-    if not owns_updates(store):
-        return False, "POK applies updates on this cluster, not Obelisk"
+    from . import pending
+
     ready = primed(store)
-    if not ready:
-        return False, "nothing staged and verified"
+    waiting = pending.count(store)
+    swap_files = bool(ready) and owns_updates(store)
+    if not swap_files and not waiting:
+        if ready and not owns_updates(store):
+            return False, "POK applies updates on this cluster, not Obelisk"
+        return False, "nothing staged and verified, and nothing queued"
     if not store.get("update_apply_in_window"):
         return False, "applying in the window is switched off"
 
@@ -599,7 +642,15 @@ def due(store, now=None):
     if not in_window(store, when.tm_hour * 60 + when.tm_min):
         return False, "outside the update window"
 
+    # A build already applied does not fire again the next night. Queued settings are
+    # not subject to that: they are removed from the queue when they land, so their
+    # absence is what stops them repeating.
     last = state(store).get("applied") or {}
-    if str(last.get("build") or "") == str(ready.get("build")):
+    if swap_files and not waiting and             str(last.get("build") or "") == str(ready.get("build")):
         return False, "build %s has already been applied" % ready.get("build")
-    return True, "build %s is staged, verified and the window is open" % ready.get("build")
+    what = []
+    if swap_files:
+        what.append("build %s is staged and verified" % ready.get("build"))
+    if waiting:
+        what.append("%d setting change(s) are queued" % waiting)
+    return True, "%s and the window is open" % " and ".join(what)

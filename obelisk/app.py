@@ -452,7 +452,7 @@ def build_app(store, docker=None):
                 results[key] = bool(ok_h) and clusterctl.verify_instance(store, key)[0]
             return all(results.values()), results
 
-        return updatesctl.apply_update(
+        return updatesctl.apply_batch(
             store, _ark_root(), warn=warn, save=lambda: clusterctl.save_world(store),
             stop_all=stop_all, start_all=lambda: clusterctl.launch(store),
             verify=verify_all,
@@ -1051,6 +1051,59 @@ async def version_watch():
         await asyncio.sleep(6 * 3600)
 
 
+async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
+    """Apply what is waiting the moment nobody is playing.
+
+    A restart costs whoever is on. An empty cluster costs nobody, so that is when the
+    queue should land - and on a ten-map cluster there is usually an empty hour every
+    day without anybody having to schedule one.
+
+    Three things keep this from being the feature that restarts your cluster while
+    somebody is standing in it. Every map has to *answer*, because a map that timed out
+    is not an empty map. It has to be empty for several checks running, because one poll
+    returning zero is a moment - somebody loading a map, somebody swapping servers - and
+    not a state. And the count is taken again inside the lock, immediately before
+    anything stops, because the gap between deciding and acting is exactly long enough
+    for somebody to log in.
+    """
+    from . import pending as pnd, updates as upd
+
+    streak = 0
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            if not (pnd.any_pending(store) or upd.primed(store)):
+                streak = 0
+                continue
+            if busy is not None and busy.locked():
+                streak = 0                       # something else is working on it
+                continue
+
+            total, counts, silent = await asyncio.to_thread(
+                clusterctl.players_online, store)
+            if silent or not counts:
+                # Nobody answering is not nobody playing. It is also what a stopped
+                # cluster looks like, and restarting one of those helps no one.
+                streak = 0
+                continue
+            streak = streak + 1 if total == 0 else 0
+
+            go, why = upd.empty_enough(store, streak, needed=needed)
+            if not go:
+                continue
+
+            log.info("nobody is on and something is waiting: %s", why)
+            announce.say("change.window_open",
+                         "The cluster has been empty for %d minute(s) and there are "
+                         "changes waiting, so they are being applied now."
+                         % (streak * interval // 60))
+            streak = 0
+            await asyncio.to_thread(apply_now or (lambda: _scheduled_apply(store)))
+        except Exception as e:                          # a bad minute must not kill it
+            log.error("empty-cluster check failed: %s", e)
+            streak = 0
+
+
 async def events_persist(store, interval=5):
     """Write the activity feed out when it changes, so it survives a restart.
 
@@ -1127,9 +1180,26 @@ async def ark_update_watch(store, interval=1800, panel=None):
         await asyncio.sleep(interval)
 
 
-def _scheduled_apply(store):
-    """The window's apply. Same verbs as the button, assembled in one place."""
-    from . import bot, staging as stg, updates as upd
+def _scheduled_apply(store, force=False, recheck=True):
+    """The unattended apply. Same verbs as the button, assembled in one place.
+
+    `recheck` is not optional in practice: whatever decided to call this did so from a
+    player count taken up to a minute ago, and a minute is long enough for somebody to
+    log in. The count is taken again here, immediately before anything stops.
+    """
+    from . import bot, pending as pnd, staging as stg, updates as upd
+
+    if recheck and not force:
+        total, counts, silent = clusterctl.players_online(store)
+        if silent or total:
+            who = (", ".join("%s (%d)" % (m, c) for m, c in sorted(counts.items()) if c)
+                   or ", ".join(l for l, _ in silent))
+            log.info("not applying after all - somebody arrived: %s", who)
+            announce.say("change.deferred",
+                         "Changes were about to be applied to an empty cluster, but %s "
+                         "answered differently on the final check. Left for later."
+                         % who)
+            return False, "somebody is on after all", {}
 
     def warn(minutes, build):
         password = str(store.get("admin_password") or "")
@@ -1154,8 +1224,8 @@ def _scheduled_apply(store):
             results[key] = bool(ok_h) and clusterctl.verify_instance(store, key)[0]
         return all(results.values()), results
 
-    return upd.apply_update(
-        store, layout.ark_root_of(store), warn=warn,
+    return upd.apply_batch(
+        store, layout.ark_root_of(store), warn=warn, force=force,
         save=lambda: clusterctl.save_world(store), stop_all=stop_all,
         start_all=lambda: clusterctl.launch(store), verify=verify_all,
         players=lambda: clusterctl.players_online(store),
@@ -1243,6 +1313,7 @@ async def main():
     tasks.append(asyncio.create_task(version_watch()))
     tasks.append(asyncio.create_task(ark_update_watch(store)))
     tasks.append(asyncio.create_task(events_persist(store)))
+    tasks.append(asyncio.create_task(empty_watch(store)))
 
     from . import bot
     # The relay used to learn its maps from a SERVERS environment variable, which only
