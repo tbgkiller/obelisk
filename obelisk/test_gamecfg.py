@@ -149,6 +149,35 @@ check("no unset catalogue key is added to the file",
 check("in particular nothing appears at a schema default",
       "PreventDiseases" not in after2 and "ServerHardcore" not in after2)
 
+# ---------------------------------------------------------------- persisted defaults
+#
+# Caught on a live cluster: a Save with nothing changed added XPMultiplier=1.0 to a file
+# that had never contained it. xp_multiplier was in the store at its own default -
+# written there by an ordinary store.save() long before - and "present in the store" was
+# being read as "the operator set this". It is not. The operator's file said nothing
+# about XP, and Obelisk answered on their behalf.
+st4, conf4 = fresh()
+gamecfg.adopt(st4)
+_before4 = open(os.path.join(conf4, "GameUserSettings.ini"), encoding="utf-8").read()
+check("XPMultiplier is genuinely absent from this file", "XPMultiplier" not in _before4)
+
+st4.data["cluster"]["xp_multiplier"] = st4.get("xp_multiplier")   # a persisted default
+ok4, msg4 = gamecfg.apply(st4)
+_after4 = open(os.path.join(conf4, "GameUserSettings.ini"), encoding="utf-8").read()
+check("a default sitting in the store is not written into the file",
+      "XPMultiplier" not in _after4, _after4)
+check("so the file is untouched", _after4 == _before4)
+check("and nothing claims to have written it", "already match" in msg4, msg4)
+
+# But a value the operator actually chose is written, even into a key the file lacks.
+st4.patch({"xp_multiplier": 3.0})
+gamecfg.apply(st4)
+_after5 = open(os.path.join(conf4, "GameUserSettings.ini"), encoding="utf-8").read()
+check("a value that differs from the default is written, absent or not",
+      "XPMultiplier=3.0" in _after5, _after5)
+check("and it lands inside its own section",
+      _after5.index("XPMultiplier=3.0") < _after5.index("[GaiaEssentials]"), _after5)
+
 # ---------------------------------------------------------------- unreadable values
 st3, conf3 = fresh()
 # Inside [ServerSettings], where the key really lives. Appending to the end of the file

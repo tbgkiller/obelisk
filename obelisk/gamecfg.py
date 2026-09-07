@@ -120,11 +120,20 @@ def apply(store, backup=True, merge=None):
         if setting["key"] not in store.data["cluster"]:
             continue
         value = store.data["cluster"][setting["key"]]
+        current = docs[which].get(section, key)
+
+        # A key that is not in the file and is sitting at its own default is not a
+        # decision anybody made - it is a default that got persisted into settings.json
+        # at some point and now looks identical to a deliberate choice. Writing it adds
+        # a line the operator never asked for to a file they wrote by hand. Presence in
+        # the store is not evidence of intent; differing from the default is.
+        if current is None and value == setting.get("default"):
+            continue
+
         # Compare against what the file means, not how it spells it. `15` and `15.0`
         # are the same number, and rewriting the line to change one into the other is a
         # diff in the operator's file, a .bak, and a restart notice, in exchange for
         # nothing. Only a real difference in value earns a write.
-        current = docs[which].get(section, key)
         if current is not None and _from_ini(setting, current) == value:
             continue
         changes[which][(section, key)] = _to_ini(setting, value)
