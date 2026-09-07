@@ -571,5 +571,45 @@ check("with a real bar", "evbar" in ui.render_dashboard(
 check("nothing happening renders nothing at all rather than an empty box",
       ui.render_dashboard() == "")
 
+
+# ---- blast radius, which is not the same question as "does it need a recreate"
+#
+# One word was answering three questions. The staging server's own RAM cap carried a
+# "needs recreate" badge identical to the one on a map's RAM cap, so a change that
+# restarts a throwaway instance nobody is standing in looked exactly like one that
+# restarts ten servers with players on them - wrong in the direction that matters.
+from obelisk import schema as _sch
+
+check("every setting has a scope", all("scope" in s for s in SETTINGS))
+check("a map setting restarts the cluster", _sch.scope_of("mem_limit") == "maps")
+check("the mod list does too", _sch.scope_of("mod_ids") == "maps")
+check("who-applies does too - it rewrites every map's block",
+      _sch.scope_of("ark_update_mode") == "maps")
+check("the staging server's own settings do not",
+      all(_sch.scope_of(k) == "staging"
+          for k in ("staging_mode", "staging_map", "staging_memory")))
+check("Obelisk's own image is its own business",
+      _sch.scope_of("obelisk_image") == "obelisk")
+check("and the install-time ones are too",
+      _sch.scope_of("appdata") == "obelisk" and _sch.scope_of("status_port") == "obelisk")
+check("a live-editable setting disturbs nothing",
+      _sch.scope_of("ItemStackSizeMultiplier") == "none")
+check("scope is only ever set where a recreate is actually needed",
+      all((s["scope"] == "none") == (s.get("apply") != "recreate") for s in SETTINGS))
+check("an unknown key does not blow up the page", _sch.scope_of("nope") == "none")
+
+check("the queue is exactly the map-scoped settings",
+      set(_sch.staged_keys()) == {s["key"] for s in SETTINGS if s["scope"] == "maps"})
+check("and the staging server's settings are not in it",
+      not any(k.startswith("staging_") for k in _sch.staged_keys()),
+      [k for k in _sch.staged_keys() if k.startswith("staging_")])
+
+_page = render_settings(store())
+check("a map setting says it restarts the cluster", "restarts the cluster" in _page)
+check("a staging setting says it does not", "staging only" in _page)
+check("and Obelisk's own points at the Docker page",
+      "needs Obelisk restarted" in _page)
+check("the old one-size-fits-all badge is gone", "needs recreate" not in _page)
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

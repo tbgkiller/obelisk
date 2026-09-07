@@ -207,11 +207,37 @@ def build_app(store, docker=None):
             ok_ini, ini_msg = gamecfg.apply(store)
             if not ok_ini:
                 log.warning("game settings not written: %s", ini_msg)
+            # Staging-scope settings take effect immediately, because the only thing
+            # they disturb is a server with no players on it and a world regenerated
+            # every rehearsal. Making those wait for an empty cluster would be treating
+            # a free change like an expensive one.
+            await _restage_if_needed(changes)
         except Invalid as e:
             return chrome('<div class=problem>%s</div>%s'
                           % (ui._e(str(e)), ui.render_settings(store)),
                           "Obelisk settings", "/admin")
         raise web.HTTPFound("/admin")
+
+    async def _restage_if_needed(changed):
+        from .schema import scope_of
+        if not any(scope_of(k) == "staging" for k in (changed or {})):
+            return
+
+        def go():
+            ok, msg = stagingctl.down(store)
+            if not ok:
+                return False, msg
+            if stagingctl.mode(store) != "always":
+                return True, "the staging server is stopped"
+            return stagingctl.up(store)
+
+        try:
+            ok, msg = await asyncio.to_thread(go)
+        except Exception as e:                           # noqa: BLE001 - never fatal
+            ok, msg = False, str(e)
+        announce.say("staging.reconfigured" if ok else "staging.failed",
+                     "Staging server settings changed: %s" % msg,
+                     level="info" if ok else "error")
 
     # ---- the cluster: define it, launch it, stop it
     def _cluster_body(request, message="", problem=""):

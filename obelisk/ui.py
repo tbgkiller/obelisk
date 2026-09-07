@@ -200,8 +200,20 @@ def _field(s, value, locked):
     tags = ""
     if locked:
         tags += '<span class=tag title="set when the container is created">container</span>'
-    if s.get("apply") == "recreate":
-        tags += '<span class=tag>needs recreate</span>'
+    # What a change actually disturbs, rather than one word for three very different
+    # amounts of disruption. "Needs recreate" on the staging server's RAM told an
+    # operator that a harmless change would restart ten servers with players on them.
+    scope = s.get("scope", "none")
+    if scope == "maps":
+        tags += ('<span class=tag title="waits for an empty cluster or the update '
+                 'window, then restarts every map once">restarts the cluster</span>')
+    elif scope == "staging":
+        tags += ('<span class=tag title="restarts only the staging server, which has '
+                 'no players on it">staging only</span>')
+    elif scope == "obelisk":
+        tags += ('<span class=tag title="applied from the Unraid Docker page - Obelisk '
+                 'cannot replace its own container mid-flight">needs Obelisk restarted'
+                 '</span>')
     help_txt = _e(s.get("help", ""))
     if locked:
         help_txt += (" <strong>Set when the container was created</strong> - change it in "

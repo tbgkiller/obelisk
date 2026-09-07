@@ -492,6 +492,47 @@ GROUPS = ["Cluster", "Identity", "Access", "Mods", "Rates", "Upkeep",
 
 BY_KEY = {s["key"]: s for s in SETTINGS}
 
+# ---- blast radius
+#
+# `apply` says *whether* something has to be recreated. It does not say *what*, and
+# those turned out to be different questions being answered by one word. Three things
+# wear the same "recreate" label and mean entirely different amounts of disruption:
+# changing a map's RAM restarts ten servers with players on them; changing the staging
+# server's RAM restarts a throwaway instance nobody is standing in; changing Obelisk's
+# own image is not something Obelisk can do at all.
+#
+# Conflating them meant the staging server's own settings claimed a full cluster
+# recreate, which is wrong in the direction that matters - it tells an operator that a
+# harmless change will disrupt their players.
+SCOPE_STAGING = {"staging_mode", "staging_map", "staging_memory"}
+SCOPE_OBELISK = {"obelisk_image", "appdata", "status_port"}
+
+for _s in SETTINGS:
+    if _s.get("apply") != "recreate":
+        _s["scope"] = "none"
+    elif _s["key"] in SCOPE_STAGING:
+        _s["scope"] = "staging"
+    elif _s["key"] in SCOPE_OBELISK:
+        _s["scope"] = "obelisk"
+    else:
+        _s["scope"] = "maps"
+
+
+def scope_of(key):
+    """What a change to this setting actually disturbs: maps, staging, obelisk, none."""
+    return (BY_KEY.get(key) or {}).get("scope", "none")
+
+
+def staged_keys():
+    """The settings a change to which has to wait for a safe moment.
+
+    Only the ones that restart servers people are playing on. The staging server's own
+    settings are not in here: restarting it costs nothing, so it happens on save.
+    """
+    return [s["key"] for s in SETTINGS if s.get("scope") == "maps"]
+
+
+
 # Two phases, because Docker needs some answers before the app exists.
 #
 #   phase="install"  a bind mount or a published port - Docker has to know it at
