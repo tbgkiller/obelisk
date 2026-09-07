@@ -379,6 +379,50 @@ check("but it is not applyable", updates.primed(s) is None)
 events = [i["event"] for i in drain()]
 check("and the channel is told it is unsafe", "ark.update_unsafe" in events, events)
 
+# ---- the mods being proved is not the world being up
+#
+# These are minutes apart and the gap is where a real prime failed. On the live host the
+# mods went valid at 17:01:35, this gave up at 17:02:04, and the server finished starting
+# at 17:03:43 - so a healthy staging boot was reported as "never answered RCON" 99
+# seconds early, and the operator was told a good build was unsafe. Breaking on the mod
+# lines and asking RCON once, right then, measures the wrong thing.
+drain()
+s = FakeStore()
+clock = {"probes": 0}
+
+
+def slow_rcon():
+    """Answers only after the world has had time to load, like a real one."""
+    clock["probes"] += 1
+    return clock["probes"] >= 4
+
+
+ok, msg, result = updates.prime(
+    s, ARK, up=spy_up, down=lambda: (True, "stopped"), log_of=lambda: good_log,
+    container_log=lambda: "", alive=lambda: True, rcon_ok=slow_rcon,
+    opener=lambda url: '{"status":"success","data":{"2430930":{"depots":{"branches":'
+                       '{"public":{"buildid":"25200000"}}}}}}',
+    read=lambda p: '"AppState" {"buildid" "25200000"}',
+    wait=lambda s: None, now=lambda: 1000)
+check("a server whose world takes a while is waited for, not failed", ok, msg)
+check("and it kept asking rather than asking once - the whole bug",
+      clock["probes"] >= 4, "asked %d times" % clock["probes"])
+check("the mods it proved are still recorded", result["loaded"] == LOADED, result)
+
+# And the other half: waiting is bounded. A world that never comes up still fails.
+s = FakeStore()
+ok, msg, result = updates.prime(
+    s, ARK, up=spy_up, down=lambda: (True, "stopped"), log_of=lambda: good_log,
+    container_log=lambda: "", alive=lambda: True, rcon_ok=lambda: False,
+    opener=lambda url: '{"status":"success","data":{"2430930":{"depots":{"branches":'
+                       '{"public":{"buildid":"25200000"}}}}}}',
+    read=lambda p: '"AppState" {"buildid" "25200000"}',
+    wait=lambda s: None, minutes=1, now=lambda: 1000)
+check("a world that never finishes loading does fail", not ok, msg)
+check("and says that is what happened",
+      any("RCON" in p for p in result["problems"]), result["problems"])
+
+
 # ---- a staging server that dies during install must not be waited on
 #
 # It did exactly this on a live host: the container aborted after three minutes with

@@ -167,6 +167,7 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
     # clock that does not move, and the first thing to do that was this module's own
     # test - which is a cheap way to find out that nothing else bounded it.
     last, install_failure, died = "", None, False
+    mods_ok, answered = False, False
     for turn in range(max(1, int(minutes * 3))):
         # Two logs, because only one of them exists at a time. The container's own output
         # covers the download and the file sync; ShooterGame.log does not exist until the
@@ -182,10 +183,24 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
             install_failure = failure
             break
 
-        text = log_of() or ""
-        done, _problems, _detail = arkupdate.read_boot_log(text, ids)
-        if done:
-            break
+        # ---- two things have to be true, and they are minutes apart
+        #
+        # The mods go valid early and the world is not up for a long time afterwards.
+        # Breaking here the moment the mod lines appeared and asking RCON straight after
+        # measured the wrong thing: on the run that found this, the mods were proved at
+        # 17:01:35, this gave up at 17:02:04, and the server finished starting at
+        # 17:03:43 - so a perfectly healthy staging boot was reported as never having
+        # answered RCON, 99 seconds early. Which is "it started is not it is serving",
+        # the same lesson wait_healthy exists for, walked into again.
+        if not mods_ok:
+            mods_ok, _problems, _detail = arkupdate.read_boot_log(log_of() or "", ids)
+            if mods_ok:
+                step("mods loaded - waiting for the world to finish loading")
+        if mods_ok:
+            answered = rcon_ok() if rcon_ok else _staging_answers(store)
+            if answered:
+                step("the staging server is serving")
+                break
 
         # Give it one turn to appear before believing it is gone: `up` returns as soon as
         # Docker accepts the container, which is before it is running.
@@ -196,7 +211,7 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
 
     step("checking what it proved")
     text = log_of() or ""
-    answered = False if died else (rcon_ok() if rcon_ok else _staging_answers(store))
+    answered = answered and not died
     ok, problems, detail = staging.verify(staged, text, ids, rcon_ok=answered,
                                           target_build=target, read=read)
     # Put the real reason first. Without it the verdict is a list of mods that never

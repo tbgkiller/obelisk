@@ -44,6 +44,10 @@ VERSION_INFO = {}
 # never waits on Steam or CurseForge to answer.
 ARK_UPDATE = {}
 
+# Relay coverage, measured rather than counted. Announced to Discord already; kept here
+# so the dashboard can show the same fact as a colour instead of a sentence.
+RELAY_INFO = {}
+
 COOKIE = "obelisk_session"
 # Long enough that signing in is a thing you do occasionally, short enough that a
 # forgotten browser on someone else's machine does not stay signed in for ever.
@@ -350,7 +354,7 @@ def build_app(store, docker=None):
         if not authed(request):
             raise web.HTTPFound("/setup")
         items = announce.recent(limit=200)
-        body = ui.render_events(items, jobs=_jobs())
+        body = _dashboard() + ui.render_events(items, jobs=_jobs())
         body = body.replace("<div id=feed>",
                             '<div id=feed data-newest="%d">' % announce.newest_id(), 1)
         return chrome(body + ui.FEED_LIVE, "Activity", "/admin/activity")
@@ -370,7 +374,29 @@ def build_app(store, docker=None):
             "html": ui.event_rows(fresh, compact=True) if fresh else "",
             "newest": announce.newest_id(),
             "running": ui.running_rows(_jobs()),
+            "dash": _dashboard(),
         })
+
+    def _ujob_live():
+        out = dict(ujob)
+        out["elapsed"] = int(time.time() - ujob["started"]) if ujob.get("started") else 0
+        return out
+
+    def _dashboard():
+        try:
+            failed = None
+            if not updatesctl.primed(store):
+                got = (store.data.get("ark_update") or {}).get("primed")
+                if isinstance(got, dict) and not got.get("ok"):
+                    failed = dict(got, expected=[
+                        m.strip() for m in str(store.get("mod_ids") or "").split(",")
+                        if m.strip()])
+            return ui.render_dashboard(
+                status=ARK_UPDATE, ready=updatesctl.primed(store), failed=failed,
+                job=_ujob_live(), relay=RELAY_INFO, backup=job, restore=rjob)
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.warning("could not render the dashboard: %s", e)
+            return ""
 
     async def update_status(request):
         if not authed(request):
@@ -752,7 +778,8 @@ def build_app(store, docker=None):
         # The last few events on the front page, because "what has Obelisk been doing"
         # should not need a tab - that was the shape of the complaint. The full history
         # and the detail live on Activity.
-        recent = ui.render_events(announce.recent(limit=6), jobs=_jobs(), compact=True)
+        recent = _dashboard() + ui.render_events(announce.recent(limit=6),
+                                                 jobs=_jobs(), compact=True)
         recent = recent.replace("<div id=feed>",
                                 '<div id=feed data-newest="%d">' % announce.newest_id(), 1)
         recent = recent.replace("</fieldset>",
@@ -1081,6 +1108,8 @@ async def main():
             names = ", ".join("%s (%s)" % (n, why) for n, why in bad[:4])
             log.error("relay reaches %d of %d map(s) - cannot reach: %s",
                       len(good), total, names)
+            RELAY_INFO.update(total=total, reachable=len(good),
+                              unreachable=", ".join(n for n, _w in bad))
             announce.say("relay.degraded",
                          "Chat relay can reach %d of %d maps. Cross-map chat will not "
                          "work for the rest until this is fixed." % (len(good), total),
@@ -1088,6 +1117,7 @@ async def main():
         else:
             log.info("relay covering %d map(s), all reachable: %s",
                      total, ", ".join(bot.SERVERS))
+            RELAY_INFO.update(total=total, reachable=total, unreachable="")
             announce.say("relay.up", "Chat relay is up and reaching all %d maps." % total)
         tasks.append(asyncio.create_task(bot.main()))
     else:

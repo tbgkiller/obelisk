@@ -62,6 +62,31 @@ tr:last-child td{border-bottom:none}
 .current{color:#7fd18f;font-size:12px}
 .newer{color:#ffc46b;font-size:12px;font-weight:600}
 .unknown{color:#c9a0ff;font-size:12px;font-weight:600}
+.dash{display:flex;flex-direction:column;gap:10px}
+.panel{background:#161b22;border:1px solid #262d38;border-radius:9px;padding:11px 13px}
+.ptitle{color:#8b94a3;font-size:11px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:8px}
+.stepper{display:flex;flex-wrap:wrap;gap:4px}
+.st{flex:1 1 90px;min-width:90px;font-size:11px;color:#5b6472;text-align:center}
+.st span{display:block;height:4px;border-radius:2px;background:#2a3140;margin-bottom:5px}
+.st.done{color:#7fd18f}
+.st.done span{background:#2f7d45}
+.st.now{color:#7fb2ff;font-weight:700}
+.st.now span{background:#2f6feb;animation:pulse 1.6s ease-in-out infinite}
+.st.bad{color:#ff9d94;font-weight:700}
+.st.bad span{background:#e5534b}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.45}}
+.badge{display:inline-block;border-radius:999px;padding:4px 12px;font-size:12px;font-weight:600}
+.badge.good{background:#16351f;color:#7fd18f;border:1px solid #2f7d45}
+.badge.bad{background:#38191b;color:#ff9d94;border:1px solid #7d2f2f}
+.badge.new{background:#3a2f14;color:#ffc46b;border:1px solid #7d642f}
+.badge.unk{background:#2b2440;color:#c9a0ff;border:1px solid #4d3f7d}
+.chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
+.chip{font-size:11px;border-radius:6px;padding:3px 8px;border:1px solid #303845;background:#12151a;color:#a9b4c4;white-space:nowrap}
+.chip b{font-weight:600;color:#e6e9ef}
+.chip.ok{border-color:#2f7d45;color:#7fd18f}
+.chip.bad{border-color:#7d2f2f;color:#ff9d94}
+.chip.new{border-color:#7d642f;color:#ffc46b}
+.chip.unk{border-color:#4d3f7d;color:#c9a0ff}
 .ev{border-left:3px solid #2b3542;background:#161b22;border-radius:0 8px 8px 0;padding:8px 12px;margin:0 0 8px}
 .ev.err{border-left-color:#e5534b;background:#1e1618}
 .ev.warn{border-left-color:#d29922}
@@ -578,6 +603,192 @@ def render_ark_update(store, status, ready=None, job=None, owns=True, staging_on
             % (warn, "".join(rows), staged, buttons))
 
 
+# The phases a prime actually goes through, in order, with the words the flow already
+# emits. Taken from a real run's phase stream rather than invented - the same lines that
+# went to the channel become the highlighted step here, so the two cannot describe
+# different journeys.
+PRIME_PHASES = [
+    ("Starting", ("starting the staging server",)),
+    ("Downloading", ("Downloading server files",)),
+    ("Installing", ("Checking existing files", "Reserving disk space",
+                    "Finishing the install", "Server files installed")),
+    ("Loading world", ("Starting the world", "Generating the world",
+                       "Preparing the runtime")),
+    ("Validating", ("mods loaded", "the staging server is serving",
+                    "checking what it proved")),
+    ("Done", ("done", "stopping the staging server")),
+]
+
+APPLY_PHASES = [
+    ("Warning players", ("warning players",)),
+    ("Saving", ("saving every world",)),
+    ("Stopping", ("stopping the cluster",)),
+    ("Swapping files", ("swapping the staged files",)),
+    ("Starting", ("starting the cluster",)),
+    ("Verifying", ("checking every map",)),
+    ("Done", ("done",)),
+]
+
+
+def phase_index(step, phases):
+    """Which step of the journey a status line belongs to. -1 when nothing matches.
+
+    Matched on the words the flow emits rather than a parallel enumeration it has to be
+    kept in step with - a stepper that drifts from the thing it describes is worse than
+    no stepper, because it looks authoritative.
+    """
+    text = str(step or "").lower()
+    best = -1
+    for i, (_label, markers) in enumerate(phases):
+        if any(m.lower() in text for m in markers):
+            best = i
+    return best
+
+
+def render_stepper(phases, step, elapsed=None, failed=False):
+    """The journey, with where we are on it and how long it has taken."""
+    here = phase_index(step, phases)
+    cells = []
+    for i, (label, _markers) in enumerate(phases):
+        if failed and i == here:
+            cls = "st bad"
+        elif i < here:
+            cls = "st done"
+        elif i == here:
+            cls = "st now"
+        else:
+            cls = "st"
+        cells.append('<div class="%s"><span></span>%s</div>' % (cls, _e(label)))
+    timer = ""
+    if elapsed:
+        timer = ('<div class=help style="margin-top:4px">%s elapsed</div>'
+                 % _e(_duration(elapsed)))
+    return '<div class=stepper>%s</div>%s' % ("".join(cells), timer)
+
+
+def _duration(seconds):
+    seconds = int(seconds or 0)
+    if seconds < 60:
+        return "%ds" % seconds
+    if seconds < 3600:
+        return "%dm %02ds" % (seconds // 60, seconds % 60)
+    return "%dh %02dm" % (seconds // 3600, (seconds % 3600) // 60)
+
+
+def render_mod_chips(rows=None, loaded=None, expected=None):
+    """Every mod as a chip: what it is, what version, and whether it is proved.
+
+    A grid rather than a list because the question people actually ask is "is anything
+    wrong", and that is answered by a colour at a glance. The version is on the chip so
+    the answer to "wrong how" is there too without a second click.
+    """
+    chips = []
+    if loaded is not None:
+        for mod_id in sorted(expected or loaded, key=lambda x: int(x)):
+            file_id = (loaded or {}).get(mod_id)
+            if file_id:
+                chips.append('<span class="chip ok" title="loaded from file %s">'
+                             '✓ %s <b>%s</b></span>'
+                             % (_e(file_id), _e(mod_id), _e(file_id)))
+            else:
+                chips.append('<span class="chip bad" title="never loaded">'
+                             '✕ %s <b>did not load</b></span>' % _e(mod_id))
+    else:
+        for row in rows or []:
+            if row.get("newer") is None:
+                cls, mark, tail = "chip unk", "?", "unknown"
+            elif row.get("newer"):
+                cls, mark, tail = "chip new", "⬆", "%s available" % (row.get("latest") or "")
+            else:
+                cls, mark, tail = "chip ok", "✓", "current"
+            chips.append('<span class="%s" title="%s">%s %s <b>%s</b></span>'
+                         % (cls, _e(row.get("name") or row["id"]), mark,
+                            _e(row.get("name") or row["id"])[:24], _e(tail)))
+    return '<div class=chips>%s</div>' % "".join(chips) if chips else ""
+
+
+def render_relay(info):
+    """10/10 reachable, in green, or which ones are not, in red."""
+    if not info:
+        return ""
+    total = int(info.get("total") or 0)
+    good = int(info.get("reachable") or 0)
+    if not total:
+        return ""
+    ok = good == total
+    return ('<div class="badge %s">Chat relay %d/%d maps reachable</div>%s'
+            % ("good" if ok else "bad", good, total,
+               ('<div class=help>Cannot reach: %s</div>' % _e(info.get("unreachable"))
+                if not ok and info.get("unreachable") else "")))
+
+
+def render_dashboard(status=None, ready=None, failed=None, job=None, relay=None,
+                     backup=None, restore=None):
+    """What Obelisk is doing right now, as a picture rather than a paragraph.
+
+    The channel gets the same phases as text; this is the at-a-glance version. Both are
+    driven by the same job state and the same announcements, so neither can be showing a
+    stage the other has not reached.
+    """
+    blocks = []
+
+    if (job or {}).get("state") == "running":
+        phases = APPLY_PHASES if job.get("what") == "apply" else PRIME_PHASES
+        title = "Applying an update" if job.get("what") == "apply" else "Priming an update"
+        blocks.append('<div class=panel><div class=ptitle>%s</div>%s</div>'
+                      % (_e(title),
+                         render_stepper(phases, job.get("step"),
+                                        elapsed=job.get("elapsed"))))
+    for name, other, phases in (("Backup", backup, None), ("Restore", restore, None)):
+        if (other or {}).get("state") != "running":
+            continue
+        step = other.get("step") or other.get("phase") or "working"
+        pct = other.get("percent")
+        if pct is None and other.get("total"):
+            pct = round(100.0 * (other.get("done") or 0) / other["total"], 1)
+        bar = ('<div class=evbar><div style="width:%s%%"></div></div>' % _e(pct)
+               if pct is not None else "")
+        blocks.append('<div class=panel><div class=ptitle>%s in progress</div>'
+                      '<div>%s</div>%s</div>' % (_e(name), _e(step), bar))
+
+    if ready:
+        when = time.strftime("%H:%M", time.localtime(ready.get("when") or 0))
+        loaded = ready.get("loaded") or {}
+        blocks.append('<div class=panel><div class="badge good">Primed &amp; verified '
+                      '%s &middot; build %s</div>%s</div>'
+                      % (_e(when), _e(ready.get("build")),
+                         render_mod_chips(loaded=loaded)))
+    elif failed:
+        problems = failed.get("problems") or []
+        blocks.append('<div class=panel><div class="badge bad">Unsafe &mdash; %s</div>'
+                      '%s</div>'
+                      % (_e(problems[0] if problems else "the rehearsal did not pass"),
+                         render_mod_chips(loaded=failed.get("loaded") or {},
+                                          expected=failed.get("expected"))))
+
+    if status and status.get("mods"):
+        build = status.get("build") or {}
+        if build.get("newer") is None:
+            cls, word = "unk", "build %s &middot; could not check" % (
+                build.get("running") or "?")
+        elif build.get("newer"):
+            cls, word = "new", "build %s &rarr; %s available" % (
+                build.get("running"), build.get("latest"))
+        else:
+            cls, word = "good", "build %s &middot; current" % build.get("running")
+        blocks.append('<div class=panel><div class="badge %s">%s</div>%s</div>'
+                      % (cls, word, render_mod_chips(rows=status["mods"])))
+
+    relay_html = render_relay(relay)
+    if relay_html:
+        blocks.append('<div class=panel>%s</div>' % relay_html)
+
+    if not blocks:
+        return ""
+    return ('<fieldset><legend>Right now</legend><div class=dash>%s</div></fieldset>'
+            % "".join(blocks))
+
+
 def render_events(items, jobs=None, limit=None, compact=False):
     """The activity feed: everything that reached the admin channel, and more of it.
 
@@ -680,6 +891,14 @@ FEED_LIVE = """
         if (d.html && d.newest > newest){
           newest = d.newest;
           feed.insertAdjacentHTML('afterbegin', d.html);
+        }
+        if (d.dash !== undefined){
+          const dash = document.querySelector('.dash');
+          if (dash && d.dash){
+            const fresh = new DOMParser().parseFromString(d.dash, 'text/html')
+                            .querySelector('.dash');
+            if (fresh) dash.innerHTML = fresh.innerHTML;
+          }
         }
         if (d.running !== undefined){
           document.querySelectorAll('.ev.busy').forEach(e => e.remove());

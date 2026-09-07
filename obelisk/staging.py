@@ -58,6 +58,11 @@ LIVE_ONLY = (".pok-manager", "update_coordination", "instance_flags")
 
 MODES = ("off", "on_demand", "always")
 
+# How long to let the staging server shut itself down before it is killed. The live maps
+# get 210 seconds because their worlds are irreplaceable; this one is regenerated every
+# rehearsal, so waiting out a save verification that has already failed buys nothing.
+STOP_TIMEOUT = 30
+
 
 def paths(ark_root):
     """Every path the staging server owns. Nothing here is shared with the cluster."""
@@ -129,7 +134,9 @@ def compose_text(store, project, ark_host_root):
         "    image: %s" % store.get("ark_image"),
         "    container_name: %s" % container_name(project),
         "    restart: %s" % ("unless-stopped" if mode(store) == "always" else "no"),
-        "    stop_grace_period: 210s",
+        # Short on purpose - see down(). A throwaway world is not worth
+        # three and a half minutes of Docker grace.
+        "    stop_grace_period: %ds" % STOP_TIMEOUT,
         "    mem_limit: %s" % (store.get("staging_memory") or "10g"),
         "    networks: [%s]" % net,
         "    ulimits:",
@@ -287,18 +294,41 @@ def up(store):
     return True, "the staging server is starting"
 
 
-def down(store):
-    """Stop it. Its throwaway world and its staged files are left alone."""
-    from . import dockerctl
+def down(store, timeout=STOP_TIMEOUT):
+    """Stop it, promptly. Its staged files are kept; its world is not worth waiting for.
+
+    The image will not let a container exit until it has verified a two-stage SaveWorld
+    over RCON, and refuses with "PID 1 will remain alive until Docker's grace period
+    expires" when that fails. For the ten live maps that is exactly right - those worlds
+    are the thing being protected. For this one it is not: the staging server has no
+    players, and its world is a throwaway generated fresh for the rehearsal. So a failed
+    prime sat there for three and a half minutes proving a save nobody wanted.
+
+    Hence a short grace period and, if it is still there afterwards, a kill. Refusing to
+    force it would mean the most likely time to need a clean-up - a rehearsal that went
+    wrong, where RCON is exactly what did not work - is the time it takes longest.
+    """
+    from . import cluster, dockerctl
     ok, why = dockerctl.available()
     if not ok:
         return False, "Docker isn't reachable. %s" % why
     if not os.path.isfile(compose_file(store)):
         return True, "the staging server was not running"
-    rc, out = _compose(store, "down", timeout=420)
-    if rc != 0:
-        return False, "could not stop the staging server: %s" % out[-500:]
-    return True, "the staging server is stopped"
+
+    rc, out = _compose(store, "down", "--timeout", str(int(timeout)),
+                       timeout=timeout + 120)
+    name = container_name(cluster.project(store))
+    still_here, _ = is_running(store)
+    if rc == 0 and not still_here:
+        return True, "the staging server is stopped"
+
+    log.info("the staging server did not stop cleanly (%s) - removing it",
+             (out or "").strip()[-200:] or "no output")
+    rc2, out2 = dockerctl._run(["docker", "rm", "-f", name], timeout=90)
+    if rc2 != 0 and "No such container" not in (out2 or ""):
+        return False, "could not remove the staging server: %s" % (out2 or "")[-300:]
+    return True, ("the staging server was force-stopped - its world is a throwaway, so "
+                  "nothing was lost")
 
 
 def is_running(store, details=None):

@@ -480,5 +480,96 @@ check("a feed with only a running job still renders rather than saying nothing h
       "Prime in progress" in ui.render_events(
           [], jobs={"Prime": {"state": "running", "step": "downloading"}}))
 
+
+# ---- the dashboard: the same facts as the channel, as a picture
+#
+# The owner's refinement: Discord stays the text mirror, the UI becomes the at-a-glance
+# version. Which means the stepper's phases have to be the words the flow actually
+# emits - a stepper maintained separately from the thing it describes drifts, and a
+# drifting stepper is worse than none because it still looks authoritative.
+from obelisk import updates as _upd
+
+_emitted = ["starting the staging server", "Downloading server files",
+            "Checking existing files", "Reserving disk space",
+            "Finishing the install", "Server files installed", "Starting the world",
+            "Generating the world", "mods loaded - waiting for the world to finish "
+            "loading", "the staging server is serving", "checking what it proved",
+            "done"]
+_unmatched = [t for t in _emitted if ui.phase_index(t, ui.PRIME_PHASES) < 0]
+check("every phase the prime flow emits lands on a step of the stepper",
+      not _unmatched, _unmatched)
+
+_apply_emitted = ["warning players (30 minutes)", "saving every world",
+                  "stopping the cluster and the staging server",
+                  "swapping the staged files in", "starting the cluster",
+                  "checking every map is really serving", "done"]
+_unmatched = [t for t in _apply_emitted if ui.phase_index(t, ui.APPLY_PHASES) < 0]
+check("and every phase the apply flow emits does too", not _unmatched, _unmatched)
+
+check("the phases move forward as the flow does",
+      ui.phase_index("Downloading server files", ui.PRIME_PHASES) <
+      ui.phase_index("Generating the world", ui.PRIME_PHASES) <
+      ui.phase_index("checking what it proved", ui.PRIME_PHASES))
+check("a line nobody planned for highlights nothing rather than the wrong step",
+      ui.phase_index("something new", ui.PRIME_PHASES) == -1)
+
+_step = ui.render_stepper(ui.PRIME_PHASES, "Generating the world", elapsed=3785)
+check("exactly one step is current", _step.count("st now") == 1, _step.count("st now"))
+check("the ones before it are done", _step.count("st done") == 3, _step.count("st done"))
+check("and the elapsed time is human", "1h 03m" in _step, _step)
+check("a failure marks the step it failed on, in red",
+      "st bad" in ui.render_stepper(ui.PRIME_PHASES, "checking what it proved",
+                                    failed=True))
+
+_chips = ui.render_mod_chips(loaded={"929110": "7738786"},
+                             expected=["929110", "929420"])
+check("a mod that loaded gets a chip with the version it proved",
+      "chip ok" in _chips and "7738786" in _chips, _chips)
+check("and one that did not is called out in red",
+      "chip bad" in _chips and "929420" in _chips, _chips)
+
+_rowchips = ui.render_mod_chips(rows=_status["mods"])
+check("the running-vs-latest chips colour by state",
+      "chip ok" in _rowchips and "chip new" in _rowchips and "chip unk" in _rowchips,
+      _rowchips)
+
+_d = ui.render_dashboard(
+    status=_status, ready=_ready, job={"state": "idle"},
+    relay={"total": 10, "reachable": 10})
+check("a verified prime shows a green badge with the time",
+      "badge good" in _d and "Primed" in _d, _d[:300])
+check("and the versions it proved as chips", "8210044" in _d)
+check("relay coverage is a colour, not a sentence",
+      "10/10 maps reachable" in _d and "badge good" in _d)
+
+_dbad = ui.render_dashboard(
+    failed={"problems": ["the staging server never answered RCON, so its world never "
+                         "finished loading"],
+            "loaded": {"929110": "7738786"}, "expected": ["929110", "929420"]},
+    relay={"total": 10, "reachable": 7, "unreachable": "Genesis, Astraeos, Valguero"})
+check("an unsafe prime shows red with the cause, not just 'failed'",
+      "badge bad" in _dbad and "never answered RCON" in _dbad, _dbad[:400])
+check("a degraded relay is red and names the maps",
+      "7/10" in _dbad and "Genesis" in _dbad, _dbad)
+
+_drun = ui.render_dashboard(job={"state": "running", "what": "prime",
+                                 "step": "Downloading server files (52%)",
+                                 "elapsed": 185})
+check("a running prime shows the stepper", "stepper" in _drun and "st now" in _drun)
+check("titled as what it is", "Priming an update" in _drun, _drun[:200])
+_dapply = ui.render_dashboard(job={"state": "running", "what": "apply",
+                                   "step": "swapping the staged files in",
+                                   "elapsed": 12})
+check("and an apply gets the apply journey, not the prime one",
+      "Applying an update" in _dapply and "Swapping files" in _dapply, _dapply[:300])
+
+check("a backup in flight is on the dashboard too",
+      "Backup in progress" in ui.render_dashboard(
+          backup={"state": "running", "phase": "compressing", "done": 1, "total": 4}))
+check("with a real bar", "evbar" in ui.render_dashboard(
+    backup={"state": "running", "phase": "compressing", "done": 1, "total": 4}))
+check("nothing happening renders nothing at all rather than an empty box",
+      ui.render_dashboard() == "")
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
