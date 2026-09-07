@@ -34,19 +34,33 @@ _STATE_WORDS = {
     "committing": "Finishing the install",
 }
 
-# Lines that mean something went wrong, worst first. Each maps to what to tell a person.
+# Lines that mean something went wrong. **Causes first, consequences last** - the first
+# match wins, so this order is the whole behaviour.
+#
+# It was not in that order. "Aborting startup to avoid running with inconsistent files"
+# sat above "Permission denied", and both appear in the same failed start: the server
+# cannot write, so it aborts. Reporting the abort told the operator the server had
+# stopped itself, which they could see, instead of that a folder was not writable, which
+# they could fix. A live staging server failed exactly this way and the message named
+# the wrong half.
 _FAILURES = [
     (re.compile(r"Unable to begin the coordination cycle"),
      "The server could not create its coordination folder. This is almost always the "
      "data folder not being writable by the server's user."),
-    (re.compile(r"Aborting startup to avoid running with inconsistent files"),
-     "The server stopped itself rather than start with a half-finished install."),
-    (re.compile(r"install/update helper exited with status [1-9]"),
-     "The install step failed, so the server refused to start."),
+    (re.compile(r"Failed to create directory .*\(check permissions\)"),
+     "The server could not create a folder inside its own install. That folder exists "
+     "and is owned by root - usually because Docker made it, which it does for any "
+     "bind-mount destination that is missing when the container starts."),
     (re.compile(r"[Pp]ermission denied"),
      "Something the server needs to write to is not writable by it."),
     (re.compile(r"No space left on device"),
      "The disk is full."),
+    (re.compile(r"Failed to sync temporary download into live server directory"),
+     "The new server files downloaded, but could not be copied into place."),
+    (re.compile(r"Aborting startup to avoid running with inconsistent files"),
+     "The server stopped itself rather than start with a half-finished install."),
+    (re.compile(r"install/update helper exited with status [1-9]"),
+     "The install step failed, so the server refused to start."),
     # A follower will not touch the shared game files; it waits for the map that owns
     # that job. If the master is not running - which is every map but one during a
     # rolling migration, because the master migrates last - the wait never ends. It is

@@ -292,5 +292,57 @@ check("and of no run at all does not pretend", "nothing has been staged" in
 check("the compose file does not leak the password into a session name or a log line",
       text.count("a-secret-nobody-should-see-twice") == 1, text.count("a-secret"))
 
+
+# ---- ownership, which is what actually broke this on a live host
+#
+# The staging server downloaded 325 MB and then aborted with "Permission denied",
+# because two folders were owned by root. Both were folders this function believed it
+# had made: one an intermediate that makedirs creates and chown never followed, the
+# other the bind mount's *destination inside the staged tree*, which Docker invents as
+# root when it is missing. So the property is not "did it chown what it listed" - it is
+# "is every folder that has to exist actually in the list".
+_made, _owned = [], []
+
+
+def _mk(path):
+    _made.append(path)
+
+
+def _chown(path, uid, gid):
+    _owned.append((path, uid, gid))
+
+
+staging.ensure("/ark", makedirs=_mk, chown=_chown)
+_want = [
+    "/ark/ServerFiles.staging",
+    "/ark/ServerFiles.staging/ShooterGame",
+    "/ark/ServerFiles.staging/ShooterGame/Saved",
+    "/ark/staging",
+    "/ark/staging/instance",
+    "/ark/staging/instance/Saved",
+    "/ark/staging/shared",
+]
+for _w in _want:
+    check("ensure creates %s" % _w, _w in _made, _made)
+    check("and hands %s to the server's user" % _w,
+          any(p == _w and uid == layout.SERVER_UID for p, uid, _g in _owned), _owned)
+
+check("no folder is created without also being given away",
+      sorted(_made) == sorted(p for p, _u, _g in _owned), (_made, _owned))
+check("the folder the compose file mounts into is one ensure makes - Docker must never "
+      "be the thing that creates it",
+      "/home/pok/arkserver/ShooterGame/Saved" in text and
+      "/ark/ServerFiles.staging/ShooterGame/Saved" in _made)
+
+# ---- the container name stopped doubling the project suffix
+check("the staging container is named for the cluster, not for the staging project",
+      staging.container_name("tbgcluster") == "asa-tbgcluster-staging",
+      staging.container_name("tbgcluster"))
+check("which is what building it from the staging project produced",
+      staging.container_name("tbgcluster") != "asa-tbgcluster-staging-staging")
+check("and the compose file agrees with container_name",
+      "container_name: %s" % staging.container_name("tbgcluster") in
+      staging.compose_text(FakeStore(), "tbgcluster", ARK))
+
 print("\nFAILURES: %s" % fails if fails else "\nall staging tests passed")
 sys.exit(1 if fails else 0)

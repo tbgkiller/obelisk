@@ -379,6 +379,56 @@ check("but it is not applyable", updates.primed(s) is None)
 events = [i["event"] for i in drain()]
 check("and the channel is told it is unsafe", "ark.update_unsafe" in events, events)
 
+# ---- a staging server that dies during install must not be waited on
+#
+# It did exactly this on a live host: the container aborted after three minutes with
+# "Permission denied", and prime went on polling a game log that would never exist for
+# its full forty-five minute budget. The container's own output is where an install
+# failure is written; the game log does not exist yet.
+drain()
+s = FakeStore()
+turns = {"n": 0}
+
+
+def dying_alive():
+    turns["n"] += 1
+    return False
+
+
+ok, msg, result = updates.prime(
+    s, ARK, up=spy_up, down=lambda: (True, "stopped"), log_of=lambda: "",
+    container_log=lambda: "", alive=dying_alive, rcon_ok=lambda: True,
+    opener=lambda url: '{"status":"success","data":{"2430930":{"depots":{"branches":'
+                       '{"public":{"buildid":"25200000"}}}}}}',
+    read=lambda p: '"AppState" {"buildid" "25200000"}',
+    wait=lambda s: None, now=lambda: 1000)
+check("a staging server that stopped does not prime", not ok, msg)
+check("and it is noticed rather than waited out",
+      turns["n"] <= 3, "checked liveness %d times" % turns["n"])
+check("the reason given is that it stopped, not a list of mods that never loaded",
+      "stopped before it finished starting" in (result["problems"] or [""])[0],
+      result["problems"])
+
+# The failure the live host actually produced, read out of the container's own log.
+s = FakeStore()
+POK_FAIL = ("[ERROR] Failed to create directory /home/pok/arkserver/ShooterGame/"
+            "Binaries/Win64 (check permissions)\n"
+            "mkdir: cannot create directory: Permission denied\n"
+            "[ERROR] Staged installation failed\n"
+            "   Aborting startup to avoid running with inconsistent files.")
+ok, msg, result = updates.prime(
+    s, ARK, up=spy_up, down=lambda: (True, "stopped"), log_of=lambda: "",
+    container_log=lambda: POK_FAIL, alive=lambda: True, rcon_ok=lambda: True,
+    opener=lambda url: '{"status":"success","data":{"2430930":{"depots":{"branches":'
+                       '{"public":{"buildid":"25200000"}}}}}}',
+    read=lambda p: '"AppState" {"buildid" "25200000"}',
+    wait=lambda s: None, now=lambda: 1000)
+check("an install that failed on permissions does not prime", not ok, msg)
+check("and the operator is told the cause, not the consequence",
+      "owned by root" in (result["problems"] or [""])[0], result["problems"])
+events = [i["event"] for i in drain()]
+check("which reaches the admin channel as unsafe", "ark.update_unsafe" in events, events)
+
 s = FakeStore(staging_mode="off")
 ok, msg, _ = updates.prime(s, ARK, up=spy_up)
 check("priming with the staging server off refuses rather than pretending",

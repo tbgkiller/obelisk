@@ -822,5 +822,65 @@ check("reaching nothing is reported as reaching nothing, not as covering ten",
 
 clusterctl.dockerctl = FakeDocker()
 
+
+# ---- counting players, through the code that actually runs
+#
+# players_online is what stands between an update and the person standing in a world,
+# and it was broken on the only path that matters. It called `bot.Bot._count_players`;
+# the class is called Relay, so every map raised AttributeError, every map came back as
+# "did not answer", and Apply refused every time. Safe, permanently useless, and
+# invisible - because the tests for it injected their own counter and the real one was
+# never once run. That is the third time a default path has shipped untested.
+#
+# So only the RCON call is faked below. Everything from the answer onwards is the code
+# that runs on the host.
+from . import bot as _bot
+
+check("the parser the update flow reaches for exists at module level",
+      callable(getattr(_bot, "count_players", None)))
+check("an empty server counts nobody", _bot.count_players("No Players Connected") == 0)
+check("and a listing counts them",
+      _bot.count_players("0. Alice, 1234\n1. Bob, 5678") == 2)
+check("the relay still gets the same answer through its own name",
+      _bot.Relay._count_players("0. Alice, 1234") == 1)
+
+
+class _PlayerStore:
+    def __init__(self):
+        from .schema import BY_KEY
+        self.values = {k: v.get("default", "") for k, v in BY_KEY.items()}
+        self.values.update(maps="island,center", cluster_id="tbg", appdata="/ark",
+                           admin_password="x")
+        self.data = {"cluster": {}, "maps": {}}
+
+    def get(self, key, map_name=None):
+        return self.values.get(key)
+
+
+_answers = {"asa-tbg-island": "0. Alice, 1234\n1. Bob, 5678",
+            "asa-tbg-center": "No Players Connected"}
+_orig_running = clusterctl.running_instances
+clusterctl.running_instances = lambda store: [
+    ("The Island", "asa-tbg-island", 27020), ("The Center", "asa-tbg-center", 27021)]
+try:
+    _total, _counts, _silent = clusterctl.players_online(
+        _PlayerStore(), probe=lambda host, port: _answers[host])
+finally:
+    clusterctl.running_instances = _orig_running
+
+check("players are counted through the real parser", _total == 2, (_total, _counts))
+check("per map", _counts == {"The Island": 2, "The Center": 0}, _counts)
+check("and no map is called silent when every one answered", _silent == [], _silent)
+
+clusterctl.running_instances = lambda store: [("Genesis", "asa-tbg-genesis", 27029)]
+try:
+    _total, _counts, _silent = clusterctl.players_online(
+        _PlayerStore(), probe=lambda h, p: (_ for _ in ()).throw(OSError("timed out")))
+finally:
+    clusterctl.running_instances = _orig_running
+check("a map that raises is silent rather than empty - the distinction Apply depends on",
+      _total == 0 and _counts == {} and [l for l, _ in _silent] == ["Genesis"],
+      (_total, _counts, _silent))
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

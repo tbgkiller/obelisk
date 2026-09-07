@@ -116,9 +116,9 @@ def announce_new(store, status):
 
 # ---------------------------------------------------------------- prime + verify
 
-def prime(store, ark_root, on_step=None, up=None, down=None, running=None,
-          log_of=None, rcon_ok=None, opener=None, wait=None, minutes=45,
-          read=None, listdir=None, now=None):
+def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
+          log_of=None, container_log=None, rcon_ok=None, opener=None, wait=None,
+          minutes=45, read=None, listdir=None, now=None):
     """Stage an update on the staging server and grade the result. (ok, message, detail).
 
     The cluster is not touched at any point here - the staging server has its own server
@@ -129,6 +129,8 @@ def prime(store, ark_root, on_step=None, up=None, down=None, running=None,
     up = up or (lambda: staging.up(store))
     down = down or (lambda: staging.down(store))
     log_of = log_of or (lambda: staging.boot_log(store, ark_root))
+    container_log = container_log or (lambda: staging.container_log(store))
+    alive = alive or (lambda: staging.is_running(store)[0])
     wait = wait or time.sleep
 
     if not staging.enabled(store):
@@ -158,26 +160,49 @@ def prime(store, ark_root, on_step=None, up=None, down=None, running=None,
     # is "the wall clock passed a deadline" spins forever the moment anything hands it a
     # clock that does not move, and the first thing to do that was this module's own
     # test - which is a cheap way to find out that nothing else bounded it.
-    last = ""
-    for _ in range(max(1, int(minutes * 3))):
+    last, install_failure, died = "", None, False
+    for turn in range(max(1, int(minutes * 3))):
+        # Two logs, because only one of them exists at a time. The container's own output
+        # covers the download and the file sync; ShooterGame.log does not exist until the
+        # game itself starts. Watching only the second one meant a staging server that
+        # died during install looked identical to one still downloading, and this sat
+        # here for the full timeout on a container that had been dead for minutes.
+        outer = container_log() or ""
+        phase, percent, failure = _progress(outer)
+        if phase and outer != last:
+            last = outer
+            step(phase if percent is None else "%s (%.0f%%)" % (phase, percent))
+        if failure:
+            install_failure = failure
+            break
+
         text = log_of() or ""
-        if text != last:
-            last = text
-            phase, percent, failure = _progress(text)
-            if phase:
-                step(phase if percent is None else "%s (%.0f%%)" % (phase, percent))
-            if failure:
-                break
         done, _problems, _detail = arkupdate.read_boot_log(text, ids)
         if done:
+            break
+
+        # Give it one turn to appear before believing it is gone: `up` returns as soon as
+        # Docker accepts the container, which is before it is running.
+        if turn and not alive():
+            died = True
             break
         wait(20)
 
     step("checking what it proved")
     text = log_of() or ""
-    answered = rcon_ok() if rcon_ok else _staging_answers(store)
+    answered = False if died else (rcon_ok() if rcon_ok else _staging_answers(store))
     ok, problems, detail = staging.verify(staged, text, ids, rcon_ok=answered,
                                           target_build=target, read=read)
+    # Put the real reason first. Without it the verdict is a list of mods that never
+    # loaded, which is true and useless - the operator needs the sentence about why the
+    # server never got as far as loading anything.
+    if install_failure:
+        problems = [install_failure] + list(problems)
+    elif died:
+        problems = ["the staging server stopped before it finished starting - its log "
+                    "is the place to look"] + list(problems)
+    if install_failure or died:
+        ok = False
 
     result = {"ok": ok, "build": target, "loaded": detail.get("loaded") or {},
               "problems": problems, "when": int(now()),

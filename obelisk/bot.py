@@ -211,6 +211,28 @@ def parse_gamelog(text):
     return tribe, joins, admin
 
 # ---------------------------------------------------------------- relay core
+def count_players(text):
+    """Count players in an RCON ListPlayers response.
+
+    Module level because it is a text parser and two unrelated things need it: the relay,
+    which shows a cluster population, and the update flow, which must not restart a
+    server somebody is standing in. It lived inside the relay class, and reaching for it
+    from outside as `bot.Bot._count_players` named a class that does not exist - so every
+    map raised AttributeError, every map was reported as "did not answer", and Apply
+    refused every time. Safe, and permanently broken.
+    """
+    if not text:
+        return 0
+    if "no players" in text.lower():
+        return 0
+    # ASA lists one player per line as "0. Name, <netid>"
+    n = len(re.findall(r"(?m)^\s*\d+\.\s+\S", text))
+    if n:
+        return n
+    # fall back: non-empty lines that look like entries
+    return sum(1 for ln in text.splitlines() if ln.strip() and "," in ln)
+
+
 class Relay:
     def __init__(self):
         self.discord_send = None            # set by the Discord side when ready
@@ -357,18 +379,7 @@ class Relay:
 
     @staticmethod
     def _count_players(text):
-        """Count players in an RCON ListPlayers response."""
-        if not text:
-            return 0
-        low = text.lower()
-        if "no players" in low:
-            return 0
-        # ASA lists one player per line as "0. Name, <netid>"
-        n = len(re.findall(r"(?m)^\s*\d+\.\s+\S", text))
-        if n:
-            return n
-        # fall back: non-empty lines that look like entries
-        return sum(1 for ln in text.splitlines() if ln.strip() and "," in ln)
+        return count_players(text)
 
     async def refresh_online(self):
         """Ask every map who is connected; update the cached cluster count."""

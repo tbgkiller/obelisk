@@ -92,7 +92,14 @@ def project_name(project):
 
 
 def container_name(project):
-    return naming.container_name(project_name(project), INSTANCE)
+    """asa-<cluster>-staging.
+
+    Named from the *cluster* project rather than the staging one: the staging compose
+    project is already `<cluster>-staging`, so building the container name from it too
+    produced `asa-tbgcluster-staging-staging`. No map is ever called "staging", so this
+    cannot collide with one.
+    """
+    return naming.container_name(project, INSTANCE)
 
 
 def map_id(store):
@@ -184,25 +191,41 @@ def _q(v):
 
 
 def ensure(ark_root, makedirs=None, chown=None):
-    """Create the staging folders, owned by the server's user.
+    """Create the staging folders, owned by the server's user. Safe to repeat.
 
-    Docker creates a missing bind-mount source as root, and a root-owned folder is how
-    a server comes up unable to install itself and loops on "Permission denied" looking
-    exactly like a slow first start. This is the same trap that left instances/center
-    root-owned during the migration, so the folders are made here rather than by Docker.
+    Every folder, not every folder that got named. This got written once already with
+    only the ends of each path listed, and it failed on a live host in two places at
+    once - which is the third time this exact trap has been walked into, so the list
+    below is spelled out rather than derived:
+
+      * `staging/instance` is created on the way to `staging/instance/Saved`. makedirs
+        makes intermediates and chown does not follow them, so naming only the leaf left
+        the parent owned by root. That is word for word the bug ensure_ark already
+        carries a comment about.
+
+      * `ServerFiles.staging/ShooterGame` is the one that actually broke it. The bind
+        mount's *destination* is inside the staged tree - ShooterGame/Saved - and Docker
+        creates a missing destination as root. So ShooterGame ended up root-owned inside
+        a tree the server otherwise owned, steamcmd (running as 7777) could not create
+        ShooterGame/Binaries beside it, and the install aborted with "Permission denied"
+        after downloading 325 MB. Making the destination here, before the container is
+        ever started, is what stops Docker inventing it.
     """
     makedirs = makedirs or (lambda p: os.makedirs(p, exist_ok=True))
-    chown = chown or (lambda p: os.chown(p, layout.SERVER_UID, layout.SERVER_GID))
     p = paths(ark_root)
-    made = []
-    for path in (p["staged"], "%s/%s" % (str(ark_root).rstrip("/"), STAGING_ROOT),
-                 p["instance"], p["shared"]):
+    root = str(ark_root).rstrip("/")
+    made = [
+        p["staged"],
+        "%s/ShooterGame" % p["staged"],
+        "%s/ShooterGame/Saved" % p["staged"],
+        "%s/%s" % (root, STAGING_ROOT),
+        os.path.dirname(p["instance"]),
+        p["instance"],
+        p["shared"],
+    ]
+    for path in made:
         makedirs(path)
-        try:
-            chown(path)
-        except OSError as e:
-            log.warning("could not set ownership on %s: %s", path, e)
-        made.append(path)
+    layout.give_to_server(made, chown=chown)
     return made
 
 
@@ -256,7 +279,9 @@ def up(store):
         write_compose(store)
     except OSError as e:
         return False, "could not prepare the staging folders: %s" % e
-    rc, out = _compose(store, "up", "-d", timeout=900)
+    # --remove-orphans so a container this project no longer names is taken
+    # away with it, rather than sitting exited in the Docker page forever.
+    rc, out = _compose(store, "up", "-d", "--remove-orphans", timeout=900)
     if rc != 0:
         return False, "could not start the staging server: %s" % out[-500:]
     return True, "the staging server is starting"
@@ -282,6 +307,23 @@ def is_running(store, details=None):
     name = container_name(cluster.project(store))
     got = (details([name]) or {}).get(name, {})
     return got.get("state") == "running", got
+
+
+def container_log(store, tail=400, logs=None):
+    """POK's own output for the staging container.
+
+    Separate from boot_log() because they cover different halves of a start and only one
+    of them exists at a time. Everything before the game launches - the download, the
+    file sync, permission failures - is here; ShooterGame.log does not exist yet. Reading
+    only the game log meant a staging server that died during install looked exactly like
+    one that was still downloading, and the watch sat there for its full timeout.
+    """
+    from . import cluster, dockerctl
+    logs = logs or dockerctl.logs
+    try:
+        return logs(container_name(cluster.project(store)), tail=tail) or ""
+    except Exception:                             # noqa: BLE001 - absence is a state
+        return ""
 
 
 def boot_log(store, ark_root=None, read=None, listdir=None):

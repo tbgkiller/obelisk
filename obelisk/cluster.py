@@ -525,7 +525,7 @@ def players_online(store, probe=None, timeout=10.0):
     counts, silent = {}, []
     for label, host, port in running_instances(store):
         try:
-            counts[label] = bot.Bot._count_players(probe(host, port) or "")
+            counts[label] = bot.count_players(probe(host, port) or "")
         except Exception as e:                    # noqa: BLE001 - the reason is the point
             silent.append((label, str(e).strip() or e.__class__.__name__))
     return sum(counts.values()), counts, silent
