@@ -377,27 +377,41 @@ def _staging_answers(store, probe=None):
 
 # ---------------------------------------------------------------- apply
 
-def apply_update(store, ark_root, warn=None, save=None, stop_all=None, start_all=None,
-                 verify=None, players=None, on_step=None, force=False,
-                 rename=None, exists=None, now=None):
-    """Make the staged build live. (ok, message, detail).
+def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=None,
+                verify=None, players=None, on_step=None, force=False,
+                rename=None, exists=None, now=None):
+    """Apply everything that is waiting, in one restart. (ok, message, detail).
 
-    Every refusal below happens before anything moves. The swap itself is three renames
-    and is its own inverse, so a failure part way is put back rather than left half
-    applied - and the previous build stays on disk either way.
+    Two kinds of thing wait for a safe moment - a build that has been staged and proved,
+    and settings that cannot take effect without recreating the containers - and they
+    are the same job. Applying them separately would stop ten servers twice for one
+    decision, so this does both or neither.
+
+    Every refusal happens before anything moves. The file swap is three renames and is
+    its own inverse; the settings are committed from a snapshot that can be put back. A
+    failure after either leaves the previous build *and* the previous configuration,
+    which is the only state a cluster can safely be restarted into.
     """
+    from . import pending
+
     step = on_step or (lambda text: None)
     now = now or time.time
 
-    if not owns_updates(store):
-        return False, ("POK is set to apply updates itself, so Obelisk will not - two "
-                       "update systems on one cluster is how you get two restarts. "
-                       "Switch \"Who applies ARK updates\" to Obelisk first."), {}
-
     ready = primed(store)
-    if not ready:
-        return False, ("nothing has been staged and verified yet - prime an update "
-                       "first, so the restart is into something known to boot"), {}
+    # Ownership gates the *files*, not the settings. A config change is Obelisk's
+    # business whoever is applying builds, so refusing the whole batch over it would
+    # mean the mod list could never be applied on a cluster where POK still owns updates.
+    swap_files = bool(ready) and owns_updates(store)
+    waiting = pending.count(store)
+
+    if not swap_files and not waiting:
+        if ready and not owns_updates(store):
+            return False, ("a build is staged and verified, but POK is set to apply "
+                           "updates itself - two update systems on one cluster is how "
+                           "you get two restarts. Switch \"Who applies ARK updates\" to "
+                           "Obelisk first."), {}
+        return False, ("nothing is waiting to be applied - no settings queued, and no "
+                       "update staged and verified"), {}
 
     if not force:
         total, counts, silent = (players or (lambda: (0, {}, [])))()
@@ -412,10 +426,17 @@ def apply_update(store, ark_root, warn=None, save=None, stop_all=None, start_all
             return False, ("%d player(s) are online: %s. Apply with force, or let the "
                            "scheduled window do it." % (total, busiest)), {}
 
-    build = ready.get("build")
+    build = (ready or {}).get("build")
+    what = []
+    if swap_files:
+        what.append("ARK build %s" % build)
+    if waiting:
+        what.append("%d setting change(s)" % waiting)
     announce.say("ark.apply_start",
-                 "Applying ARK build %s. Players are being warned, worlds saved, then "
-                 "the cluster restarts onto the staged files." % build, build=build)
+                 "Applying %s in one restart. Players are being warned, worlds saved, "
+                 "then the cluster comes back." % " and ".join(what),
+                 build=build if swap_files else "",
+                 detail=pending.summary(store) if waiting else "")
 
     minutes = int(store.get("restart_notice_minutes") or 0)
     if warn and minutes:
@@ -437,36 +458,63 @@ def apply_update(store, ark_root, warn=None, save=None, stop_all=None, start_all
                      level="error")
         return False, "could not stop the cluster: %s" % detail, {}
 
-    step("swapping the staged files in")
-    steps = staging.swap_steps(ark_root)
-    ok, done, problem = staging.apply_steps(steps, rename=rename, exists=exists)
-    if not ok:
+    done = []
+    if swap_files:
+        step("swapping the staged files in")
+        steps = staging.swap_steps(ark_root)
+        ok, done, problem = staging.apply_steps(steps, rename=rename, exists=exists)
+        if not ok:
+            staging.undo(done, rename=rename, exists=exists)
+            step("starting the cluster back on the previous build")
+            start_all()
+            announce.say("ark.update_failed",
+                         "The swap failed and was undone; the cluster is starting again "
+                         "on the previous build. %s" % problem, level="error")
+            return False, problem, {"undone": True}
+
+    # The settings go in between the swap and the start, because start_all regenerates
+    # the compose file from the store - so this is the last moment they can land and
+    # still be what the cluster comes up on.
+    queue_was, before = pending.queued(store), None
+    if waiting:
+        step("applying %d setting change(s)" % waiting)
+        ok_c, why_c, before = pending.commit(store)
+        if not ok_c:
+            staging.undo(done, rename=rename, exists=exists)
+            step("starting the cluster back on the previous settings")
+            start_all()
+            announce.say("change.batch_failed",
+                         "A queued setting would not apply, so nothing was changed and "
+                         "the cluster is starting again as it was: %s" % why_c,
+                         level="error", detail=_pending_lines(queue_was))
+            return False, why_c, {"undone": True}
+
+    def put_back(reason):
+        """Everything this batch moved, moved back, before the cluster is restarted."""
         staging.undo(done, rename=rename, exists=exists)
-        step("starting the cluster back on the previous build")
+        if before is not None:
+            pending.restore(store, before, requeue=queue_was)
+        step("starting the cluster back as it was")
         start_all()
-        announce.say("ark.update_failed",
-                     "The swap failed and was undone; the cluster is starting again on "
-                     "the previous build. %s" % problem, level="error")
-        return False, problem, {"undone": True}
+        announce.say("change.batch_failed", reason, level="error")
 
     step("starting the cluster")
     ok, detail = start_all()
     if not ok:
-        announce.say("ark.update_failed",
-                     "The files were swapped but the cluster did not start: %s" % detail,
-                     level="error")
-        return False, "swapped, but the cluster did not start: %s" % detail, {
-            "swapped": True}
+        put_back("The cluster did not start, so the build and the settings were put "
+                 "back and it is being started again as it was: %s" % detail)
+        return False, "the cluster did not start: %s" % detail, {"undone": True}
 
     step("checking every map is really serving")
     gates = verify() if verify else (True, {})
     ok_gates, per_map = gates if isinstance(gates, tuple) else (True, {})
 
-    remember(store, primed=None, applied={"build": build, "when": int(now()),
-                                          "ok": bool(ok_gates)})
+    if swap_files:
+        remember(store, primed=None, applied={"build": build, "when": int(now()),
+                                              "ok": bool(ok_gates)})
     if not ok_gates:
         bad = ", ".join(k for k, v in (per_map or {}).items() if not v)
-        announce.say("ark.update_failed",
+        announce.say("ark.update_failed" if swap_files else "change.batch_failed",
                      "Build %s is live but %s did not pass verification. The previous "
                      "build is still on disk as ServerFiles.staging if it has to go "
                      "back." % (build, bad or "some maps"), level="error", build=build,
@@ -475,13 +523,30 @@ def apply_update(store, ark_root, warn=None, save=None, stop_all=None, start_all
         return False, "applied, but verification failed on: %s" % (bad or "some maps"), {
             "swapped": True, "maps": per_map}
 
-    announce.say("ark.update_applied",
-                 "ARK build %s is live and every map passed verification." % build,
-                 build=build,
-                 detail=_lines(["build %s applied" % build] +
+    announce.say("ark.update_applied" if swap_files else "change.applied",
+                 "%s - every map passed verification." % " and ".join(what).capitalize(),
+                 build=build if swap_files else "",
+                 detail=_lines((["build %s applied" % build] if swap_files else []) +
+                               _pending_lines(queue_was).splitlines() +
                                ["%-14s passed the six gates" % k
                                 for k in sorted(per_map or {})]))
-    return True, "build %s applied and verified" % build, {"maps": per_map}
+    return True, "applied: %s" % " and ".join(what), {"maps": per_map}
+
+
+def _pending_lines(queue):
+    """The batch's setting changes, one per line, for an announcement's detail."""
+    out = ["%s = %s" % (k, v) for k, v in sorted((queue.get("cluster") or {}).items())]
+    for m, values in sorted((queue.get("maps") or {}).items()):
+        out += ["%s = %s  [%s]" % (k, v, m) for k, v in sorted(values.items())]
+    for m, keys in sorted((queue.get("clears") or {}).items()):
+        out += ["%s back to the cluster value  [%s]" % (k, m) for k in sorted(keys)]
+    return _lines(out)
+
+
+# apply_update was the original name and is what the update flow still calls it. The
+# batch is the general case; an update with no queued settings is exactly the same
+# routine with one half empty.
+apply_update = apply_batch
 
 
 # ---------------------------------------------------------------- schedule

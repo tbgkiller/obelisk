@@ -420,10 +420,155 @@ check("three renames and nothing else - that is the whole file operation",
       renamed[:3])
 
 _src = open(updates.__file__, encoding="utf-8").read()
-_apply_body = _src[_src.index("def apply_update("):_src.index("# ------", _src.index(
-    "def apply_update("))]
+_apply_body = _src[_src.index("def apply_batch("):_src.index("# ------", _src.index(
+    "def apply_batch("))]
 for _word in ("staging.up", "steamcmd", "app_update", "docker pull"):
     check("the apply path never mentions %s" % _word, _word not in _apply_body, _word)
+
+
+# ---- one restart, both kinds of change
+#
+# A staged build and a queued setting are the same job: they both wait for a safe moment
+# and they both cost a restart. Applying them separately would stop ten servers twice
+# for one decision.
+import os as _os
+import tempfile as _tf
+
+from . import pending as _pend
+from .settings import Store as _Store
+
+
+def real_store(**kw):
+    st = _Store(_os.path.join(_tf.mkdtemp(), "s.json"))
+    base = {"admin_password": "pw", "maps": "island,astraeos", "max_players": 70,
+            "ark_update_mode": "obelisk", "restart_notice_minutes": 0}
+    base.update(kw)
+    st.patch(base)
+    return st
+
+
+drain()
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+updates.remember(st, primed=ready)
+c = Cluster()
+renamed, rename = moved_nothing()
+ok, msg, _d = updates.apply_batch(
+    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    exists=tree_exists(), now=lambda: 1000)
+check("a build and a setting apply together", ok, msg)
+check("in one restart, not two", c.log.count("stop") == 1 and c.log.count("start") == 1,
+      c.log)
+check("the setting is now live", st.get("max_players") == 250, st.get("max_players"))
+check("the queue is empty", _pend.count(st) == 0)
+check("and the files were swapped too",
+      ("/ark/ServerFiles.staging", "/ark/ServerFiles") in renamed, renamed)
+_ev = [i["event"] for i in drain()]
+check("announced as one apply", _ev.count("ark.apply_start") == 1, _ev)
+
+# ---- config only, with nothing staged
+drain()
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+c = Cluster()
+calls, rename = moved_nothing()
+ok, msg, _d = updates.apply_batch(
+    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    exists=tree_exists(), now=lambda: 1000)
+check("a settings-only batch applies with nothing staged", ok, msg)
+check("and moves no files at all", calls == [], calls)
+check("the setting is live", st.get("max_players") == 250)
+_ev = [i["event"] for i in drain()]
+check("reported as a change rather than an update",
+      "change.applied" in _ev and "ark.update_applied" not in _ev, _ev)
+
+# ---- settings apply even while POK owns updates; the files do not
+drain()
+st = real_store(ark_update_mode="automatic")
+_pend.stage(st, {"max_players": 250})
+updates.remember(st, primed=ready)
+c = Cluster()
+calls, rename = moved_nothing()
+ok, msg, _d = updates.apply_batch(
+    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    exists=tree_exists(), now=lambda: 1000)
+check("a config change is not blocked by who owns updates", ok, msg)
+check("but the files are left alone - that half is POK's", calls == [], calls)
+check("and the staged update is still staged for later",
+      updates.primed(st) is not None)
+
+st = real_store(ark_update_mode="automatic")
+updates.remember(st, primed=ready)
+ok, msg, _d = updates.apply_batch(st, ARK, rename=rename, exists=tree_exists())
+check("with only a staged build and POK in charge, it refuses and says why",
+      not ok and "Who applies ARK updates" in msg, msg)
+
+st = real_store()
+ok, msg, _d = updates.apply_batch(st, ARK, rename=rename, exists=tree_exists())
+check("with nothing waiting at all it refuses", not ok, msg)
+check("and says there is nothing to do", "nothing is waiting" in msg, msg)
+
+# ---- a failure after the settings land puts BOTH halves back
+drain()
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+updates.remember(st, primed=ready)
+tree = {"/ark/ServerFiles": 1, "/ark/ServerFiles.staging": 1}
+
+
+def tree_rename(src, dst):
+    if src in tree:
+        tree[dst] = tree.pop(src)
+
+
+c = Cluster(start_ok=False)
+ok, msg, detail = updates.apply_batch(
+    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=tree_rename,
+    exists=lambda p: p in tree, now=lambda: 1000)
+check("a cluster that will not start fails the batch", not ok, msg)
+check("the build is put back", tree.get("/ark/ServerFiles") == 1, tree)
+check("and the staged tree too", "/ark/ServerFiles.staging" in tree, tree)
+check("the setting is back to what was running", st.get("max_players") == 70,
+      st.get("max_players"))
+check("and the change is back in the queue rather than lost",
+      _pend.count(st) == 1, _pend.rows(st))
+check("it was started again rather than left down", c.log.count("start") == 2, c.log)
+_ev = [i["event"] for i in drain()]
+check("and the failure was announced", "change.batch_failed" in _ev, _ev)
+
+# ---- a setting that will not validate stops the batch before the start
+drain()
+st = real_store()
+st.data["pending"] = {"cluster": {"max_players": 99999}, "maps": {}, "clears": {},
+                      "since": 1}
+c = Cluster()
+calls, rename = moved_nothing()
+ok, msg, _d = updates.apply_batch(
+    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    exists=tree_exists(), now=lambda: 1000)
+check("an impossible queued value fails the batch", not ok, msg)
+check("nothing was written", st.get("max_players") == 70, st.get("max_players"))
+check("verification never ran on a cluster that got no change",
+      "verify" not in c.log, c.log)
+check("and it was started again", c.log.count("start") == 1, c.log)
+
+# ---- players still gate a config-only batch
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+calls, rename = moved_nothing()
+ok, msg, _d = updates.apply_batch(st, ARK, players=lambda: (2, {"island": 2}, []),
+                                  rename=rename, exists=tree_exists())
+check("a settings batch will not restart a cluster somebody is playing on",
+      not ok and "player(s) are online" in msg, msg)
+check("and moved nothing", calls == [], calls)
+
+check("apply_update is still the same routine, under its old name",
+      updates.apply_update is updates.apply_batch)
 
 
 # ---- apply: a swap that fails is put back, and the cluster comes up on the old build
