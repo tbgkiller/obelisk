@@ -502,7 +502,8 @@ def render_version(info):
     return '<fieldset><legend>Obelisk version</legend>%s</div></fieldset>' % body
 
 
-def render_ark_update(store, status, ready=None, job=None, owns=True, staging_on=True):
+def render_ark_update(store, status, ready=None, job=None, owns=True,
+                      staging_on=True, target=""):
     """Running against latest, for the build and for every mod, with the buttons inline.
 
     Three states per row and not two. "Newer" and "current" are the easy ones; the third
@@ -553,12 +554,22 @@ def render_ark_update(store, status, ready=None, job=None, owns=True, staging_on
     if ready:
         when = time.strftime("%d %b %H:%M", time.localtime(ready.get("when") or 0))
         loaded = ready.get("loaded") or {}
+        # A staged tree proves the combination it was staged against. If a mod has
+        # published since, what is on disk is still verified and still worth applying -
+        # but it is no longer the newest thing, and saying "verified" without saying
+        # that would be the same quiet half-truth this panel exists to avoid.
+        stale = ""
+        if target and ready.get("target") and ready["target"] != target:
+            stale = ('<div class=help><b>Something newer has appeared since this was '
+                     'staged.</b> This is still proved and still safe to apply; the '
+                     'staging server is rehearsing the newer one now.</div>')
         staged = ('<div class=staged><b>Staged and verified.</b> Build <code>%s</code> '
                   'with %d mod%s booted cleanly on the staging server — '
-                  '<b>verified by staging boot at %s</b>.<div class=help>%s</div></div>'
+                  '<b>verified by staging boot at %s</b>.<div class=help>%s</div>%s</div>'
                   % (_e(ready.get("build")), len(loaded),
                      "" if len(loaded) == 1 else "s", _e(when),
-                     _e(", ".join("%s→%s" % (m, f) for m, f in sorted(loaded.items())))))
+                     _e(", ".join("%s→%s" % (m, f) for m, f in sorted(loaded.items()))),
+                     stale))
     else:
         failed = (store.data.get("ark_update") or {}).get("primed")
         if isinstance(failed, dict) and not failed.get("ok"):

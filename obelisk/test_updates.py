@@ -163,6 +163,108 @@ check("a build already applied does not fire again the next night", not ok, why)
 check("and says so", "already been applied" in why, why)
 
 
+# ---- staging ahead: what to stage, and not staging it over and over
+#
+# The point of the staging server is to be ahead, so that a window at four in the
+# morning is a rename of files that are already downloaded and already proved rather
+# than a 12 GB pull. Which means priming has to start itself. Which means it needs a
+# guard, because a rehearsal that fails will fail again for the same reason, and
+# retrying every half hour is a 12 GB download and an 8 GB container each time.
+CURRENT = {"build": {"running": "25117056", "latest": "25117056", "newer": False},
+           "mods": [{"id": "929110", "running": "7738786", "latest": "7738786",
+                     "newer": False},
+                    {"id": "929420", "running": "8160173", "latest": "8160173",
+                     "newer": False}],
+           "mods_newer": [], "any_newer": False, "unknown": False}
+NEWER_BUILD = {"build": {"running": "25117056", "latest": "25200000", "newer": True},
+               "mods": CURRENT["mods"], "mods_newer": [], "any_newer": True,
+               "unknown": False}
+NEWER_MOD = {"build": {"running": "25117056", "latest": "25117056", "newer": False},
+             "mods": [{"id": "929110", "running": "7738786", "latest": "7738786",
+                       "newer": False},
+                      {"id": "929420", "running": "8160173", "latest": "8210044",
+                       "newer": True}],
+             "mods_newer": [{"id": "929420"}], "any_newer": True, "unknown": False}
+UNKNOWN = {"build": {"running": "25117056", "latest": None, "newer": None},
+           "mods": CURRENT["mods"], "mods_newer": [], "any_newer": False,
+           "unknown": True}
+
+check("the fingerprint covers the build", updates.target_key(NEWER_BUILD) !=
+      updates.target_key(CURRENT))
+check("and every mod, so a mod release is a new thing to stage",
+      updates.target_key(NEWER_MOD) != updates.target_key(CURRENT))
+check("the same state gives the same fingerprint",
+      updates.target_key(CURRENT) == updates.target_key(dict(CURRENT)))
+check("and an unknown makes no fingerprint at all rather than a guess",
+      updates.target_key(UNKNOWN) == "")
+
+s = FakeStore(staging_mode="always")
+go, why = updates.needs_prime(s, NEWER_BUILD, now=lambda: 1000)
+check("a newer build is staged without anyone asking", go, why)
+
+s = FakeStore(staging_mode="always")
+go, why = updates.needs_prime(s, NEWER_MOD, now=lambda: 1000)
+check("so is a newer mod - not only builds", go, why)
+
+s = FakeStore(staging_mode="always")
+go, why = updates.needs_prime(s, CURRENT, now=lambda: 1000)
+check("an always-on staging server stages the current target too, to be ahead", go, why)
+
+s = FakeStore(staging_mode="on_demand")
+go, why = updates.needs_prime(s, CURRENT, now=lambda: 1000)
+check("on_demand costs nothing while there is nothing newer", not go, why)
+go, why = updates.needs_prime(FakeStore(staging_mode="on_demand"), NEWER_BUILD,
+                              now=lambda: 1000)
+check("but does stage an actual update", go, why)
+
+s = FakeStore(staging_mode="off")
+go, why = updates.needs_prime(s, NEWER_BUILD, now=lambda: 1000)
+check("with staging off, nothing is staged", not go, why)
+
+s = FakeStore(staging_mode="always")
+go, why = updates.needs_prime(s, UNKNOWN, now=lambda: 1000)
+check("a target we could not fully check is not staged on a guess", not go, why)
+check("and says why", "no telling what to stage" in why, why)
+
+# already staged: the whole point of the fingerprint
+s = FakeStore(staging_mode="always")
+updates.remember(s, primed={"ok": True, "build": "25200000",
+                            "target": updates.target_key(NEWER_BUILD)})
+go, why = updates.needs_prime(s, NEWER_BUILD, now=lambda: 1000)
+check("what is already staged and verified is not staged again", not go, why)
+go, why = updates.needs_prime(s, NEWER_MOD, now=lambda: 1000)
+check("but a mod releasing afterwards makes it stale, and it stages again", go, why)
+
+# ---- the thrash guard
+s = FakeStore(staging_mode="always")
+key = updates.target_key(NEWER_BUILD)
+go, _ = updates.needs_prime(s, NEWER_BUILD, now=lambda: 1000)
+check("first attempt goes straight away", go)
+
+updates.note_attempt(s, key, ok=False, now=lambda: 1000)
+go, why = updates.needs_prime(s, NEWER_BUILD, now=lambda: 1100)
+check("a failure is not retried immediately", not go, why)
+check("and says how long it is waiting", "minute" in why, why)
+
+go, why = updates.needs_prime(s, NEWER_BUILD, now=lambda: 1000 + 3 * 3600)
+check("but it is retried after the backoff", go, why)
+
+updates.note_attempt(s, key, ok=False, now=lambda: 1000 + 3 * 3600)
+updates.note_attempt(s, key, ok=False, now=lambda: 1000 + 20 * 3600)
+go, why = updates.needs_prime(s, NEWER_BUILD, now=lambda: 1000 + 100 * 3600)
+check("after three failures it stops trying rather than looping forever", not go, why)
+check("and says so, so the state is visible", "already failed to stage" in why, why)
+check("a different target is still tried - the giving-up is per thing, not global",
+      updates.needs_prime(s, NEWER_MOD, now=lambda: 1000 + 100 * 3600)[0])
+
+s2 = FakeStore(staging_mode="always")
+updates.note_attempt(s2, key, ok=False, now=lambda: 1000)
+updates.note_attempt(s2, key, ok=True, now=lambda: 2000)
+check("a success clears the record, so a later change is not held against it",
+      not (updates.state(s2).get("attempts") or {}).get(key),
+      updates.state(s2).get("attempts"))
+
+
 # ---- apply: the refusals, before anything moves
 def moved_nothing():
     calls = []
@@ -268,6 +370,60 @@ ok, msg, _ = updates.apply_update(
     verify=c.verify, players=lambda: (5, {"island": 5}, []), force=True,
     rename=rename, exists=tree_exists(), now=lambda: 1000)
 check("force applies over players online", ok, msg)
+
+
+# ---- the window applies staged files, and never downloads
+#
+# The whole reason for staging ahead: at four in the morning the update has to be a
+# rename of files that are already on disk and already proved, not a 12 GB pull. So the
+# thing to assert is a negative - nothing in the apply path may start the staging server,
+# because that is the only thing here that downloads.
+drain()
+s = FakeStore()
+updates.remember(s, primed=ready)
+c = Cluster()
+renamed, rename = moved_nothing()
+
+
+class _NoDownloads:
+    """Anything that would fetch is replaced by something that fails the test loudly."""
+
+    def __enter__(self):
+        from . import staging
+        self.staging = staging
+        self.real_up = staging.up
+        self.called = []
+
+        def refuse(*a, **k):
+            self.called.append("staging.up")
+            return False, "should never be called during an apply"
+        staging.up = refuse
+        return self
+
+    def __exit__(self, *exc):
+        self.staging.up = self.real_up
+        return False
+
+
+with _NoDownloads() as guard:
+    ok, msg, detail = updates.apply_update(
+        s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+        verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+        exists=tree_exists(), now=lambda: 1000)
+check("the scheduled apply succeeds on staged files", ok, msg)
+check("and never started the staging server - so it never downloaded anything",
+      guard.called == [], guard.called)
+check("what it did was rename the staged tree into place",
+      ("/ark/ServerFiles.staging", "/ark/ServerFiles") in renamed, renamed)
+check("three renames and nothing else - that is the whole file operation",
+      len(renamed) >= 3 and all(a.startswith("/ark/ServerFiles") for a, _b in renamed[:3]),
+      renamed[:3])
+
+_src = open(updates.__file__, encoding="utf-8").read()
+_apply_body = _src[_src.index("def apply_update("):_src.index("# ------", _src.index(
+    "def apply_update("))]
+for _word in ("staging.up", "steamcmd", "app_update", "docker pull"):
+    check("the apply path never mentions %s" % _word, _word not in _apply_body, _word)
 
 
 # ---- apply: a swap that fails is put back, and the cluster comes up on the old build

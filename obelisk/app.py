@@ -240,7 +240,8 @@ def build_app(store, docker=None):
             return ui.render_ark_update(
                 store, ARK_UPDATE, ready=updatesctl.primed(store), job=ujob,
                 owns=updatesctl.owns_updates(store),
-                staging_on=stagingctl.enabled(store))
+                staging_on=stagingctl.enabled(store),
+                target=updatesctl.target_key(ARK_UPDATE))
         except Exception as e:                       # noqa: BLE001 - never a blank page
             log.warning("could not render the update panel: %s", e)
             return ""
@@ -261,8 +262,13 @@ def build_app(store, docker=None):
     async def _prime_task():
         try:
             async with cluster_busy:
+                # The fingerprint of what is being staged goes with it, so a manual
+                # prime and an automatic one record the same thing and neither has to
+                # be repeated because the other did not say what it staged.
                 ok, msg, _detail = await asyncio.to_thread(
-                    updatesctl.prime, store, _ark_root(), _note_update)
+                    lambda: updatesctl.prime(
+                        store, _ark_root(), _note_update,
+                        target=updatesctl.target_key(ARK_UPDATE)))
         except Exception as e:                       # noqa: BLE001 - surfaced below
             ok, msg = False, "Priming failed: %s" % e
             log.exception("priming failed")
@@ -940,14 +946,24 @@ async def ark_update_watch(store, interval=1800, panel=None):
             seen.update(status)
             upd.announce_new(store, status)
 
-            # An always-on staging server updates itself - it is its own master - so
-            # coming back on a new build is a rehearsal that already happened. Grade it
-            # rather than making somebody click Prime for a result already on disk.
-            if stg.mode(store) == "always" and status.get("build", {}).get("newer"):
-                if not upd.primed(store):
-                    log.info("a new build is out and the staging server is running - "
-                             "grading its boot")
-                    await asyncio.to_thread(upd.prime, store, root)
+            # ---- stage it before anybody asks
+            #
+            # The point of the staging server is to be *ahead*: by the time a window
+            # opens or somebody clicks Apply, the files are already downloaded and
+            # already proved, so applying is a rename rather than a 12 GB pull at four
+            # in the morning. So priming is not something a person has to remember to
+            # do - a new build or a new mod version starts it, and the button is there
+            # for when somebody wants it now.
+            #
+            # needs_prime() carries the whole guard, including why not, so a decision
+            # not to stage is visible rather than silent.
+            go, why = upd.needs_prime(store, status)
+            if go:
+                log.info("staging ahead: %s", why)
+                await asyncio.to_thread(upd.prime, store, root,
+                                        target=upd.target_key(status))
+            elif status.get("any_newer"):
+                log.info("not staging: %s", why)
 
             due, why = upd.due(store)
             if due:

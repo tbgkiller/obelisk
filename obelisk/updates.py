@@ -78,6 +78,94 @@ def owns_updates(store):
     return str(store.get("ark_update_mode") or "automatic") == "obelisk"
 
 
+# ---------------------------------------------------------------- what to stage
+
+# How many times to rehearse the same thing before leaving it alone, and how long to
+# wait between tries. A rehearsal that fails will keep failing for the same reason -
+# the build genuinely does not load, a mod is broken upstream - and retrying it every
+# half hour is a 12 GB download and an 8 GB container, over and over, announcing the
+# same failure into the channel each time. Three tries, spaced, then silence until the
+# thing being staged actually changes.
+PRIME_TRIES = 3
+PRIME_BACKOFF = (0, 2 * 3600, 6 * 3600)
+
+
+def target_key(status):
+    """A fingerprint of what would be staged: the build, and every mod's newest file.
+
+    Identity rather than a timestamp, because the question "is what we staged still the
+    right thing" is answered by *what* it is, not when it happened. A mod publishing a
+    new file makes a new target; nothing else does.
+    """
+    build = (status.get("build") or {}).get("latest")
+    if not build:
+        return ""
+    mods = []
+    for row in status.get("mods") or []:
+        if not row.get("latest"):
+            return ""          # an unknown makes the whole fingerprint a guess
+        mods.append("%s=%s" % (row["id"], row["latest"]))
+    return "%s|%s" % (build, ",".join(sorted(mods)))
+
+
+def staged_target(store):
+    """The fingerprint the staged, verified tree was proved against. "" if none."""
+    ready = primed(store)
+    return str((ready or {}).get("target") or "")
+
+
+def needs_prime(store, status, now=None):
+    """(should we stage this now, why).
+
+    The guard against thrashing lives here rather than in the loop, so the reason is a
+    sentence the UI and the log can both show - "tried three times" is a state somebody
+    needs to be able to see, not a silent decision.
+    """
+    now = (now or time.time)()
+    if not staging.enabled(store):
+        return False, "the staging server is off"
+    key = target_key(status)
+    if not key:
+        return False, ("not everything could be checked, so there is no telling what "
+                       "to stage")
+    if staged_target(store) == key:
+        return False, "the staged tree already holds this, verified"
+
+    # on_demand exists to cost nothing until there is something to do, so it waits for
+    # an actual update. `always` is running anyway and its whole point is to be ahead,
+    # so it stages whatever the current target is - including the first one, which warms
+    # the tree and proves the path before anybody is relying on it.
+    if staging.mode(store) == "on_demand" and not status.get("any_newer"):
+        return False, "nothing newer, and the staging server only runs on demand"
+
+    tried = (state(store).get("attempts") or {}).get(key) or {}
+    count = int(tried.get("count") or 0)
+    if count >= PRIME_TRIES:
+        return False, ("this has already failed to stage %d times - it will be tried "
+                       "again when the build or a mod changes" % count)
+    wait = PRIME_BACKOFF[min(count, len(PRIME_BACKOFF) - 1)]
+    last = float(tried.get("last") or 0)
+    if last and now - last < wait:
+        return False, ("waiting %d more minute(s) before trying again"
+                       % int((wait - (now - last)) / 60))
+    return True, "there is something newer to stage" if status.get("any_newer") else \
+                 "nothing is staged yet"
+
+
+def note_attempt(store, key, ok, now=None):
+    """Remember that this target was tried, so a failure is not retried forever."""
+    if not key:
+        return
+    now = (now or time.time)()
+    attempts = dict(state(store).get("attempts") or {})
+    if ok:
+        attempts.pop(key, None)          # succeeded: nothing left to hold against it
+    else:
+        was = attempts.get(key) or {}
+        attempts[key] = {"count": int(was.get("count") or 0) + 1, "last": now}
+    remember(store, attempts=attempts)
+
+
 # ---------------------------------------------------------------- detect
 
 def look(store, ark_root, opener=None, listdir=None, read=None):
@@ -124,7 +212,7 @@ def announce_new(store, status):
 
 def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
           log_of=None, container_log=None, rcon_ok=None, opener=None, wait=None,
-          minutes=45, read=None, listdir=None, now=None):
+          minutes=45, read=None, listdir=None, now=None, target=None):
     """Stage an update on the staging server and grade the result. (ok, message, detail).
 
     The cluster is not touched at any point here - the staging server has its own server
@@ -142,6 +230,7 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
     if not staging.enabled(store):
         return False, "the staging server is turned off, so there is nothing to prime", {}
 
+    fingerprint = target
     target, problem = arkupdate.available_build(opener=opener)
     if not target:
         # Refusing here rather than staging something and calling it "the latest".
@@ -227,8 +316,12 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
 
     result = {"ok": ok, "build": target, "loaded": detail.get("loaded") or {},
               "problems": problems, "when": int(now()),
+              "target": str(fingerprint or ""),
               "mods": sorted(detail.get("loaded") or {})}
     remember(store, primed=result)
+    # Booked whether it passed or not: the point of the record is to stop a rehearsal
+    # that cannot succeed from being attempted every half hour forever.
+    note_attempt(store, fingerprint, ok, now=now)
 
     if ok:
         announce.say("ark.update_primed",
