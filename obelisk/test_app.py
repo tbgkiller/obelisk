@@ -439,6 +439,43 @@ check("restore.py says the definition is deliberately out of scope",
       "does not restore the cluster definition"
       in io.open(_restoremod.__file__, encoding="utf-8").read())
 
+# ---- an admin should be able to follow this from Discord and the log alone
+#
+# The bar: a normal user has the Unraid Docker page, the Obelisk UI and Discord. They do
+# not have a shell and they do not have us. So every significant action has to say what
+# it is doing somewhere they can actually see.
+from . import announce as _ann
+
+_mainsrc = _appsrc.split("async def main")[1]
+check("secrets are registered before anything can announce",
+      "guard_secrets" in _mainsrc, "not registered at boot")
+check("and before the relay that would carry them is started",
+      _mainsrc.index("guard_secrets") < _mainsrc.index("_wire_relay"),
+      "registered too late")
+check("and they come from the backup module's own list of secrets",
+      "SECRET_KEYS" in _appsrc)
+
+for _ev in ("backup.start", "restore.start", "restore.phase"):
+    check("%s is announced" % _ev, '"%s"' % _ev in _appsrc, _ev)
+check("a backup announces its outcome either way",
+      '"backup.done" if ok else "backup.failed"' in _appsrc)
+check("so does a restore",
+      '"restore.done" if ok else "restore.failed"' in _appsrc)
+check("a failed restore announces at error level, not buried at info",
+      'level="info" if ok else "error"' in _appsrc)
+check("launching and stopping the cluster are announced too",
+      "cluster.%s" in _appsrc)
+
+# the relay is what carries them to Discord
+_botsrc = io.open(os.path.join(os.path.dirname(__file__), "bot.py"),
+                  encoding="utf-8").read()
+check("the relay drains the announcement queue", "announce_loop" in _botsrc)
+check("and it is actually started", "relay.announce_loop()" in _botsrc)
+check("posting failures never kill the loop",
+      "could not post announcement" in _botsrc)
+check("it uses the admin channel, not the public one",
+      "admin_send" in _botsrc.split("async def announce_loop")[1][:800])
+
 # ---- the from-scratch INI renderer must stay gone
 #
 # generate_ini() rendered GameUserSettings.ini and Game.ini from the schema and headed

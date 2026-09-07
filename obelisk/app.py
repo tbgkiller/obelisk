@@ -15,6 +15,7 @@ only when there is a cluster to relay between, which on a fresh install there is
 
 import asyncio, logging, os, sys, time
 
+from . import announce
 from . import backup as backupctl
 from . import restore as restorectl
 from . import cloud as cloudctl
@@ -235,7 +236,11 @@ def build_app(store, docker=None):
     cluster_busy = asyncio.Lock()
 
     def _act(fn, request):
+        announce.say("cluster.%s" % fn.__name__, "%s requested from the web UI."
+                     % fn.__name__.title())
         ok, msg = fn(store)
+        announce.say("cluster.%s.%s" % (fn.__name__, "done" if ok else "failed"), msg,
+                     level="info" if ok else "error")
         body = _cluster_body(request, message=msg if ok else "", problem="" if ok else msg)
         return chrome(body, "Cluster", "/admin/cluster")
 
@@ -302,8 +307,10 @@ def build_app(store, docker=None):
 
     def _run_backup():
         """The whole archive, start to finish, on a worker thread."""
+        announce.say("backup.start", "Backup started.")
         ok, msg, _path = backupctl.create(store, flush=_flush_for(store),
                                           progress=_note)
+        announce.say("backup.done" if ok else "backup.failed", msg)
         if ok:
             removed = backupctl.prune(store)
             if removed:
@@ -435,6 +442,7 @@ def build_app(store, docker=None):
 
         def note(text):
             rjob["step"] = text
+            announce.say("restore.phase", text, map=map_key)
 
         def verify_after(key):
             """Wait for the map to come back, then put it through the six gates.
@@ -464,9 +472,15 @@ def build_app(store, docker=None):
             except Exception as e:                       # noqa: BLE001 - surfaced below
                 ok, msg, detail = False, "Restore failed: %s" % e, {}
                 log.exception("restore failed")
+            announce.say("restore.done" if ok else "restore.failed", str(msg),
+                         level="info" if ok else "error", map=map_key)
             rjob.update(state="done", ok=ok, message=msg, step="done",
                         detail=detail)
 
+        announce.say("restore.start",
+                     "Restoring %s - only that map stops; its current world is copied "
+                     "first and the one it replaces is kept." % map_key,
+                     archive=os.path.basename(path))
         rjob.update(state="running", ok=None, message="", step="starting",
                     map=map_key, archive=os.path.basename(path),
                     started=time.time(), detail={})
@@ -656,6 +670,12 @@ async def main():
                      ", ".join(unreadable[:5]))
     except Exception as e:                       # never a reason not to start
         log.warning("could not read the game settings: %s", e)
+
+    # Register what must never appear in an announcement, before anything can announce.
+    # The guard is a net, not a substitute for callers being careful - but the most
+    # likely way a password gets announced is inside an exception nobody wrote by hand.
+    from .backup import SECRET_KEYS
+    announce.guard_secrets([store.get(k) for k in SECRET_KEYS])
 
     ok, msg = docker_state()
     if ok:

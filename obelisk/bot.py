@@ -304,6 +304,29 @@ class Relay:
                 log.warning("DestroyWildDinos %s failed: %s", label, e)
         await asyncio.gather(*(one(l, hp) for l, hp in SERVERS.items()))
 
+    async def announce_loop(self):
+        """Mirror Obelisk's own announcements into the Discord admin channel.
+
+        Polled rather than pushed, because the things being announced happen on worker
+        threads - a backup, a restore, a cluster update - and the queue is the seam
+        between them and this loop. Anything queued while Discord was down is delivered
+        when it comes back, which is exactly when somebody is asking what happened.
+        """
+        from . import announce as ann
+        while True:
+            try:
+                send = getattr(self, "admin_send", None)
+                if send:
+                    for item in ann.pop_all():
+                        try:
+                            await send(ann.format_for_discord(item))
+                        except Exception as e:            # noqa: BLE001
+                            log.warning("could not post announcement %s: %s",
+                                        item.get("event"), e)
+            except Exception as e:                        # noqa: BLE001 - never fatal
+                log.warning("announce loop hiccup: %s", e)
+            await asyncio.sleep(3)
+
     async def maintenance_loop(self):
         """Fire scheduled wild-dino wipes with in-game countdown warnings."""
         targets = [t for t in (_hhmm_to_min(x) for x in WIPE_TIMES) if t is not None]
@@ -732,6 +755,7 @@ async def main():
     relay = Relay()
     tasks = [asyncio.create_task(relay.poll_forever())]
     tasks.append(asyncio.create_task(relay.maintenance_loop()))
+    tasks.append(asyncio.create_task(relay.announce_loop()))
     tasks.append(asyncio.create_task(relay.poll_online()))
     tasks.append(asyncio.create_task(relay.status_server()))
     if DISCORD_TOKEN and DISCORD_CHANNEL_ID:
