@@ -150,11 +150,16 @@ def verify_world(path):
     be and everything downstream looks fine until the server starts empty. So: a real
     file, of a plausible size, that SQLite will open and that has rows in it.
     """
-    if not os.path.exists(path):
-        return False, "there is no world file at %s" % path
+    # The symlink check comes first on purpose. os.path.exists() follows the link, so a
+    # dangling one is "missing" - and the message would be "there is no world file",
+    # which is true and useless. The useful sentence is that there IS something here and
+    # it points somewhere that is not, because that is the failure being hunted.
     if os.path.islink(path):
         return False, ("the restored world is a symlink, not a file - that is the "
-                       "dangling-link failure, and the world it points at is not here")
+                       "dangling-link failure, and the world it points at (%s) is not "
+                       "here" % os.readlink(path))
+    if not os.path.exists(path):
+        return False, "there is no world file at %s" % path
     if not os.path.isfile(path):
         return False, "%s is not a file" % path
     size = os.path.getsize(path)

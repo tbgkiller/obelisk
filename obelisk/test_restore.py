@@ -148,11 +148,27 @@ except (OSError, NotImplementedError, AttributeError):
 if made_link:
     ok_l, why_l = restore.verify_world(linked)
     check("a dangling symlink is refused, not mistaken for a world", not ok_l, why_l)
+    # The link is dangling, so os.path.exists() says it is missing. If the existence
+    # check runs first the message becomes "there is no world file" - true, and useless.
+    # The useful sentence is that something IS there and points somewhere that is not.
     check("and is named as the symlink failure", "symlink" in why_l, why_l)
+    check("and says where the link pointed",
+          "TheIsland_WP.ark" in why_l, why_l)
+
+    # A link to a world that really is there is still refused: the restored file has to
+    # be the world, not a pointer to one, or the next backup captures the pointer.
+    real = os.path.join(d, "real.ark")
+    make_world(real)
+    live_link = os.path.join(d, "live-link.ark")
+    os.symlink(real, live_link)
+    ok_l2, why_l2 = restore.verify_world(live_link)
+    check("even a symlink that resolves is refused", not ok_l2, why_l2)
 else:
     check("a dangling symlink is refused, not mistaken for a world", True,
           "skipped: no symlink privileges on this host")
     check("and is named as the symlink failure", True, "skipped")
+    check("and says where the link pointed", True, "skipped")
+    check("even a symlink that resolves is refused", True, "skipped")
 
 # ---------------------------------------------------------------- preflight
 ok_p, probs = restore.preflight(st, archive, "island")
