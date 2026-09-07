@@ -29,6 +29,9 @@ logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(mess
 log = logging.getLogger("obelisk.app")
 
 COOKIE = "obelisk_session"
+# Long enough that signing in is a thing you do occasionally, short enough that a
+# forgotten browser on someone else's machine does not stay signed in for ever.
+COOKIE_DAYS = 30
 
 
 def docker_state():
@@ -70,8 +73,15 @@ def build_app(store, docker=None):
             return chrome(ui.render_setup(error="That code doesn't match. It is printed "
                                                 "in the container log at startup."),
                           "Set up Obelisk")
+        # A lifetime, rather than the browser-session default this had. Without one the
+        # cookie was discarded when the browser closed, so the setup prompt came back for
+        # reasons that looked like nothing had happened - and the code needed to answer
+        # it had only ever been printed once. That is what locked the owner out.
+        store.data["setup_done"] = True
+        store.save()
         resp = web.HTTPFound("/admin")
-        resp.set_cookie(COOKIE, token, httponly=True, samesite="Lax")
+        resp.set_cookie(COOKIE, token, max_age=COOKIE_DAYS * 24 * 3600,
+                        httponly=True, samesite="Lax")
         raise resp
 
     async def admin(request):

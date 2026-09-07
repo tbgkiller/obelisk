@@ -28,6 +28,13 @@ RUN set -eux;     apt-get update;     apt-get install -y --no-install-recommends
 RUN pip install --no-cache-dir "discord.py>=2.3,<3" "aiohttp>=3.9" "cryptography>=42"
 COPY obelisk/ /app/obelisk/
 
+# A shell shim for the handful of things that need one - `obelisk code` above all,
+# which is how somebody gets back into a UI they are locked out of. Documented as
+# `docker exec <container> obelisk code`, so it has to be on PATH under that name.
+RUN printf '#!/bin/sh
+exec python -m obelisk "$@"
+' > /usr/local/bin/obelisk     && chmod +x /usr/local/bin/obelisk
+
 ENV PYTHONUNBUFFERED=1 OBELISK_DATA=/data
 VOLUME ["/data"]
 EXPOSE 8088

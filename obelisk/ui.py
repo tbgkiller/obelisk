@@ -592,9 +592,14 @@ def render_setup(setup_needed=True, error=""):
             '<form method=post action="/setup"><input id=code type=password name=code '
             'autocomplete=off autofocus placeholder="paste the code from the log"> '
             '<button type=submit>Continue</button></form>'
-            '<div class=help>The code is generated once, when Obelisk first starts, and '
-            'is never written into a file you have to edit. If the log has scrolled past '
-            'it, restarting the container prints it again.</div></div></fieldset>'
+            '<div class=help><strong>This is not your in-game admin password.</strong> '
+            'The setup code opens this web UI; the admin/RCON password is the one your '
+            'servers use in game. They are different secrets and only the code opens '
+            'this page.<br>The code is never written into a file you have to edit. If '
+            'the log has scrolled past it, restarting the container prints it again '
+            'until setup is finished - or run '
+            '<code>docker exec &lt;container&gt; obelisk code</code>.'
+            '</div></div></fieldset>'
             % err)
 
 

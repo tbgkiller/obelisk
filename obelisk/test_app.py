@@ -8,7 +8,7 @@ IP or a firewall, at the exact moment the operator has nothing else to go on.
 Fixture values are synthetic throughout.
 """
 
-import asyncio, os, sys, tempfile
+import asyncio, io, os, sys, tempfile
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -63,6 +63,20 @@ async def run():
     r = await client.post("/setup", data={"code": code}, allow_redirects=False)
     check("the right code is accepted", r.status == 302, r.status)
     check("and starts a session", COOKIE in r.cookies)
+
+    # The cookie used to have no lifetime, so it was thrown away when the browser
+    # closed and the setup prompt came back for reasons that looked like nothing had
+    # happened - with the code needed to answer it printed only once, long ago. That is
+    # precisely how the owner got locked out of his own cluster.
+    from .app import COOKIE_DAYS
+    _c = r.cookies[COOKIE]
+    check("the session cookie has a real lifetime, not browser-session",
+          int(_c["max-age"]) == COOKIE_DAYS * 24 * 3600, dict(_c))
+    check("it is a month or so, not a day", COOKIE_DAYS >= 14, COOKIE_DAYS)
+    check("and it stays httponly and same-site",
+          _c["httponly"] and _c["samesite"].lower() == "lax", dict(_c))
+    check("setup is now marked finished, so the code stops printing on boot",
+          store.data.get("setup_done") is True, store.data.get("setup_done"))
 
     r = await client.get("/admin")
     body = await r.text()
@@ -332,9 +346,9 @@ _st = Store(os.path.join(_d, "settings.json")).load()
 _st.patch({"appdata": "/srv/ark", "status_port": 8088}, source="install")
 _st.patch({"maps": "island,center", "admin_password": "synthetic-pw",
            "cluster_id": "relaytest", "cluster_name": "Relay Test",
-           "discord_token": "synthetic-token", "discord_channel_id": "1152353384062525490",
-           "discord_tribelog_channel_id": "1152619270581276745",
-           "discord_admin_channel_id": "1152467398188859392",
+           "discord_token": "synthetic-token", "discord_channel_id": "111100000000000001",
+           "discord_tribelog_channel_id": "111100000000000002",
+           "discord_admin_channel_id": "111100000000000003",
            "discord_invite": "https://discord.gg/synthetic", "join_leave": True})
 
 _saved_running = clusterctl_t.running_instances
@@ -351,11 +365,11 @@ check("every running map is addressed by container name",
 check("the RCON password comes from the store", _b.RCON_PASSWORD == "synthetic-pw")
 check("and so does the Discord token", _b.DISCORD_TOKEN == "synthetic-token")
 check("the relay channel id is carried across as a number",
-      _b.DISCORD_CHANNEL_ID == 1152353384062525490, _b.DISCORD_CHANNEL_ID)
+      _b.DISCORD_CHANNEL_ID == 111100000000000001, _b.DISCORD_CHANNEL_ID)
 check("the tribe log channel too, under the name the relay uses",
-      _b.TRIBELOG_CHANNEL_ID == 1152619270581276745, _b.TRIBELOG_CHANNEL_ID)
+      _b.TRIBELOG_CHANNEL_ID == 111100000000000002, _b.TRIBELOG_CHANNEL_ID)
 check("and the admin channel, likewise renamed",
-      _b.ADMIN_CHANNEL_ID == 1152467398188859392, _b.ADMIN_CHANNEL_ID)
+      _b.ADMIN_CHANNEL_ID == 111100000000000003, _b.ADMIN_CHANNEL_ID)
 check("the invite reaches the in-game !discord command",
       _b.DISCORD_INVITE == "https://discord.gg/synthetic", _b.DISCORD_INVITE)
 check("join/leave announcements follow the setting", _b.JOIN_LEAVE is True)
@@ -376,6 +390,27 @@ check("and leaves the channel ids at zero rather than crashing",
       _b2.DISCORD_CHANNEL_ID == 0 and _b2.ADMIN_CHANNEL_ID == 0)
 check("and the token empty", _b2.DISCORD_TOKEN == "")
 
+
+# ---- the from-scratch INI renderer must stay gone
+#
+# generate_ini() rendered GameUserSettings.ini and Game.ini from the schema and headed
+# them "do not edit". Obelisk models 139 of this cluster's 172 keys; a from-scratch
+# renderer deletes the rest, including a mod's whole section. It was never wired to
+# anything - which is the only reason those keys survived being migrated - and it sat in
+# settings.py looking like the obvious function for a save path to call.
+from . import settings as _settingsmod
+
+check("there is no from-scratch INI renderer to wire up by accident",
+      not hasattr(_settingsmod, "generate_ini"))
+_src = io.open(_settingsmod.__file__, encoding="utf-8").read()
+check("and settings.py says not to add one back",
+      "no generate_ini()" in _src and "ini.merge_file" in _src)
+check("nothing anywhere calls one",
+      not any("generate_ini" in io.open(os.path.join(os.path.dirname(__file__), f),
+                                        encoding="utf-8").read()
+              for f in os.listdir(os.path.dirname(__file__))
+              if f.endswith(".py") and not f.startswith("test_")
+              and f != "settings.py"))
 
 # ---- the entrypoint runs last, or it runs too early
 #

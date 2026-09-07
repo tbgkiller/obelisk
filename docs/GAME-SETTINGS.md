@@ -1,7 +1,19 @@
 # Game settings: the whole surface, editable
 
-_Plan, not yet built. Numbers marked **measured** were read off this cluster; numbers
-marked _(estimate)_ need confirming against the official INI reference in phase 0._
+_**Shipped** - all five phases are built and deployed. This is kept as the design
+record: what was measured, what was decided, and why the write path is shaped the way
+it is. Numbers marked **measured** were read off a live cluster._
+
+**Built:** phase 0 the read-merge-write path (`ini.py`), phase 1 the 134-setting
+catalogue and adoption (`gamesettings.py`, `gamecfg.py`), phase 2 search, grouping and
+changed-from-default, phase 3 the per-level stat grids, phase 4 the repeated-key row
+editors, phase 5 per-map overrides. 186 settings on the page, 139 of them game config.
+
+**Not built, and why:** per-map *game config* is impossible under the server image's
+layout - it links every map's Game.ini and GameUserSettings.ini to one shared copy at
+every start - so per-map overrides cover the twelve settings the generated compose file
+carries instead. The deeply nested arrays stay in the Extra*.ini passthrough. 96 of the
+139 settings have no documented default, so nothing claims they have changed.
 
 ## The gap, measured
 
@@ -33,9 +45,11 @@ only knobs there are.
 
 ## The thing to be careful about, stated first
 
-`settings.generate_ini()` exists and **is never called**. Nothing in Obelisk writes
-these files today. That is the only reason his customizations survived the migration:
-the files were copied, and then left alone.
+`settings.generate_ini()` existed and was **never called**. That is the only reason his
+customizations survived the migration: the files were copied, and then left alone. It
+has since been **deleted** - it rendered these files from scratch and looked like the
+obvious function to call from a save path, which made it a loaded gun rather than dead
+code. `settings.py` carries a comment where it was, saying not to add one back.
 
 The moment this feature starts writing them, that safety disappears. A generator that
 renders the INI from Obelisk's settings would erase all 167 keys it does not model -

@@ -29,7 +29,14 @@ check("says what is still needed", [b["key"] for b in store.readiness()] == ["ad
 store.patch({"admin_password": "chosen", "session_prefix": "MINE"}); store.save()
 store2, created2, code2 = bootstrap(d, environ={})
 check("second start does not re-create", not created2)
-check("second start issues no new code", code2 is None)
+# The code is re-offered on a restart, but only until somebody has actually signed in.
+# It used to print on exactly one boot, so a log that had scrolled was a locked door -
+# while the setup page promised that restarting would show it again. The safety property
+# is that no NEW code is issued; showing the existing one to somebody still in setup
+# gives away nothing they are not already entitled to.
+check("second start issues no NEW code", code2 == code, (code, code2))
+check("but it does re-offer the existing one while setup is unfinished",
+      code2 is not None)
 check("settings survive a restart", store2.get("session_prefix") == "MINE")
 check("admin token is unchanged", store2.get("admin_token") == code)
 shutil.rmtree(d)
@@ -59,7 +66,17 @@ shutil.rmtree(d)
 d = tempfile.mkdtemp()
 s = Store(os.path.join(d, "settings.json")); s.patch({"admin_token": "mine"}); s.save()
 store, created, code = bootstrap(d, environ={})
-check("an existing admin token is left alone", store.get("admin_token") == "mine" and code is None)
+check("an existing admin token is left alone", store.get("admin_token") == "mine")
+check("and it is offered, because nobody has signed in with it yet", code == "mine")
+
+# Once setup is finished the code stops appearing in the log.
+s2 = Store(os.path.join(d, "settings.json")).load()
+s2.data["setup_done"] = True
+s2.save()
+_store3, _created3, code3 = bootstrap(d, environ={})
+check("after setup is finished it is not printed again", code3 is None, code3)
+check("though the token itself is still there",
+      _store3.get("admin_token") == "mine")
 shutil.rmtree(d)
 
 # ---- install settings follow the container, not the store

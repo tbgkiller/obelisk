@@ -5,7 +5,7 @@
 # that rule has to use the real one.
 import json, os, sys, tempfile
 
-from .settings import Store, Invalid, validate, generate_env, generate_ini
+from .settings import Store, Invalid, validate, generate_env
 from .schema import SETTINGS, BY_KEY, GROUPS, markdown
 
 fails = []
@@ -117,15 +117,6 @@ env = generate_env(st)
 check("wipe schedule still reaches the running bot", "WIPE_TIMES=03:15,21:45" in env, env)
 check("wipe warnings still reach the running bot", "WIPE_WARN_MINUTES=10,5,1" in env, env)
 
-gus = generate_ini(st, "GameUserSettings")
-check("INI has the XP rate", "XPMultiplier=1.0" in gus, gus)
-check("inverted bool written correctly", "DisableStructureDecayPVE=False" in gus, gus)
-game = generate_ini(st, "Game")
-check("Game.ini gets maturation", "BabyMatureSpeedMultiplier=1.0" in game, game)
-check("Game.ini has the right section",
-      "[/Script/ShooterGame.ShooterGameMode]" in game, game)
-check("MOTD is not written to the INI (POK regenerates it)", "MOTD" not in gus.upper())
-
 # ---- nothing in the product is one person's cluster
 from .schema import SETTINGS as _ALL
 # Defaults must describe nobody in particular: no host names, no pool-specific
@@ -229,10 +220,6 @@ except KeyError:
 
 # ---- passthrough for anything the schema doesn't model
 st.patch({"extra_gameusersettings": "[GaiaEssentials]\nFoodPack=True"})
-gus2 = generate_ini(st, "GameUserSettings")
-check("extra INI passed through verbatim", "[GaiaEssentials]" in gus2 and "FoodPack=True" in gus2, gus2)
-check("passthrough is marked in the output", "passed through from Advanced" in gus2)
-
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
 

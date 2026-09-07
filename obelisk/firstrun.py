@@ -129,6 +129,12 @@ def bootstrap(data_dir=None, environ=None):
     if not str(store.get("admin_token")).strip():
         setup_code = secrets.token_urlsafe(9)
         store.patch({"admin_token": setup_code})
+    elif not store.data.get("setup_done"):
+        # Nobody has ever signed in, so whoever is installing this is still in setup and
+        # still needs the code. Printing it once, on the boot that generated it, meant a
+        # log that had scrolled was a locked door - and the setup page itself promised
+        # that restarting would show it again, which until now was not true.
+        setup_code = str(store.get("admin_token")).strip()
 
     store.save()
     try:
