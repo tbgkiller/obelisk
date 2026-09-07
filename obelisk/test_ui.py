@@ -149,9 +149,39 @@ _st.patch({"ItemStackSizeMultiplier": 10.0, "ServerPVE": True,
            "EggHatchSpeedMultiplier": 100.0})
 _h = render_settings(_st)
 
-check("every setting is still on the page",
-      len(re.findall(r"class=f data-k=", _h)) == len(SETTINGS),
-      len(re.findall(r"class=f data-k=", _h)))
+# The stat grids are rendered as searchable blocks too, so the page holds one entry per
+# setting plus one per stat family - not one per cell, which was the Phase 1 mistake.
+from .gamesettings import STAT_FAMILIES, STATS
+check("every setting is still on the page, plus one block per stat family",
+      len(re.findall(r"class=f data-k=", _h)) == len(SETTINGS) + len(STAT_FAMILIES),
+      "%d blocks for %d settings + %d families"
+      % (len(re.findall(r"class=f data-k=", _h)), len(SETTINGS), len(STAT_FAMILIES)))
+check("no stat cell is a setting of its own any more",
+      not any("[" in s["key"] for s in SETTINGS),
+      [s["key"] for s in SETTINGS if "[" in s["key"]])
+
+# ---- the grids themselves
+_stg = Store(os.path.join(tempfile.mkdtemp(), "s.json")).load()
+_stg.patch({"status_port": 8088}, source="install")
+_stg.data["stats"] = {"PerLevelStatsMultiplier_Player": {"7": 3.0, "10": 2.0}}
+_hg = render_settings(_stg)
+check("there is a grid per family", _hg.count("class=grid") == len(STAT_FAMILIES))
+check("and a cell per stat in each",
+      len(re.findall(r'name="stat:', _hg)) == len(STAT_FAMILIES) * len(STATS),
+      len(re.findall(r'name="stat:', _hg)))
+check("his value is shown in the right cell",
+      'name="stat:PerLevelStatsMultiplier_Player:7" value="3.0"' in _hg)
+check("stats he never set are blank, not pre-filled with 1.0",
+      'name="stat:PerLevelStatsMultiplier_Player:0" value=""' in _hg, "index 0 unset")
+check("the stats are named, not left as bare indices",
+      "Melee Damage" in _hg and "Torpidity" in _hg and "Crafting Speed" in _hg)
+check("the grid says how many of the twelve are set", "2 of 12 set" in _hg)
+check("the grids are searchable like everything else",
+      'data-k="PerLevelStatsMultiplier_Player" data-hay=' in _hg)
+check("and never claim a change, since no default is documented for them",
+      'data-k="PerLevelStatsMultiplier_Player" data-hay="[^"]*" data-changed="0"'
+      and re.search(r'data-k="PerLevelStatsMultiplier_Player"[^>]*data-changed="0"', _hg)
+      is not None)
 check("there is a search box", 'id=q' in _h)
 check("and a jump index",
 

@@ -12,7 +12,7 @@ default, and Obelisk has invented configuration the operator never asked for.
 
 import os, sys, tempfile
 
-from . import gamecfg, ini, layout
+from . import gamecfg, gamesettings, ini, layout
 from .settings import Store
 
 fails = []
@@ -43,6 +43,10 @@ GAME = """\
 [/Script/ShooterGame.ShooterGameMode]
 BabyMatureSpeedMultiplier=1000.0
 MatingIntervalMultiplier=0.05
+PerLevelStatsMultiplier_Player[7]=3.0
+PerLevelStatsMultiplier_Player[10]=2.0
+PerLevelStatsMultiplier_DinoTamed[0]=1.0
+PerLevelStatsMultiplier_DinoTamed[8]=1.0
 OverrideNamedEngramEntries=(EngramClassName="EngramEntry_A_C",EngramLevelRequirement=2)
 OverrideNamedEngramEntries=(EngramClassName="EngramEntry_B_C",EngramLevelRequirement=2)
 """
@@ -193,6 +197,112 @@ check("a value that is not the type we expect is left alone, not guessed",
 check("and the store keeps no nonsense",
       st3.data["cluster"].get("DinoCountMultiplier") in (None, 2.0),
       st3.data["cluster"].get("DinoCountMultiplier"))
+
+
+# ---------------------------------------------------------------- per-level stat grids
+#
+# Sparse is the whole point. This file sets two stats in each of two families. A grid
+# editor that wrote all twelve back would turn four lines into twenty-four, every one of
+# them a number nobody chose, in a file somebody laid out by hand.
+st5, conf5 = fresh()
+_gpath = os.path.join(conf5, "Game.ini")
+_before5 = open(_gpath, encoding="utf-8").read()
+
+cells = gamecfg.adopt_grids(st5)
+check("the operator's stat cells are adopted", cells == 4, cells)
+grids = st5.data["stats"]
+check("only the families that appear in the file are held",
+      set(grids) == {"PerLevelStatsMultiplier_Player",
+                     "PerLevelStatsMultiplier_DinoTamed"}, set(grids))
+check("and only the stats they actually set",
+      set(grids["PerLevelStatsMultiplier_Player"]) == {"7", "10"},
+      grids["PerLevelStatsMultiplier_Player"])
+check("with his values", grids["PerLevelStatsMultiplier_Player"]["7"] == 3.0)
+check("index 7 is Weight and 8 is Melee Damage, per the game's table",
+      dict(gamesettings.STATS)[7] == "Weight"
+      and dict(gamesettings.STATS)[8] == "Melee Damage", gamesettings.STATS)
+check("all twelve stats are named", len(gamesettings.STATS) == 12)
+check("all five families are modelled", len(gamesettings.STAT_FAMILIES) == 5)
+
+ok5, msg5 = gamecfg.apply(st5)
+check("a grid round trip writes nothing", "already match" in msg5, msg5)
+check("and the file is byte-identical",
+      open(_gpath, encoding="utf-8").read() == _before5)
+
+st5.data["stats"]["PerLevelStatsMultiplier_Player"]["7"] = 5.0
+gamecfg.apply(st5)
+_after5 = open(_gpath, encoding="utf-8").read()
+check("editing one cell writes exactly one line",
+      sum(1 for a, b in zip(_before5.splitlines(), _after5.splitlines()) if a != b) == 1,
+      [(a, b) for a, b in zip(_before5.splitlines(), _after5.splitlines()) if a != b])
+check("the file gains no lines - the family is still sparse",
+      len(_after5.splitlines()) == len(_before5.splitlines()),
+      "%d -> %d" % (len(_before5.splitlines()), len(_after5.splitlines())))
+check("the changed cell has the new value",
+      "PerLevelStatsMultiplier_Player[7]=5.0" in _after5)
+check("the untouched cells are exactly as they were",
+      "PerLevelStatsMultiplier_Player[10]=2.0" in _after5
+      and "PerLevelStatsMultiplier_DinoTamed[0]=1.0" in _after5, _after5)
+check("no stat the file never mentioned has appeared",
+      "PerLevelStatsMultiplier_Player[0]" not in _after5
+      and "PerLevelStatsMultiplier_DinoWild" not in _after5, _after5)
+check("the repeated engram lines survive a grid write",
+      len(ini.parse(_after5).get_all(gamesettings.GAME_MODE,
+                                     "OverrideNamedEngramEntries")) == 2, _after5)
+check("and the scalars beside them are untouched",
+      "BabyMatureSpeedMultiplier=1000.0" in _after5)
+
+st5.data["stats"]["PerLevelStatsMultiplier_Player"]["1"] = 2.5
+gamecfg.apply(st5)
+_after6 = open(_gpath, encoding="utf-8").read()
+check("a newly set stat is written", "PerLevelStatsMultiplier_Player[1]=2.5" in _after6)
+check("and it is the only line added",
+      len(_after6.splitlines()) == len(_after5.splitlines()) + 1)
+
+del st5.data["stats"]["PerLevelStatsMultiplier_Player"]["1"]
+gamecfg.apply(st5)
+_after7 = open(_gpath, encoding="utf-8").read()
+check("clearing a stat removes its line instead of writing 0",
+      "PerLevelStatsMultiplier_Player[1]" not in _after7, _after7)
+check("and nothing else moved", _after7 == _after5)
+check("an untouched family is not created",
+      "PerLevelStatsMultiplier_DinoWild" not in _after7)
+
+# ---- the near miss: a store that has not adopted the grids must not delete them
+#
+# grid_changes read "no cell here" as "the operator cleared it", so a store that had
+# never called adopt_grids - a fresh install, or any caller that skipped it - looked
+# identical to somebody who had just emptied every box, and apply() removed every stat
+# line in the file. Three older tests in this suite failed the moment stat cells were
+# added to the fixture, which is the only reason it was caught before deploying.
+st6, conf6 = fresh()
+_g6 = os.path.join(conf6, "Game.ini")
+_b6 = open(_g6, encoding="utf-8").read()
+gamecfg.adopt(st6)                      # scalars only - deliberately not adopt_grids
+check("a store with no grids at all knows it has nothing to say",
+      "stats" not in st6.data or not st6.data.get("stats"))
+ok6, msg6 = gamecfg.apply(st6)
+check("and writes nothing to Game.ini", open(_g6, encoding="utf-8").read() == _b6,
+      msg6)
+check("in particular it does not delete the stat lines",
+      "PerLevelStatsMultiplier_Player[7]=3.0" in open(_g6, encoding="utf-8").read())
+
+# but an operator who really does clear a family gets it removed
+st7, conf7 = fresh()
+_g7 = os.path.join(conf7, "Game.ini")
+gamecfg.adopt_grids(st7)
+st7.data["stats"]["PerLevelStatsMultiplier_DinoTamed"] = {}      # emptied in the form
+gamecfg.apply(st7)
+_a7 = open(_g7, encoding="utf-8").read()
+check("clearing a whole family removes its lines",
+      "PerLevelStatsMultiplier_DinoTamed[" not in _a7, _a7)
+check("and leaves the other family alone",
+      "PerLevelStatsMultiplier_Player[7]=3.0" in _a7)
+
+# and the bracketed cells must never come back as scalar settings
+check("no stat cell is modelled as a scalar setting",
+      not any("[" in k for _s, _w, _sec, k in gamecfg.targets()),
+      [k for _s, _w, _sec, k in gamecfg.targets() if "[" in k])
 
 print("\nFAILURES: %s" % fails if fails else "\nall gamecfg tests passed")
 sys.exit(1 if fails else 0)

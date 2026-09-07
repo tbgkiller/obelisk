@@ -18,7 +18,7 @@ of this module knows exist.
 
 import logging
 
-from . import ini, layout
+from . import gamesettings, ini, layout
 from .schema import SETTINGS
 
 log = logging.getLogger("obelisk.gamecfg")
@@ -141,6 +141,11 @@ def apply(store, backup=True, merge=None):
             continue
         changes[which][(section, key)] = _to_ini(setting, value)
 
+    # The stat grids live in the same file, so they ride along in the same write - one
+    # .bak, one restart notice, one diff.
+    for target, value in grid_changes(store, docs["Game"]).items():
+        changes["Game"][target] = value
+
     written, notes = [], []
     for which in FILES:
         if not changes[which]:
@@ -158,3 +163,86 @@ def apply(store, backup=True, merge=None):
     return True, ("Wrote %s. The maps read these at start, so restart the cluster for "
                   "them to take effect. The previous files are kept as .bak."
                   % " and ".join(written))
+
+
+# ---------------------------------------------------------------------------------
+# Per-level stat multipliers.
+#
+# Sparse on purpose. This operator's file sets two of the twelve stats in each of four
+# families, and a grid editor that helpfully wrote all sixty back would turn eight lines
+# into sixty - every one of them a value nobody chose, in a file somebody organised by
+# hand. Only cells that are in the file, or that the operator has just typed, exist.
+
+def _cell_key(family, index):
+    return "%s[%d]" % (family, index)
+
+
+def read_grids(store, doc=None):
+    """{family: {index: value}} as the file has it. Absent cells simply are not there."""
+    doc = doc if doc is not None else ini.read(path_of(store, "Game"))
+    out = {}
+    for family, _name, _help in gamesettings.STAT_FAMILIES:
+        cells = {}
+        for index, _stat in gamesettings.STATS:
+            raw = doc.get(gamesettings.GAME_MODE, _cell_key(family, index))
+            if raw is None:
+                continue
+            try:
+                cells[index] = float(raw)
+            except (TypeError, ValueError):
+                continue
+        if cells:
+            out[family] = cells
+    return out
+
+
+def adopt_grids(store, doc=None):
+    """Pull the grids into the store. Returns how many cells were found."""
+    grids = read_grids(store, doc)
+    store.data.setdefault("stats", {})
+    total = 0
+    for family, cells in grids.items():
+        store.data["stats"][family] = {str(i): v for i, v in cells.items()}
+        total += len(cells)
+    return total
+
+
+def grid_changes(store, doc=None):
+    """{(section, key): value-or-None} for the cells that actually differ from the file.
+
+    None means remove the line: a cell the operator has cleared. Everything else is left
+    out entirely, which is what keeps a sparse family sparse.
+    """
+    doc = doc if doc is not None else ini.read(path_of(store, "Game"))
+    wanted = store.data.get("stats", {}) or {}
+    changes = {}
+    for family, _name, _help in gamesettings.STAT_FAMILIES:
+        # A family the store says nothing about is a family we leave entirely alone.
+        # Without this, a store that had not adopted the grids yet - a fresh install, or
+        # any caller that skipped adopt_grids - looked exactly like an operator who had
+        # just cleared every cell, and apply() deleted every stat line in the file.
+        if family not in wanted:
+            continue
+        mine = wanted.get(family, {}) or {}
+        for index, _stat in gamesettings.STATS:
+            key = _cell_key(family, index)
+            raw = doc.get(gamesettings.GAME_MODE, key)
+            here = mine.get(str(index), mine.get(index))
+            if here in (None, ""):
+                if raw is not None:
+                    changes[(gamesettings.GAME_MODE, key)] = None   # cleared
+                continue
+            try:
+                value = float(here)
+            except (TypeError, ValueError):
+                continue
+            if raw is not None and float(raw) == value:
+                continue
+            changes[(gamesettings.GAME_MODE, key)] = _fmt(value)
+    return changes
+
+
+def _fmt(value):
+    """Numbers the way the file writes them: 3.0, not 3."""
+    text = ("%f" % value).rstrip("0")
+    return text + "0" if text.endswith(".") else text

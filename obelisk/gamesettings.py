@@ -161,14 +161,6 @@ CATALOGUE = [
     ("Game", "/Script/ShooterGame.ShooterGameMode", "StructureDamageRepairCooldown", "int", "Structures"),
     ("Game", "/Script/ShooterGame.ShooterGameMode", "PvPZoneStructureDamageMultiplier", "float", "Rates"),
     ("Game", "/Script/ShooterGame.ShooterGameMode", "bAllowFlyerSpeedLeveling", "bool", "Dinos"),
-    ("Game", "/Script/ShooterGame.ShooterGameMode", "PerLevelStatsMultiplier_Player[7]", "float", "Rates"),
-    ("Game", "/Script/ShooterGame.ShooterGameMode", "PerLevelStatsMultiplier_Player[10]", "float", "Rates"),
-    ("Game", "/Script/ShooterGame.ShooterGameMode", "PerLevelStatsMultiplier_DinoTamed[0]", "float", "Rates"),
-    ("Game", "/Script/ShooterGame.ShooterGameMode", "PerLevelStatsMultiplier_DinoTamed[8]", "float", "Rates"),
-    ("Game", "/Script/ShooterGame.ShooterGameMode", "PerLevelStatsMultiplier_DinoTamed_Add[0]", "float", "Rates"),
-    ("Game", "/Script/ShooterGame.ShooterGameMode", "PerLevelStatsMultiplier_DinoTamed_Add[8]", "float", "Rates"),
-    ("Game", "/Script/ShooterGame.ShooterGameMode", "PerLevelStatsMultiplier_DinoTamed_Affinity[0]", "float", "Rates"),
-    ("Game", "/Script/ShooterGame.ShooterGameMode", "PerLevelStatsMultiplier_DinoTamed_Affinity[8]", "float", "Rates"),
 ]
 
 # Written where the name does not say it, or says it misleadingly. Everything else gets
@@ -369,3 +361,40 @@ def settings():
 
 GROUPS = ["Rates", "Breeding", "Dinos", "Players", "Structures", "Items",
           "PvE & PvP", "Tribes", "Difficulty", "Server behaviour"]
+
+
+# ---------------------------------------------------------------------------------
+# Per-level stat multipliers: five families, twelve stats each.
+#
+# In the file these are PerLevelStatsMultiplier_Player[7]=3.0 - the stat is an index
+# inside the key, which is why Phase 1 swallowed eight of them as settings literally
+# named "PerLevelStatsMultiplier_Player[7]". They are a grid, and they need to be
+# edited as one.
+#
+# The index table is the game's, confirmed against two independent references before
+# anything was labelled with it. It matters: index 7 is Weight and index 8 is Melee
+# Damage, so this operator raising Player[7] and DinoTamed[8] is the ordinary thing a
+# 10x cluster does. An earlier fetch returned a reordered table that would have labelled
+# DinoTamed[8] "Crafting Speed" - a stat a dinosaur does not have - and printing that
+# next to his value would have been worse than printing nothing.
+STATS = [
+    (0, "Health"), (1, "Stamina"), (2, "Torpidity"), (3, "Oxygen"),
+    (4, "Food"), (5, "Water"), (6, "Temperature"), (7, "Weight"),
+    (8, "Melee Damage"), (9, "Speed"), (10, "Fortitude"), (11, "Crafting Speed"),
+]
+
+GAME_MODE = "/Script/ShooterGame.ShooterGameMode"
+
+# (family key, human name, what it does)
+STAT_FAMILIES = [
+    ("PerLevelStatsMultiplier_Player", "Players",
+     "How much each stat gains per level for survivors."),
+    ("PerLevelStatsMultiplier_DinoTamed", "Tamed creatures",
+     "Applied to a tame's stats after taming, on top of what it was born with."),
+    ("PerLevelStatsMultiplier_DinoTamed_Add", "Tamed - taming bonus",
+     "The flat bonus a creature gets from being tamed, before levelling."),
+    ("PerLevelStatsMultiplier_DinoTamed_Affinity", "Tamed - affinity bonus",
+     "The bonus scaled by taming effectiveness - the reward for a perfect tame."),
+    ("PerLevelStatsMultiplier_DinoWild", "Wild creatures",
+     "How much each stat gains per level on wild creatures."),
+]

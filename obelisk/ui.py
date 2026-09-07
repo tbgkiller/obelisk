@@ -75,6 +75,9 @@ legend .gtoggle{background:none;color:#8b94a3;font:inherit;font-size:11px;
   text-transform:uppercase;letter-spacing:.6px;padding:0;cursor:pointer}
 legend .gtoggle:hover{color:#e6e9ef}
 .tag.chg{background:#17324a;color:#7fb2ff}
+table.grid{max-width:420px;margin:6px 0}
+table.grid input{max-width:120px;padding:4px 8px}
+table.grid td,table.grid th{padding:4px 10px}
 """
 
 
@@ -224,6 +227,49 @@ def is_changed(s, value):
         return str(value) != str(want)
 
 
+
+def render_stat_grids(store):
+    """The per-level stat multipliers, as five grids of twelve rather than sixty fields.
+
+    Sparse cells are left blank on purpose. This operator sets two stats in each of four
+    families; showing sixty boxes pre-filled with 1.0 would invite a save that turned
+    eight lines into sixty, every one of them a value nobody chose. Blank means "the
+    file does not mention this", and saving it blank keeps it that way.
+    """
+    from .gamesettings import STATS, STAT_FAMILIES
+    held = store.data.get("stats", {}) or {}
+    blocks = []
+    for family, name, why in STAT_FAMILIES:
+        cells = held.get(family, {}) or {}
+        set_here = sum(1 for i, _n in STATS
+                       if str(i) in cells or i in cells)
+        rows = []
+        for index, stat in STATS:
+            val = cells.get(str(index), cells.get(index, ""))
+            rows.append(
+                '<tr><td class=num>%d</td><td>%s</td>'
+                '<td class=num><input type=number step=any name="stat:%s:%d" '
+                'value="%s" placeholder="not set" inputmode=decimal></td></tr>'
+                % (index, _e(stat), _e(family), index, _e(val)))
+        blocks.append(
+            '<div class=f data-k="%s" data-hay="%s" data-changed="0">'
+            '<label>%s%s</label>'
+            '<table class=grid><tr><th class=num>#</th><th>Stat</th>'
+            '<th class=num>Multiplier</th></tr>%s</table>'
+            '<div class=help>%s Blank means the file says nothing about that stat, and '
+            'saving it blank leaves it unmentioned. <code>%s</code></div></div>'
+            % (_e(family),
+               _e((" ".join([family, name, why] + [n for _i, n in STATS])).lower()),
+               _e(name),
+               (' <span class=count>%d of 12 set</span>' % set_here) if set_here else "",
+               "".join(rows), _e(why), _e(family + "[index]")))
+    return ('<fieldset id="g-per-level-stats" class=grp data-group="Per-level stats">'
+            '<legend><button type=button class="ghost gtoggle" aria-expanded="true">'
+            'Per-level stats</button><span class=count>%d</span></legend>'
+            '<div class=gbody>%s</div></fieldset>'
+            % (len(STAT_FAMILIES), "".join(blocks)))
+
+
 def render_settings(store):
     """The settings page: 194 of them, so finding one has to be a first-class job.
 
@@ -254,6 +300,10 @@ def render_settings(store):
             % (gid, _e(g), _e(g), len(rows),
                ('<span class="tag chg">%d changed</span>' % changed_here)
                if changed_here else "", fields))
+
+    blocks.append(render_stat_grids(store))
+    index.append('<a href="#g-per-level-stats">Per-level stats '
+                 '<span class=count>5</span></a>')
 
     todo = store.readiness()
     banner = ""

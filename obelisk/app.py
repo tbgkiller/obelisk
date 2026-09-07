@@ -84,7 +84,29 @@ def build_app(store, docker=None):
             raise web.HTTPFound("/setup")
         from .schema import INSTALL_KEYS
         form = await request.post()
-        changes = {k: v for k, v in form.items() if k != "code"}
+        # The stat grids post as stat:<family>:<index>. They are not schema settings -
+        # they are cells of a sparse array - so they are pulled out before the rest goes
+        # anywhere near the validator, and a blank one means "leave this stat unmentioned"
+        # rather than "set it to zero".
+        # Every family the form rendered is represented, empty or not, so that clearing
+        # the last cell in a family reads as "cleared" rather than "never mentioned".
+        from .gamesettings import STAT_FAMILIES
+        stats = {fam: {} for fam, _n, _h in STAT_FAMILIES}
+        for name, raw in form.items():
+            if not name.startswith("stat:"):
+                continue
+            _tag, family, index = name.split(":", 2)
+            text = str(raw).strip()
+            if text:
+                try:
+                    stats.setdefault(family, {})[index] = float(text)
+                except ValueError:
+                    log.info("ignoring unreadable stat cell %s=%r", name, raw)
+        if any(n.startswith("stat:") for n in form):
+            store.data["stats"] = stats
+
+        changes = {k: v for k, v in form.items()
+                   if k != "code" and not k.startswith("stat:")}
         # Settings Docker fixed at create time are shown here read-only. A browser that
         # posts them back - an older page, an autofill, a field that was not disabled -
         # must not be able to fail the whole save: the user changed something else and
@@ -435,7 +457,10 @@ async def main():
     # open this, not a screen of defaults sitting on top of the real values.
     try:
         adopted, unreadable = gamecfg.adopt(store)
-        if adopted:
+        cells = gamecfg.adopt_grids(store)
+        if cells:
+            log.info("game settings: %d per-level stat cell(s) read", cells)
+        if adopted or cells:
             store.save()
             log.info("game settings: %d read from the INI files", adopted)
         if unreadable:
