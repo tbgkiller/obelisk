@@ -16,6 +16,7 @@ only when there is a cluster to relay between, which on a fresh install there is
 import asyncio, logging, os, sys, time
 
 from . import announce
+from . import version as versionctl
 from . import backup as backupctl
 from . import restore as restorectl
 from . import cloud as cloudctl
@@ -29,6 +30,11 @@ from .settings import Invalid
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s",
                     stream=sys.stdout)
 log = logging.getLogger("obelisk.app")
+
+# Checked in the background and read by the status page: two network round trips to a
+# registry, and a status page that waits on the internet is one that hangs when the
+# internet is the thing that is broken.
+VERSION_INFO = {}
 
 COOKIE = "obelisk_session"
 # Long enough that signing in is a thing you do occasionally, short enough that a
@@ -302,6 +308,7 @@ def build_app(store, docker=None):
     job = {"state": "idle", "phase": "", "done": 0, "total": 0, "message": "",
            "ok": None, "started": 0.0}
 
+
     def _note(phase, done, total):
         job.update(phase=phase, done=done, total=total)
 
@@ -558,6 +565,7 @@ def build_app(store, docker=None):
     async def root(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
+        body_version = ui.render_version(VERSION_INFO)
         todo = store.readiness()
         st = clusterctl.status(store)
         if st.get("running"):
@@ -566,7 +574,7 @@ def build_app(store, docker=None):
             body = ('<div class=note>Cluster not running. %s</div>'
                     % (("Still to set: " + ", ".join(b["label"] for b in todo))
                        if todo else "Launch it from the Cluster tab."))
-        body += _connect_panel()
+        body += _connect_panel() + body_version
         return chrome(body, "Obelisk", "/")
 
     async def healthz(_request):
@@ -648,6 +656,29 @@ async def backup_scheduler(store, interval=60):
         await asyncio.sleep(interval)
 
 
+async def version_watch():
+    """Ask the registry whether a newer Obelisk is published, occasionally.
+
+    Backstop for a checker that gets this wrong: Unraid compares digests but does not do
+    the token exchange GHCR needs, so it records a stale one and reports "up to date"
+    while an update sits unapplied. Obelisk asks for itself and says so in the UI. It
+    never applies anything - that is the Docker page's job.
+    """
+    while True:
+        try:
+            info = await asyncio.to_thread(versionctl.status)
+            VERSION_INFO.update(info)
+            if info.get("update_available"):
+                announce.say("obelisk.update_available",
+                             "A newer Obelisk is published. Apply it from the Unraid "
+                             "Docker page (Apply Update, or Force Update if the page "
+                             "still says up-to-date).",
+                             running=versionctl.short(info.get("commit"), 7))
+        except Exception as e:                           # noqa: BLE001 - never fatal
+            log.info("version check skipped: %s", e)
+        await asyncio.sleep(6 * 3600)
+
+
 async def main():
     store, created, code = bootstrap()
 
@@ -677,6 +708,26 @@ async def main():
     from .backup import SECRET_KEYS
     announce.guard_secrets([store.get(k) for k in SECRET_KEYS])
 
+    # Which Obelisk this is, and whether it just changed. The store remembers the last
+    # version it saw, so coming back on a different one is reported as an update having
+    # landed - which is the question somebody actually has after clicking Apply Update.
+    try:
+        me = versionctl.running()
+        VERSION_INFO.update(me)
+        seen = store.data.get("last_version")
+        now_v = versionctl.short(me.get("commit"), 7)
+        if me.get("commit"):
+            if seen and seen != me["commit"]:
+                announce.say("obelisk.updated",
+                             "Obelisk restarted on a new version: %s (was %s)."
+                             % (now_v, versionctl.short(seen, 7)))
+            else:
+                log.info("obelisk version %s", now_v)
+            store.data["last_version"] = me["commit"]
+            store.save()
+    except Exception as e:                               # never a reason not to start
+        log.warning("could not read this container's version: %s", e)
+
     ok, msg = docker_state()
     if ok:
         log.info("docker: %s", msg)
@@ -695,6 +746,7 @@ async def main():
         log.warning("web UI disabled (port 0)")
 
     tasks.append(asyncio.create_task(backup_scheduler(store)))
+    tasks.append(asyncio.create_task(version_watch()))
 
     from . import bot
     # The relay used to learn its maps from a SERVERS environment variable, which only

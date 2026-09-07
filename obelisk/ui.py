@@ -414,6 +414,41 @@ def render_map_overrides(store):
             % (total, len(per_map), "".join(blocks)))
 
 
+
+def render_version(info):
+    """Which Obelisk is running, and whether a newer one is published.
+
+    Points at the Docker page rather than offering a button, because applying the update
+    is that page's job - a manager that replaces its own container mid-flight cannot
+    report how it went. And when the registry could not be reached it says so, because
+    the failure this whole panel exists for was a checker that answered "up to date"
+    when it did not know.
+    """
+    from .version import short
+    if not info:
+        return ""
+    running = _e(short(info.get("commit"), 7))
+    body = ('<div class=f><label>This Obelisk</label>'
+            '<div>version <code>%s</code>, image <code>%s</code></div>' %
+            (running, _e(short(info.get("digest")))))
+
+    if info.get("problem"):
+        body += ('<div class=note>Could not check for a newer version: %s. '
+                 'That is not the same as being up to date - it means we do not '
+                 'know.</div>' % _e(info["problem"]))
+    elif info.get("update_available"):
+        body += ('<div class=problem><strong>An update is available.</strong> '
+                 'Published image is <code>%s</code>. Apply it from the Unraid '
+                 '<b>Docker</b> page: click the <b>Obelisk</b> icon and choose '
+                 '<b>Apply Update</b> - or <b>Force Update</b> if the page still says '
+                 'up-to-date, which it sometimes does for this registry. Your settings, '
+                 'cluster and saves are untouched by an update.</div>'
+                 % _e(short(info.get("published"))))
+    else:
+        body += '<div class=note>Up to date.</div>'
+    return '<fieldset><legend>Obelisk version</legend>%s</div></fieldset>' % body
+
+
 def render_settings(store):
     """The settings page: 194 of them, so finding one has to be a first-class job.
 

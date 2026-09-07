@@ -13,6 +13,7 @@ import asyncio, io, os, sys, tempfile
 from aiohttp.test_utils import TestClient, TestServer
 
 from .app import build_app, COOKIE
+from . import ui
 from .settings import Store
 from .firstrun import bootstrap
 
@@ -502,6 +503,43 @@ check("full coverage is announced too, so silence is not the only good news",
 check("the old unconditional claim is gone",
       'log.info("relay covering %d map(s): %s"' not in _appsrc,
       "still claims coverage without checking")
+
+# ---- version visibility, because the checker people rely on got it wrong
+#
+# Unraid compared a stale digest against itself and said "up to date" while a fix sat
+# published. Not an error - a confident wrong answer, the one shape a user cannot act on.
+from . import version as _ver
+
+check("the running version is read at boot", "versionctl.running()" in _mainsrc)
+check("and remembered, so a change can be noticed",
+      'store.data["last_version"]' in _mainsrc)
+check("landing on a new version is announced",
+      '"obelisk.updated"' in _appsrc)
+check("a newer published image is announced too",
+      '"obelisk.update_available"' in _appsrc)
+check("the check runs in the background, not on page load",
+      "version_watch" in _appsrc and "to_thread(versionctl.status)" in _appsrc)
+check("and Obelisk never applies its own update",
+      "docker pull" not in _appsrc.lower())
+
+_vh = ui.render_version({"commit": "302b121abc", "digest": "sha256:aaaa1111bbbb",
+                         "published": "sha256:cccc2222dddd", "update_available": True,
+                         "problem": ""})
+check("an available update is shown as a problem, not a footnote",
+      "class=problem" in _vh and "An update is available" in _vh, _vh[:200])
+check("and points at the Unraid button rather than offering its own",
+      "Apply Update" in _vh and "Force Update" in _vh)
+check("it reassures that saves survive", "saves are untouched" in _vh)
+
+_vh2 = ui.render_version({"commit": "x", "digest": "sha256:a", "published": "sha256:a",
+                          "update_available": False, "problem": ""})
+check("up to date says so plainly", "Up to date" in _vh2)
+
+_vh3 = ui.render_version({"commit": "x", "digest": "sha256:a", "published": None,
+                          "update_available": None,
+                          "problem": "could not get a registry token: 401"})
+check("a failed check is never shown as up to date", "Up to date" not in _vh3, _vh3)
+check("it says we do not know", "we do not" in _vh3, _vh3)
 
 # ---- the from-scratch INI renderer must stay gone
 #
