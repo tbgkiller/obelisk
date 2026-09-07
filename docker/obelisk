@@ -1,0 +1,4 @@
+#!/bin/sh
+# The shell-side commands, on PATH so the documented form works:
+#   docker exec <container> obelisk code
+exec python -m obelisk "$@"
