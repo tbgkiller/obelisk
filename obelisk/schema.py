@@ -374,6 +374,17 @@ from . import gamesettings as _game
 
 SETTINGS += _game.settings()
 
+# The five INI settings that predate the catalogue carry their own defaults. Stamp them
+# from the same documented source, so "changed from default" means one thing everywhere
+# and the write path can tell a real default from a placeholder. Without this the
+# curated five look like unknown-default settings and get written into files that never
+# mentioned them - which is exactly the bug that put XPMultiplier=1.0 into a live config.
+for _s in SETTINGS:
+    _t = str(_s.get("target") or "")
+    if _t.startswith("ini:") and "default_known" not in _s:
+        _real = _game.documented_default(_t.rsplit(":", 1)[-1], _s["type"])
+        _s["default_known"] = _real is not None and _real == _s.get("default")
+
 GROUPS = ["Cluster", "Identity", "Access", "Mods", "Rates", "Upkeep",
           "Discord", "Backups", "Obelisk", "Resources", "Advanced"] + [
           g for g in _game.GROUPS if g not in ("Rates",)]

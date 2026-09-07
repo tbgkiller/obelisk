@@ -10,7 +10,7 @@ Pure functions returning strings. No server, no store writes, no I/O, so the who
 UI is testable without standing anything up.
 """
 
-import html
+import html, re
 
 from .schema import SETTINGS, GROUPS, INSTALL_KEYS
 from . import maps as mapcat
@@ -62,6 +62,19 @@ form[data-busy] button{opacity:.45;cursor:progress}
 .problem{background:#2a1d1f;color:#ffb4ab;border:1px solid #4a2b2e}
 .ok{color:#3fb950}
 .foot{color:#5b6472;font-size:11px;margin-top:22px}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
+.toolbar input[type=search]{flex:1;min-width:240px;max-width:none}
+.chk{display:flex;gap:6px;align-items:center;font-weight:500;margin:0;white-space:nowrap}
+.hint{color:#8b94a3;font-size:12px}
+.index{display:flex;gap:6px;flex-wrap:wrap;margin:0 0 12px}
+.index a{color:#a9b4c4;background:#1a1f27;border:1px solid #262d38;border-radius:999px;
+  padding:4px 11px;font-size:12px;text-decoration:none}
+.index a:hover{border-color:#2f6feb;color:#e6e9ef}
+.count{color:#5b6472;font-size:11px;margin-left:6px;font-variant-numeric:tabular-nums}
+legend .gtoggle{background:none;color:#8b94a3;font:inherit;font-size:11px;
+  text-transform:uppercase;letter-spacing:.6px;padding:0;cursor:pointer}
+legend .gtoggle:hover{color:#e6e9ef}
+.tag.chg{background:#17324a;color:#7fb2ff}
 """
 
 
@@ -130,27 +143,143 @@ def _field(s, value, locked):
     if locked:
         help_txt += (" <strong>Set when the container was created</strong> - change it in "
                      "the container's template and recreate the container.")
-    return ('<div class=f><label for="%s">%s%s</label>%s<div class=help>%s</div></div>'
-            % (key, _e(s["label"]), tags, ctrl, help_txt))
+    # "Changed" is only ever claimed when the game's own default is known. For the
+    # settings where nobody documents one, saying nothing is the honest answer - a
+    # confident badge on a setting the operator never touched is worse than no badge.
+    changed = is_changed(s, value)
+    if changed:
+        tags += ('<span class="tag chg" title="differs from the game default of %s">'
+                 'changed</span>' % _e(_shown(s, s.get("default"))))
+    hay = " ".join([s["label"], key, s.get("help", ""), s.get("group", "")]).lower()
+    return ('<div class=f data-k="%s" data-hay="%s" data-changed="%s">'
+            '<label for="%s">%s%s</label>%s<div class=help>%s</div></div>'
+            % (_e(key), _e(hay), "1" if changed else "0",
+               key, _e(s["label"]), tags, ctrl, help_txt))
+
+
+
+
+# Filtering happens in the browser: the whole page is already here, and a round trip to
+# re-render 194 fields to hide some of them would be slower and would lose whatever the
+# operator had half-typed into another one.
+SETTINGS_JS = """
+<script>
+(function(){
+  var q=document.getElementById("q"), only=document.getElementById("onlychanged"),
+      out=document.getElementById("qcount"), groups=document.querySelectorAll(".grp");
+  function apply(){
+    var needle=(q.value||"").trim().toLowerCase(), c=only.checked, shown=0;
+    groups.forEach(function(g){
+      var vis=0;
+      g.querySelectorAll(".f").forEach(function(f){
+        var ok=(!needle||f.dataset.hay.indexOf(needle)>=0)&&(!c||f.dataset.changed==="1");
+        f.hidden=!ok; if(ok){vis++; shown++;}
+      });
+      g.hidden = vis===0;
+      if((needle||c)&&vis) open(g,true);
+    });
+    out.textContent=(needle||c)?(shown+" shown"):"";
+  }
+  function open(g,state){
+    g.querySelector(".gbody").hidden=!state;
+    g.querySelector(".gtoggle").setAttribute("aria-expanded",state?"true":"false");
+  }
+  q.addEventListener("input",apply); only.addEventListener("change",apply);
+  document.getElementById("expandall").addEventListener("click",function(){
+    var anyClosed=[].some.call(groups,function(g){return g.querySelector(".gbody").hidden});
+    groups.forEach(function(g){open(g,anyClosed)});
+    this.textContent=anyClosed?"Collapse all":"Expand all";
+  });
+  groups.forEach(function(g){
+    g.querySelector(".gtoggle").addEventListener("click",function(){
+      open(g,g.querySelector(".gbody").hidden);
+    });
+  });
+  // A hidden field still posts, so filtering never silently drops a value on save.
+})();
+</script>
+"""
+
+
+def _shown(s, value):
+    if s["type"] == "bool":
+        return "Yes" if value in (True, "true", "True", "TRUE") else "No"
+    return value
+
+
+def is_changed(s, value):
+    """Whether this value differs from the game's own default.
+
+    False whenever the default is not documented, which is most of Game.ini. The badge
+    and the "only changed" filter both hang off this, so it has to mean what it says.
+    """
+    if not s.get("default_known"):
+        return False
+    want = s.get("default")
+    if s["type"] == "bool":
+        return bool(value in (True, "true", "True", "TRUE")) != bool(want)
+    try:
+        return float(value) != float(want)
+    except (TypeError, ValueError):
+        return str(value) != str(want)
 
 
 def render_settings(store):
-    blocks = []
+    """The settings page: 194 of them, so finding one has to be a first-class job.
+
+    A flat list was fine at 52. At 194 it is 75 KB of scrolling, and the answer to
+    "where is stack size" became ctrl-F. So: a group index that jumps, groups that
+    collapse, a search that filters as you type across names, keys and descriptions,
+    and a filter for the ones that differ from the game's defaults - which is how you
+    read a cluster somebody else configured, including your own from a year ago.
+    """
+    blocks, index, total_changed = [], [], 0
     for g in GROUPS:
         rows = [s for s in SETTINGS if s["group"] == g]
         if not rows:
             continue
+        gid = "g-" + re.sub(r"[^a-z0-9]+", "-", g.lower()).strip("-")
+        changed_here = sum(1 for s in rows
+                           if is_changed(s, store.get(s["key"])))
+        total_changed += changed_here
         fields = "".join(_field(s, store.get(s["key"]), s["key"] in INSTALL_KEYS)
                          for s in rows)
-        blocks.append("<fieldset><legend>%s</legend>%s</fieldset>" % (_e(g), fields))
+        index.append('<a href="#%s">%s <span class=count>%d</span></a>'
+                     % (gid, _e(g), len(rows)))
+        blocks.append(
+            '<fieldset id="%s" class=grp data-group="%s"><legend>'
+            '<button type=button class="ghost gtoggle" aria-expanded="true">%s</button>'
+            '<span class=count>%d</span>%s</legend>'
+            '<div class=gbody>%s</div></fieldset>'
+            % (gid, _e(g), _e(g), len(rows),
+               ('<span class="tag chg">%d changed</span>' % changed_here)
+               if changed_here else "", fields))
+
     todo = store.readiness()
     banner = ""
     if todo:
         banner = ('<div class=problem>Before this cluster can start: %s</div>'
                   % _e(", ".join(b["label"] for b in todo)))
-    return ('<form method=post action="/admin/save">%s%s'
+
+    known = sum(1 for s in SETTINGS if s.get("default_known"))
+    toolbar = (
+        '<div class=toolbar>'
+        '<input type=search id=q placeholder="Search %d settings - name, key or '
+        'description" autocomplete=off>'
+        '<label class=chk><input type=checkbox id=onlychanged> Only changed '
+        '(%d)</label>'
+        '<button type=button class=ghost id=expandall>Expand all</button>'
+        '<span class=hint id=qcount></span>'
+        '</div>'
+        '<div class=index>%s</div>'
+        '<div class=help style="margin:-4px 0 14px">%d of these have a documented game '
+        'default to compare against, so "changed" is only shown for those. The rest are '
+        'not marked either way rather than guessed at.</div>'
+        % (len(SETTINGS), total_changed, "".join(index), known))
+
+    return ('<form method=post action="/admin/save">%s%s%s%s'
             '<button type=submit>Save changes</button></form>'
-            % (banner, "".join(blocks)))
+            % (banner, toolbar, "".join(blocks), SETTINGS_JS))
 
 
 def render_status(status):

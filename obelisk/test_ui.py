@@ -53,7 +53,14 @@ check("an unset secret says so", "not set" in render_settings(st_blank))
 # ---- escaping, because settings are free text that comes back as HTML
 st_x = store(session_tags='<script>alert(1)</script>')
 h = render_settings(st_x)
-check("user input is escaped", "<script>" not in h and "&lt;script&gt;" in h)
+# The page now carries a <script> of its own for search and filtering, so "no script
+# tag anywhere" no longer means what it used to. Assert the thing that was always
+# actually meant: the value the user typed comes back escaped and never as markup.
+check("user input is escaped",
+      "<script>alert(1)</script>" not in h
+      and "&lt;script&gt;alert(1)&lt;/script&gt;" in h)
+check("and the only script on the page is ours",
+      h.count("<script>") == 1, h.count("<script>"))
 check("quotes in a value can't break out of an attribute",
       'value="<' not in render_settings(store(motd='" onmouseover="x')))
 
@@ -130,6 +137,87 @@ check("an unknown host address is admitted, not hidden",
       "cannot see the address" in unknown and "Server address" in unknown)
 check("a known host address needs no apology",
       "cannot see the address" not in c)
+
+
+# ---- 194 settings need finding, not scrolling
+from . import ui as uimod
+from . import gamesettings as gs
+
+_st = Store(os.path.join(tempfile.mkdtemp(), "s.json")).load()
+_st.patch({"status_port": 8088}, source="install")
+_st.patch({"ItemStackSizeMultiplier": 10.0, "ServerPVE": True,
+           "EggHatchSpeedMultiplier": 100.0})
+_h = render_settings(_st)
+
+check("every setting is still on the page",
+      len(re.findall(r"class=f data-k=", _h)) == len(SETTINGS),
+      len(re.findall(r"class=f data-k=", _h)))
+check("there is a search box", 'id=q' in _h)
+check("and a jump index",
+
+      _h.count("class=index") == 1 and "#g-rates" in _h)
+check("groups are collapsible", _h.count("gtoggle") >= 10, _h.count("gtoggle"))
+check("and each one says how many settings it holds", "class=count" in _h)
+
+# the haystack is what search matches on
+_row = re.search(r'data-k="ItemStackSizeMultiplier" data-hay="([^"]*)"', _h)
+check("a field carries a searchable haystack", _row is not None)
+if _row:
+    hay = _row.group(1)
+    check("search covers the human label", "stack size" in hay, hay)
+    check("search covers the raw INI key", "itemstacksizemultiplier" in hay, hay)
+    check("search covers the description", "quality-of-life" in hay, hay)
+    check("and the group name", "rates" in hay, hay)
+
+# ---- changed-from-default has to mean it
+check("a value away from the game default is marked changed",
+      'data-k="ItemStackSizeMultiplier" data-hay' in _h and
+      re.search(r'data-k="ItemStackSizeMultiplier"[^>]*data-changed="1"', _h) is not None)
+check("a setting at its default is not marked",
+      re.search(r'data-k="AllowHitMarkers"[^>]*data-changed="0"', _h) is not None)
+check("a setting with no documented default is never marked changed, "
+      "however far from the placeholder it is",
+      re.search(r'data-k="EggHatchSpeedMultiplier"[^>]*data-changed="0"', _h) is not None,
+      "EggHatchSpeedMultiplier is set to 100.0 with no documented default")
+check("the page says how many settings it can actually compare",
+      "documented game" in _h)
+check("there is an only-changed filter", "onlychanged" in _h)
+
+# is_changed directly
+_b = BY_KEY["ServerPVE"]
+check("bools compare as bools", uimod.is_changed(_b, True) and not uimod.is_changed(_b, False))
+_f = BY_KEY["ItemStackSizeMultiplier"]
+check("numbers compare as numbers, not strings",
+      uimod.is_changed(_f, "10.0") and not uimod.is_changed(_f, "1.0"))
+check("an unknown default never reports a change",
+      not uimod.is_changed(BY_KEY["EggHatchSpeedMultiplier"], 999.0))
+
+# ---- the defaults are the game's, not the server image's opinionated template
+check("some defaults are documented", sum(1 for s in SETTINGS if s.get("default_known")) > 30,
+      sum(1 for s in SETTINGS if s.get("default_known")))
+check("ServerCrosshair uses the game default, not the image template's True",
+      gs.documented_default("ServerCrosshair", "bool") is False,
+      gs.documented_default("ServerCrosshair", "bool"))
+check("OverrideOfficialDifficulty is not taken from the template's 5.024775",
+      gs.documented_default("OverrideOfficialDifficulty", "float") != 5.024775)
+check("defaults match case-insensitively, as the engine does",
+      gs.documented_default("allowflyercarrypve", "bool") ==
+      gs.documented_default("AllowFlyerCarryPvE", "bool") is not None)
+check("a key nobody documents returns nothing rather than a guess",
+      gs.documented_default("BabyCuddleIntervalMultiplier", "float") is None)
+
+# ---- filtering must never lose a value on save
+# Filtering hides fields with the `hidden` attribute, never `disabled` - a disabled
+# input is not submitted, so filtering the page before a save would silently drop
+# whatever was filtered out. The only disabled controls are the install-time ones.
+_locked = [s for s in SETTINGS if s["key"] in INSTALL_KEYS]
+# Counted as an attribute on a control, not as a substring: several settings are
+# themselves called Disable-something, and their names appear in the search haystack.
+_dis = re.findall(r"<(?:input|select|textarea|button)[^>]*\sdisabled", _h)
+check("nothing is disabled except the install-time fields",
+      len(_dis) == len(_locked),
+      "%d disabled controls for %d locked fields" % (len(_dis), len(_locked)))
+check("and filtering hides rather than disables", "f.hidden=!ok" in _h)
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

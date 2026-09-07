@@ -228,6 +228,124 @@ def _label(key):
     return text[:1].upper() + text[1:]
 
 
+# ---------------------------------------------------------------------------------
+# The game's own defaults, for the settings where they are actually documented.
+#
+# Sourced from the ARK server configuration reference, not from this cluster and not
+# from the server image's template - the image ships an opinionated starting config
+# (ServerCrosshair=True where the game's default is False, OverrideOfficialDifficulty at
+# 5.024775) and reading defaults out of it would call half a cluster "changed" when it
+# is running exactly what the image gave it.
+#
+# It covers 46 of the 142 settings in the catalogue. The rest are genuinely not documented anywhere I could
+# verify, and a guessed default is worse than none: it puts a confident "changed from
+# default" badge on a setting nobody touched. Where the default is unknown, nothing is
+# claimed - see default_known below.
+DEFAULTS = {
+    "AdminLogging": "False",
+    "AllowAnyoneBabyImprintCuddle": "False",
+    "AllowCaveBuildingPvE": "False",
+    "AllowCaveBuildingPvP": "True",
+    "AllowCrateSpawnsOnTopOfStructures": "False",
+    "AllowCryoFridgeOnSaddle": "False",
+    "AllowFlyerCarryPvE": "False",
+    "AllowFlyingStaminaRecovery": "False",
+    "AllowHideDamageSourceFromLogs": "True",
+    "AllowHitMarkers": "True",
+    "AllowIntegratedSPlusStructures": "True",
+    "AllowMultipleAttachedC4": "False",
+    "AllowRaidDinoFeeding": "False",
+    "AllowSharedConnections": "False",
+    "AllowTekSuitPowersInGenesis": "False",
+    "AllowThirdPersonPlayer": "True",
+    "AlwaysAllowStructurePickup": "False",
+    "AlwaysNotifyPlayerLeft": "False",
+    "ArmadoggoDeathCooldown": "3600",
+    "AutoDestroyDecayedDinos": "False",
+    "AutoDestroyOldStructuresMultiplier": "0.0",
+    "AutoSavePeriodMinutes": "15.0",
+    "ClampItemSpoilingTimes": "False",
+    "ClampItemStats": "False",
+    "ClampResourceHarvestDamage": "False",
+    "DayCycleSpeedScale": "1.0",
+    "DinoCharacterFoodDrainMultiplier": "1.0",
+    "DinoCharacterHealthRecoveryMultiplier": "1.0",
+    "DinoCharacterStaminaDrainMultiplier": "1.0",
+    "DinoCountMultiplier": "1.0",
+    "DinoDamageMultiplier": "1.0",
+    "DinoResistanceMultiplier": "1.0",
+    "DisableStructureDecayPVE": "False",
+    "DodoResistanceMultiplier": "1.0",
+    "DumpAdminLog": "False",
+    "EnableExtraStructurePreventionVolumes": "False",
+    "EnablePvPGamma": "True",
+    "FallDamageMultiplier": "1.0",
+    "FlyerPlatformAllowUnalignedDinoBasing": "False",
+    "GlobalVoiceChat": "True",
+    "HarvestAmountMultiplier": "1.0",
+    "HarvestHealthMultiplier": "1.0",
+    "ItemStackSizeMultiplier": "1.0",
+    "KickIdlePlayersPeriod": "3600.0",
+    "MaxNumberOfPlayersInTribe": "70",
+    "MaxStructuresInRange": "135",
+    "NonPvPDinoDamageMultiplier": "1.0",
+    "NonPvPStructureDamageMultiplier": "1.0",
+    "PlayerCharacterFoodDrainMultiplier": "1.0",
+    "PlayerCharacterHealthRecoveryMultiplier": "1.0",
+    "PlayerCharacterStaminaDrainMultiplier": "1.0",
+    "PlayerCharacterWaterDrainMultiplier": "1.0",
+    "PlayerDamageMultiplier": "1.0",
+    "PlayerResistanceMultiplier": "1.0",
+    "PreventDiseases": "False",
+    "PreventDownloadDinos": "False",
+    "PreventDownloadItems": "False",
+    "PreventDownloadSurvivors": "False",
+    "PreventOfflinePvP": "False",
+    "PreventTribeAlliances": "False",
+    "PreventUploadDinos": "False",
+    "PreventUploadItems": "False",
+    "PreventUploadSurvivors": "False",
+    "PvEAllowStructuresAtSupplyDrops": "False",
+    "PvPDinoDecay": "True",
+    "PvPStructureDecay": "True",
+    "ResourcesRespawnPeriodMultiplier": "1.0",
+    "ServerCrosshair": "False",
+    "ServerHardcore": "False",
+    "ServerPVE": "False",
+    "ShowMapPlayerLocation": "True",
+    "StructureDamageMultiplier": "1.0",
+    "StructurePickupHoldDuration": "0.5",
+    "StructurePickupTimeAfterPlacement": "30.0",
+    "StructureResistanceMultiplier": "1.0",
+    "TamingSpeedMultiplier": "1.0",
+    "XPMultiplier": "1.0",
+}
+
+_DEFAULTS_LOWER = {k.lower(): v for k, v in DEFAULTS.items()}
+
+
+def documented_default(key, kind):
+    """The game's default for this key, typed - or None when nobody documents one.
+
+    Matched without case, because the files disagree with the reference about it:
+    AllowFlyerCarryPVE and AllowFlyerCarryPvE are the same setting, and the engine
+    does not care which you wrote.
+    """
+    raw = _DEFAULTS_LOWER.get(key.lower())
+    if raw is None:
+        return None
+    try:
+        if kind == "bool":
+            return raw.strip().lower() == "true"
+        if kind == "int":
+            return int(float(raw))
+        if kind == "float":
+            return float(raw)
+    except (TypeError, ValueError):
+        return None
+    return raw
+
+
 _DEFAULTS = {"bool": False, "int": 0, "float": 1.0}
 
 
@@ -235,9 +353,14 @@ def settings():
     """The catalogue as schema entries, ready to be rendered and validated."""
     out = []
     for f, section, key, kind, group in CATALOGUE:
+        real = documented_default(key, kind)
         out.append(dict(
             key=key, label=_label(key), group=group, type=kind,
-            default=_DEFAULTS[kind],
+            # A placeholder still fills the form when the real default is unknown, but
+            # default_known is what decides whether anything is allowed to say the value
+            # has been "changed".
+            default=_DEFAULTS[kind] if real is None else real,
+            default_known=real is not None,
             target="ini:%s:%s:%s" % (f, section, key),
             apply="reload", per_map=True,
             help=HELP.get(key, "%s.ini [%s] %s" % (f, section, key))))

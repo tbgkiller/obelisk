@@ -127,7 +127,10 @@ def apply(store, backup=True, merge=None):
         # at some point and now looks identical to a deliberate choice. Writing it adds
         # a line the operator never asked for to a file they wrote by hand. Presence in
         # the store is not evidence of intent; differing from the default is.
-        if current is None and value == setting.get("default"):
+        # ...but only when the default is the game's, not a placeholder. Skipping on a
+        # made-up default would silently refuse to write a value the operator did choose.
+        if (current is None and setting.get("default_known")
+                and value == setting.get("default")):
             continue
 
         # Compare against what the file means, not how it spells it. `15` and `15.0`
