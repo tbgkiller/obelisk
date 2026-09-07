@@ -10,7 +10,29 @@ on:
   workflow_dispatch:
 
 jobs:
+  # The suite is the safety net every fix in this project has leaned on, and until now
+  # nothing enforced it: the image built and published whether the tests passed or not,
+  # so a red commit shipped exactly as fast as a green one.
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install --quiet aiohttp pyyaml cryptography
+      - name: Run the suite
+        run: |
+          fail=0
+          for t in obelisk/test_*.py; do
+            m=$(basename "$t" .py)
+            echo "--- $m"
+            python -m "obelisk.$m" || fail=1
+          done
+          exit $fail
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read

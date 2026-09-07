@@ -18,7 +18,7 @@ import asyncio, logging, os, sys, time
 from . import backup as backupctl
 from . import cloud as cloudctl
 from . import cluster as clusterctl
-from . import dockerctl, install, layout, ui
+from . import dockerctl, gamecfg, install, layout, ui
 from . import mods as modsctl
 from .firstrun import bootstrap
 from .plan import build_plan
@@ -99,6 +99,12 @@ def build_app(store, docker=None):
             store.patch(changes)
             store.save()
             install.apply_timezone(store.get("timezone"))
+            # Push the game settings back into the INI files the servers actually read.
+            # Only the keys the operator has set, only through the line editor, and only
+            # where the value really differs from what is already written.
+            ok_ini, ini_msg = gamecfg.apply(store)
+            if not ok_ini:
+                log.warning("game settings not written: %s", ini_msg)
         except Invalid as e:
             return chrome('<div class=problem>%s</div>%s'
                           % (ui._e(str(e)), ui.render_settings(store)),
@@ -423,6 +429,20 @@ async def backup_scheduler(store, interval=60):
 
 async def main():
     store, created, code = bootstrap()
+
+    # Read the game's own config in before serving a page about it. An operator who has
+    # spent months tuning a cluster should recognise their settings the first time they
+    # open this, not a screen of defaults sitting on top of the real values.
+    try:
+        adopted, unreadable = gamecfg.adopt(store)
+        if adopted:
+            store.save()
+            log.info("game settings: %d read from the INI files", adopted)
+        if unreadable:
+            log.info("game settings left alone (not the expected type): %s",
+                     ", ".join(unreadable[:5]))
+    except Exception as e:                       # never a reason not to start
+        log.warning("could not read the game settings: %s", e)
 
     ok, msg = docker_state()
     if ok:

@@ -367,8 +367,16 @@ SETTINGS = [
 
 ]
 
+# The game's own settings, catalogued separately because there are a couple of hundred
+# of them and they are read from a real cluster rather than written by hand. They are
+# ordinary schema entries once they are here: same renderer, same validation.
+from . import gamesettings as _game
+
+SETTINGS += _game.settings()
+
 GROUPS = ["Cluster", "Identity", "Access", "Mods", "Rates", "Upkeep",
-          "Discord", "Backups", "Obelisk", "Resources", "Advanced"]
+          "Discord", "Backups", "Obelisk", "Resources", "Advanced"] + [
+          g for g in _game.GROUPS if g not in ("Rates",)]
 
 BY_KEY = {s["key"]: s for s in SETTINGS}
 
