@@ -580,26 +580,6 @@ def in_window(store, now_minutes):
     return now_minutes >= start or now_minutes <= end
 
 
-def in_hours(store, now_minutes):
-    """Is the clock inside the optional empty-apply hours? Blank means always.
-
-    Separate from the update window on purpose. The window is "when it is acceptable to
-    restart people"; this is "when it is acceptable to restart an *empty* cluster", and
-    an empty cluster at midday is still an empty cluster - so the default is no
-    restriction at all.
-    """
-    raw = str(store.get("apply_empty_hours") or "").strip()
-    if not raw or "-" not in raw:
-        return True
-    start, _, end = raw.partition("-")
-    a, b = parse_time(start), parse_time(end)
-    if a is None or b is None:
-        return True                # unparseable is not a reason to refuse for ever
-    if a <= b:
-        return a <= now_minutes <= b
-    return now_minutes >= a or now_minutes <= b
-
-
 def empty_enough(store, streak, needed=3):
     """(may we apply now, why) given how many consecutive polls found nobody.
 
@@ -613,9 +593,6 @@ def empty_enough(store, streak, needed=3):
     if streak < needed:
         return False, ("the cluster has been empty for %d of the %d checks needed"
                        % (streak, needed))
-    when = time.localtime()
-    if not in_hours(store, when.tm_hour * 60 + when.tm_min):
-        return False, "outside the hours set for applying to an empty cluster"
     return True, "the cluster has been empty for %d checks running" % streak
 
 

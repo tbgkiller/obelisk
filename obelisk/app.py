@@ -282,15 +282,7 @@ def build_app(store, docker=None):
             banner = '<div class=problem>%s</div>' % ui._e(problem)
         elif message:
             banner = '<div class=note>%s</div>' % ui._e(message)
-        drifted = ""
-        if st.get("running"):
-            try:
-                differs, why = pendingctl.drift(store)
-                if differs:
-                    drifted = '<div class=problem>%s</div>' % ui._e(why)
-            except Exception as e:                   # noqa: BLE001 - never a blank page
-                log.info("could not check for drift: %s", e)
-        return (banner + drifted + _pending_panel() + _update_panel() +
+        return (banner + _pending_panel() + _update_panel() +
                 ui.render_cluster(store, plan, status=st))
 
     # The last poll, so opening the page does not go to the network before it renders.
@@ -337,17 +329,6 @@ def build_app(store, docker=None):
                                   ("  [%s]" % r["map"]) if r["map"] else "")
             for r in pendingctl.rows(store))
 
-    def _when_text():
-        """When the batch will land, in the words of whatever will actually land it."""
-        bits = []
-        if store.get("apply_when_empty"):
-            bits.append("as soon as the cluster is empty")
-        if store.get("update_apply_in_window") and updatesctl.owns_updates(store):
-            bits.append("at %s" % store.get("update_window_start"))
-        if not bits:
-            return "when you apply them"
-        return " or ".join(bits)
-
     def _pending_panel(players=None):
         try:
             ready = updatesctl.primed(store)
@@ -355,8 +336,8 @@ def build_app(store, docker=None):
             if ready:
                 primed = dict(ready,
                               running=(ARK_UPDATE.get("build") or {}).get("running"))
-            return ui.render_pending(pendingctl.rows(store), when_text=_when_text(),
-                                     job=ujob, players=players, primed=primed)
+            return ui.render_pending(pendingctl.rows(store), job=ujob,
+                                     players=players, primed=primed)
         except Exception as e:                       # noqa: BLE001 - never a blank page
             log.warning("could not render pending changes: %s", e)
             return ""

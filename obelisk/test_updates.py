@@ -42,7 +42,7 @@ class FakeStore:
     def __init__(self, **kw):
         self.values = dict(
             ark_update_mode="obelisk", update_apply_in_window=False,
-            apply_when_empty=True, apply_empty_hours="",
+            apply_when_empty=True,
             staging_mode="always", staging_map="scorched", staging_memory="10g",
             update_window_start="4:00 AM", update_window_end="6:00 AM",
             restart_notice_minutes=30, mod_ids="929110,940003,929420",
@@ -584,18 +584,6 @@ check("three consecutive empty checks is", updates.empty_enough(s, 3)[0],
       updates.empty_enough(s, 3))
 check("with the setting off it never fires",
       not updates.empty_enough(FakeStore(apply_when_empty=False), 9)[0])
-
-check("no hours set means any hour - an empty cluster at midday is still empty",
-      updates.in_hours(FakeStore(apply_empty_hours=""), 12 * 60))
-_h = FakeStore(apply_empty_hours="2:00 AM-10:00 AM")
-check("inside the hours", updates.in_hours(_h, 5 * 60))
-check("outside them", not updates.in_hours(_h, 20 * 60))
-_hn = FakeStore(apply_empty_hours="10:00 PM-6:00 AM")
-check("a range that crosses midnight works",
-      updates.in_hours(_hn, 23 * 60) and updates.in_hours(_hn, 3 * 60)
-      and not updates.in_hours(_hn, 12 * 60))
-check("an unparseable range does not lock it out for ever",
-      updates.in_hours(FakeStore(apply_empty_hours="whenever-ish"), 12 * 60))
 
 # ---- due() now fires for queued settings, not only a staged build
 st = real_store(update_apply_in_window=True)

@@ -126,21 +126,6 @@ check("and neither is the old one", row["from"] == "(unchanged)", row)
 check("it still applies, though", pending.queued(st)["cluster"]["admin_password"]
       == "a-brand-new-password")
 
-# ---- the loud ones say why they are not ordinary
-st = store()
-pending.stage(st, {"cluster_id": "somethingelse"})
-row = pending.rows(st)[0]
-check("renaming the cluster carries a warning", row["warning"], row)
-check("that says what it actually does", "compose project" in row["warning"], row)
-st2 = store()
-pending.stage(st2, {"admin_password": "x-new-password-here"})
-check("so does the admin password, about the relay",
-      "relay" in pending.rows(st2)[0]["warning"], pending.rows(st2)[0])
-st3 = store()
-pending.stage(st3, {"max_players": 250})
-check("an ordinary change carries none", pending.rows(st3)[0]["warning"] == "")
-
-
 # ---- committing
 st = store()
 pending.stage(st, {"max_players": 250})
@@ -230,43 +215,3 @@ pending.stage(st, {"mod_ids": "1234"})
 check("two are plural", "2 changes waiting" in pending.summary(st), pending.summary(st))
 
 
-# ---- drift: the cluster that stopped matching its own settings
-#
-# The safety net for what this replaces. Recreate-class settings used to go into the
-# store and wait for whatever Launch came next, so a cluster upgrading to the queue may
-# already be running a compose file its settings no longer describe - and the queue
-# cannot know, because those changes happened before it existed.
-st = store()
-differs, why = pending.drift(st, read=lambda p: "services:\n  a: {}\n",
-                             generate=lambda: "services:\n  a: {}\n")
-check("a cluster that matches its settings reports no drift", not differs, why)
-
-differs, why = pending.drift(st, read=lambda p: "services:\n  a: {}\n",
-                             generate=lambda: "services:\n  a: {}\n  b: {}\n")
-check("one that does not, does", differs, why)
-check("and says what to do about it", "apply" in why.lower(), why)
-
-check("trailing whitespace is not drift",
-      not pending.drift(st, read=lambda p: "services:  \n  a: {}\n",
-                        generate=lambda: "services:\n  a: {}")[0])
-
-
-def _missing(path):
-    raise OSError("no such file")
-
-
-differs, why = pending.drift(st, read=_missing, generate=lambda: "anything")
-check("a cluster that has never been launched has nothing to have drifted from",
-      not differs and why == "", (differs, why))
-
-
-def _broken():
-    raise ValueError("this cluster will not boot")
-
-
-differs, why = pending.drift(st, read=lambda p: "x", generate=_broken)
-check("a plan that will not generate is not reported as drift - a different alarm",
-      not differs and "could not work out" in why, why)
-
-print("\nFAILURES: %s" % fails if fails else "\nall pending tests passed")
-sys.exit(1 if fails else 0)

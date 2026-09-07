@@ -34,26 +34,6 @@ log = logging.getLogger("obelisk.pending")
 
 STATE = "pending"          # store.data[STATE] - manager state, not a setting
 
-# Changing this renames the compose project, which means the running containers stop
-# being recognised as this cluster's. Not a reason to refuse it - people do rename
-# clusters - but it is not the same kind of change as raising a RAM cap, and the UI
-# should not present it as though it were.
-LOUD = {
-    "cluster_id": ("This renames the compose project. The running containers belong to "
-                   "the old name, so applying it recreates all of them and anything "
-                   "outside Obelisk that refers to the old project - scripts, the "
-                   "Compose Manager entry - stops matching."),
-    "admin_password": ("Until this is applied, Obelisk keeps using the current password "
-                       "to reach the running maps, which is what keeps chat relay and "
-                       "in-game commands working. Both change over at the restart."),
-    "game_port_base": ("Players connect to these ports. Changing them means anyone with "
-                       "a saved favourite has to be told the new address."),
-    "rcon_port_base": ("Anything outside Obelisk that speaks RCON to these maps will "
-                       "need the new ports."),
-    "maps": ("Removing a map stops that server. Its world is left on disk untouched, "
-             "but nobody can reach it until the map is added back."),
-}
-
 
 def _state(store):
     got = store.data.get(STATE)
@@ -239,7 +219,6 @@ def _row(store, key, value, map_name):
         "to": "(new password)" if secret else value,
         "secret": secret,
         "clears": False,
-        "warning": LOUD.get(key, ""),
     }
 
 
@@ -366,43 +345,6 @@ def restore(store, before, requeue=None):
     except OSError as e:
         return False, "could not put the settings back: %s" % e
     return True, ""
-
-
-def drift(store, read=None, generate=None):
-    """(differs, sentence) - does the running cluster match the settings on disk?
-
-    A safety net rather than part of the queue, and it exists because of what this
-    replaces. Recreate-class settings used to go straight into the store and wait for
-    whatever Launch came next, so a cluster upgrading to the queue may already be
-    running a compose file that its own settings no longer describe - and nothing would
-    ever say so. The queue cannot know about changes made before it existed; this can,
-    by comparing the file that is running against the file the settings would produce.
-
-    Compared as text, deliberately. The generator is deterministic, so any difference is
-    a real difference - and reasoning about which YAML differences matter is exactly the
-    sort of cleverness that reports "no drift" on a cluster running the wrong ports.
-    """
-    from . import cluster
-    read = read or (lambda p: open(p, encoding="utf-8").read())
-    generate = generate or (
-        lambda: cluster.generate_compose(store, project=cluster.project(store)))
-    try:
-        running = read(cluster.compose_path(store))
-    except OSError:
-        return False, ""                  # never launched: nothing to have drifted from
-    try:
-        wanted = generate()
-    except Exception as e:                # noqa: BLE001 - a bad plan is a different alarm
-        return False, "could not work out what this cluster should look like: %s" % e
-    if _norm(running) == _norm(wanted):
-        return False, ""
-    return True, ("The running cluster does not match your settings. Something was "
-                  "changed without being applied - apply the waiting changes, or use "
-                  "Apply and restart, to bring them back into line.")
-
-
-def _norm(text):
-    return "\n".join(l.rstrip() for l in str(text or "").strip().splitlines())
 
 
 def summary(store):

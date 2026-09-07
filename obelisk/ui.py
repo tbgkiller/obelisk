@@ -127,7 +127,6 @@ legend .gtoggle{background:none;color:#8b94a3;font:inherit;font-size:11px;
   text-transform:uppercase;letter-spacing:.6px;padding:0;cursor:pointer}
 legend .gtoggle:hover{color:#e6e9ef}
 .tag.chg{background:#17324a;color:#7fb2ff}
-.tag.pend{background:#3a2f14;color:#ffc46b}
 table.grid{max-width:420px;margin:6px 0}
 table.grid input{max-width:120px;padding:4px 8px}
 table.grid td,table.grid th{padding:4px 10px}
@@ -229,8 +228,10 @@ def _field(s, value, locked, pending_value=_UNSET):
                  'cannot replace its own container mid-flight">needs Obelisk restarted'
                  '</span>')
     if waiting:
-        tags += ('<span class="tag pend" title="saved, and waiting for a safe moment '
-                 'to restart the cluster">pending</span>')
+        # The field above shows the value that was asked for rather than the one that is
+        # running, because showing the running value after a save reads as the save
+        # having failed. This one word is what keeps that from being a lie.
+        tags += '<span class=tag>pending</span>' 
     help_txt = _e(s.get("help", ""))
     if locked:
         help_txt += (" <strong>Set when the container was created</strong> - change it in "
@@ -829,28 +830,26 @@ def render_dashboard(status=None, ready=None, failed=None, job=None, relay=None,
             % "".join(blocks))
 
 
-def render_pending(rows, when_text="", job=None, players=None, primed=None):
-    """What is waiting, why it is waiting, and how to stop waiting.
+def render_pending(rows, job=None, players=None, primed=None):
+    """What is waiting, and the two things you can do about it.
 
-    A panel rather than a banner, because the useful thing is not "something is pending"
-    - it is *which* things, what each one is changing from and to, and that they will all
-    land in one restart rather than one each.
+    One panel, one sentence, one row per change. The useful facts are how many are
+    waiting, what each one changes, and that they all land in a single restart - not a
+    workflow.
     """
     if not rows and not primed:
         return ""
 
     lines = []
     for row in rows:
-        where = ('<span class=help>%s only</span>' % _e(row["map"])) if row["map"] else \
-                '<span class=help>all maps</span>'
+        where = _e(row["map"]) + " only" if row["map"] else "all maps"
         lines.append(
-            '<tr><td>%s %s</td><td><code>%s</code> &rarr; <code>%s</code></td>'
+            '<tr><td>%s <span class=help>%s</span></td>'
+            '<td><code>%s</code> &rarr; <code>%s</code></td>'
             '<td class=num><button class=ghost type=submit name=drop value="%s">'
-            'discard</button></td></tr>%s'
+            'discard</button></td></tr>'
             % (_e(row["label"]), where, _e(row["from"]), _e(row["to"]),
-               _e("%s|%s" % (row["map"], row["key"])),
-               ('<tr><td colspan=3><div class=problem>%s</div></td></tr>'
-                % _e(row["warning"])) if row.get("warning") else ""))
+               _e("%s|%s" % (row["map"], row["key"]))))
 
     if primed:
         lines.append('<tr><td>ARK build <span class=help>staged &amp; verified</span>'
@@ -860,27 +859,23 @@ def render_pending(rows, when_text="", job=None, players=None, primed=None):
                         _e(primed.get("build"))))
 
     n = len(rows) + (1 if primed else 0)
-    head = ('<div class=note><b>%d change%s waiting.</b> They will all be applied in '
-            'one restart%s.</div>' % (n, "" if n == 1 else "s",
-                                      (" " + when_text) if when_text else ""))
+    head = ('<div class=note><b>%d change%s pending.</b> They apply together in one '
+            'restart, when the cluster is empty or at the next scheduled restart.</div>'
+            % (n, "" if n == 1 else "s"))
 
-    busy = (job or {}).get("state") == "running"
-    if busy:
+    if (job or {}).get("state") == "running":
         buttons = ('<div class=note>Applying now: %s</div>'
                    % _e(job.get("step") or "starting"))
     else:
-        warn = ""
         total, counts, silent = players or (0, {}, [])
+        note = ""
         if silent:
-            warn = ('<div class=problem>%d map(s) did not answer, so it is not known '
-                    'whether anyone is on them: %s.</div>'
-                    % (len(silent), _e(", ".join(l for l, _ in silent))))
+            note = ('<div class=problem>%d map(s) did not answer, so it is not known '
+                    'whether anyone is on them.</div>' % len(silent))
         elif total:
-            warn = ('<div class=problem><b>%d player(s) are online</b> right now: %s. '
-                    'Applying will restart their servers.</div>'
-                    % (total, _e(", ".join("%s (%d)" % (m, c)
-                                           for m, c in sorted(counts.items()) if c))))
-        buttons = (warn +
+            note = ('<div class=problem>%d player(s) are online - applying now would '
+                    'restart their servers.</div>' % total)
+        buttons = (note +
                    '<button type=submit name=apply value=1>Apply now</button> '
                    '<button class=ghost type=submit name=discard value=all>'
                    'Discard all</button>'
