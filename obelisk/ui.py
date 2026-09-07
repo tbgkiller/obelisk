@@ -10,7 +10,7 @@ Pure functions returning strings. No server, no store writes, no I/O, so the who
 UI is testable without standing anything up.
 """
 
-import html, re
+import html, re, time
 
 from .schema import SETTINGS, GROUPS, INSTALL_KEYS
 from . import maps as mapcat
@@ -54,6 +54,16 @@ tr:last-child td{border-bottom:none}
 .presets{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
 .note,.problem{border-radius:8px;padding:10px 13px;margin:10px 0;font-size:13px}
 .note{background:#1d2530;color:#a9b4c4;border:1px solid #2b3542}
+/* Three states, three colours. "Could not check" is deliberately not green and not
+   quiet - the failure this panel answers was a checker that said "up to date" about a
+   question it never asked, and an unknown that looks like a pass repeats it. */
+.versions{width:100%;border-collapse:collapse}
+.versions td{padding:6px 8px;border-bottom:1px solid #232b36;vertical-align:top}
+.current{color:#7fd18f;font-size:12px}
+.newer{color:#ffc46b;font-size:12px;font-weight:600}
+.unknown{color:#c9a0ff;font-size:12px;font-weight:600}
+.staged{background:#16241b;color:#a9d8b5;border:1px solid #27452f;border-radius:8px;padding:10px 13px;margin:10px 0;font-size:13px}
+label.inline{display:inline-block;margin-left:10px;font-size:12px;color:#8b94a3}
 .callout{background:#17324a;border:1px solid #2f6feb;border-radius:10px;padding:14px 16px;margin:0 0 18px}
 .callout strong{color:#e6e9ef;font-size:15px;display:block;margin-bottom:6px}
 .callout .steps{color:#b8c6d9;font-size:13px;line-height:1.6}
@@ -447,6 +457,107 @@ def render_version(info):
     else:
         body += '<div class=note>Up to date.</div>'
     return '<fieldset><legend>Obelisk version</legend>%s</div></fieldset>' % body
+
+
+def render_ark_update(store, status, ready=None, job=None, owns=True, staging_on=True):
+    """Running against latest, for the build and for every mod, with the buttons inline.
+
+    Three states per row and not two. "Newer" and "current" are the easy ones; the third
+    is **could not check**, and it gets its own colour rather than quietly rendering as
+    a tick. The whole reason this panel exists is that a checker somewhere answered "up
+    to date" without asking, so a green row here has to mean an answer came back.
+    """
+    def cell(running, latest, newer):
+        run = '<code>%s</code>' % _e(running or "—")
+        if newer is None:
+            return ('%s <span class=unknown>? could not check</span>' % run)
+        if newer:
+            return ('%s → <code>%s</code> <span class=newer>update available</span>'
+                    % (run, _e(latest)))
+        return '%s <span class=current>current</span>' % run
+
+    status = status or {}
+    if not status.get("build") and not status.get("mods"):
+        # Never looked yet, which is not the same as "could not check" and must not
+        # render as a row of unknowns that look like failures.
+        return ('<fieldset><legend>ARK build and mods</legend><div class=note>'
+                'Not checked yet. Obelisk asks Steam and CurseForge shortly after it '
+                'starts, and every half hour after that.</div></fieldset>')
+
+    build = status.get("build") or {}
+    rows = ['<tr><td><b>ARK server build</b></td><td>%s</td></tr>'
+            % cell(build.get("running"), build.get("latest"), build.get("newer"))]
+    if build.get("problem"):
+        rows.append('<tr><td></td><td class=help>%s</td></tr>' % _e(build["problem"]))
+
+    for row in status.get("mods") or []:
+        name = row["name"]
+        if row.get("url"):
+            name = '<a href="%s" target=_blank rel=noopener>%s</a>' % (
+                _e(row["url"]), _e(name))
+        else:
+            name = _e(name)
+        line = '<tr><td>%s <span class=help>%s</span></td><td>%s</td></tr>' % (
+            name, _e(row["id"]),
+            cell(row.get("running"), row.get("latest"), row.get("newer")))
+        rows.append(line)
+        if row.get("problem"):
+            rows.append('<tr><td></td><td class=help>%s</td></tr>' % _e(row["problem"]))
+
+    # What has been staged, and when it was proved. The timestamp is the point: a
+    # verification from before the last mod change is not a verification of what would
+    # be applied now.
+    if ready:
+        when = time.strftime("%d %b %H:%M", time.localtime(ready.get("when") or 0))
+        loaded = ready.get("loaded") or {}
+        staged = ('<div class=staged><b>Staged and verified.</b> Build <code>%s</code> '
+                  'with %d mod%s booted cleanly on the staging server — '
+                  '<b>verified by staging boot at %s</b>.<div class=help>%s</div></div>'
+                  % (_e(ready.get("build")), len(loaded),
+                     "" if len(loaded) == 1 else "s", _e(when),
+                     _e(", ".join("%s→%s" % (m, f) for m, f in sorted(loaded.items())))))
+    else:
+        failed = (store.data.get("ark_update") or {}).get("primed")
+        if isinstance(failed, dict) and not failed.get("ok"):
+            staged = ('<div class=problem><b>The last rehearsal failed, so there is '
+                      'nothing safe to apply.</b><div class=help>%s</div></div>'
+                      % _e("; ".join(failed.get("problems") or [])))
+        else:
+            staged = ('<div class=note>Nothing staged yet. Priming downloads the new '
+                      'build and fetches the mods on the staging server — your cluster '
+                      'keeps running throughout.</div>')
+
+    busy = (job or {}).get("state") == "running"
+    step = _e((job or {}).get("step") or "")
+    if busy:
+        buttons = ('<div class=note>Working: %s <span class=help>This page updates '
+                   'itself.</span></div>' % (step or "starting"))
+    else:
+        can_apply = bool(ready) and owns
+        buttons = (
+            '<button type=submit formaction="/admin/update/prime"%s>Prime update</button> '
+            '<button type=submit formaction="/admin/update/apply"%s>Apply now</button> '
+            % ("" if staging_on else " disabled", "" if can_apply else " disabled"))
+        buttons += ('<label class=inline><input type=checkbox name=force value=1> '
+                    'apply even with players online</label>')
+
+    warn = ""
+    if not staging_on:
+        warn += ('<div class=note>The staging server is off, so updates cannot be '
+                 'rehearsed. Turn it on under <b>Resources</b> to prime updates.</div>')
+    if not owns:
+        warn += ('<div class=problem>The server image is applying ARK updates itself, '
+                 'so Obelisk will not - two update systems on one cluster means two '
+                 'restarts nobody scheduled. It updates inside your update window with '
+                 'no warning and no check that the new build loads with your mods. '
+                 'Change <b>Who applies ARK updates</b> to Obelisk under '
+                 '<b>Cluster</b> to use the flow below.</div>')
+
+    return ('<form method=post action="/admin/update/prime">'
+            '<fieldset><legend>ARK build and mods</legend>%s'
+            '<table class=versions>%s</table>%s'
+            '<div style="margin-top:14px">%s</div></fieldset></form>'
+            % (warn, "".join(rows), staged, buttons))
 
 
 def render_settings(store):

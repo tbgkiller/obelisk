@@ -105,7 +105,12 @@ def generate_compose(store, project="ark", in_use_ports=None):
             "      ENABLE_MOTD: %s"           % _q("TRUE" if mine("motd_enabled") else "FALSE"),
             "      MOTD: %s"                  % _q(mine("motd")),
             "      MOTD_DURATION: \"30\"",
-            "      UPDATE_SERVER: \"TRUE\"",
+            # Whoever owns updates, owns them alone. With Obelisk in charge this is
+            # FALSE, and the image stops fetching and restarting on its own - it still
+            # notices a new build and says so in its log, it just does not act. Two
+            # update systems on one cluster is two restarts nobody scheduled.
+            "      UPDATE_SERVER: %s" % _q(
+                "FALSE" if str(store.get("ark_update_mode")) == "obelisk" else "TRUE"),
             "      CHECK_FOR_UPDATE_INTERVAL: \"24\"",
             "      UPDATE_WINDOW_MINIMUM_TIME: %s" % _q(mine("update_window_start")),
             "      UPDATE_WINDOW_MAXIMUM_TIME: %s" % _q(mine("update_window_end")),

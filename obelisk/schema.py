@@ -346,6 +346,32 @@ SETTINGS = [
          target="obelisk:restart_notice_minutes", apply="recreate",
          help="Minutes of in-game warning before a scheduled restart or update."),
 
+    # ---- who applies ARK updates
+    #
+    # There is no safe way for both to. The server image fetches a new build and
+    # restarts into it inside the update window on its own, so a cluster where Obelisk
+    # also applies updates has two schedulers with different rules and no way to say
+    # which moves first. So this is ownership rather than coordination: it writes
+    # UPDATE_SERVER into every map's compose block, and Obelisk refuses to apply
+    # anything while the image owns the job.
+    dict(key="ark_update_mode", label="Who applies ARK updates", group="Cluster",
+         type="choice", default="automatic", choices=["automatic", "obelisk"],
+         target="obelisk:ark_update_mode", apply="recreate",
+         help="automatic: the server image updates itself inside the update window - "
+              "no warning, no check, and a build that will not load with your mods is "
+              "found out by every map failing to come back. obelisk: Obelisk rehearses "
+              "the update on the staging server first and applies it only once it has "
+              "booted cleanly, when you click Apply or when the window opens. Changing "
+              "this recreates the map containers."),
+
+    dict(key="update_apply_in_window", label="Apply staged updates in the window",
+         group="Cluster", type="bool", default=False,
+         target="obelisk:update_apply_in_window", apply="none",
+         help="With this on, an update that has been staged and verified is applied "
+              "automatically the next time the update window opens, instead of waiting "
+              "for someone to click Apply. Only ever applies something that already "
+              "booted cleanly on the staging server."),
+
     # ---- the staging server
     #
     # Off by default in spirit and on_demand by default in fact: it costs nothing until

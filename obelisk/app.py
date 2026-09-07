@@ -23,6 +23,8 @@ from . import cloud as cloudctl
 from . import cluster as clusterctl
 from . import dockerctl, gamecfg, install, layout, ui
 from . import mods as modsctl
+from . import staging as stagingctl
+from . import updates as updatesctl
 from .firstrun import bootstrap
 from .plan import build_plan
 from .settings import Invalid
@@ -35,6 +37,11 @@ log = logging.getLogger("obelisk.app")
 # registry, and a status page that waits on the internet is one that hangs when the
 # internet is the thing that is broken.
 VERSION_INFO = {}
+
+# The last ARK build/mod check. Module level for the same reason VERSION_INFO is: the
+# watcher fills it in the background and the cluster page reads it, so opening the page
+# never waits on Steam or CurseForge to answer.
+ARK_UPDATE = {}
 
 COOKIE = "obelisk_session"
 # Long enough that signing in is a thing you do occasionally, short enough that a
@@ -214,12 +221,126 @@ def build_app(store, docker=None):
             banner = '<div class=problem>%s</div>' % ui._e(problem)
         elif message:
             banner = '<div class=note>%s</div>' % ui._e(message)
-        return banner + ui.render_cluster(store, plan, status=st)
+        return (banner + _update_panel() +
+                ui.render_cluster(store, plan, status=st))
+
+    # The last poll, so opening the page does not go to the network before it renders.
+    # A panel that takes two round trips to CurseForge to appear is a panel people
+    # learn not to open, and the watcher below refreshes it anyway.
+    ujob = {"state": "idle", "step": "", "message": "", "ok": None, "started": 0.0,
+            "what": ""}
+
+    def _update_panel():
+        try:
+            return ui.render_ark_update(
+                store, ARK_UPDATE, ready=updatesctl.primed(store), job=ujob,
+                owns=updatesctl.owns_updates(store),
+                staging_on=stagingctl.enabled(store))
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.warning("could not render the update panel: %s", e)
+            return ""
 
     async def cluster_page(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
         return chrome(_cluster_body(request), "Cluster", "/admin/cluster")
+
+    # ---- ARK updates: prime, apply, and what either is doing
+    def _ark_root():
+        return layout.ark_root_of(store)
+
+    def _note_update(text):
+        ujob["step"] = text
+        announce.say("ark.phase", text)
+
+    async def _prime_task():
+        try:
+            async with cluster_busy:
+                ok, msg, _detail = await asyncio.to_thread(
+                    updatesctl.prime, store, _ark_root(), _note_update)
+        except Exception as e:                       # noqa: BLE001 - surfaced below
+            ok, msg = False, "Priming failed: %s" % e
+            log.exception("priming failed")
+        ujob.update(state="done", ok=ok, message=msg, step="done")
+
+    async def update_prime(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        if ujob["state"] == "running" or cluster_busy.locked():
+            raise web.HTTPFound("/admin/cluster")
+        ujob.update(state="running", ok=None, message="", step="starting",
+                    what="prime", started=time.time())
+        asyncio.create_task(_prime_task())
+        raise web.HTTPFound("/admin/cluster")
+
+    def _apply_now(force):
+        """Everything the swap needs from the cluster, wired to the real thing here.
+
+        updates.apply_update takes these as arguments so the whole routine can be tested
+        without a Docker socket - the module decides the order and the refusals, this
+        decides what the verbs actually do.
+        """
+        def warn(minutes, build):
+            from . import bot
+            password = str(store.get("admin_password") or "")
+            text = ("Server restarting in %d minutes to apply ARK build %s"
+                    % (minutes, build))
+            for _label, host, port in clusterctl.running_instances(store):
+                try:
+                    clusterctl.run_coroutine(
+                        bot.rcon_with(host, port, password,
+                                      "ServerChat %s" % text, timeout=20))
+                except Exception as e:               # noqa: BLE001 - best effort
+                    log.info("could not warn one map: %s", e)
+            time.sleep(minutes * 60)
+
+        def stop_all():
+            ok_s, msg_s = stagingctl.down(store)
+            if not ok_s:
+                log.warning("the staging server did not stop cleanly: %s", msg_s)
+            return clusterctl.stop(store)
+
+        def verify_all():
+            """The six gates, per map, after waiting for each to actually be serving."""
+            results = {}
+            for key in clusterctl._map_keys(store):
+                ok_h, _why = clusterctl.wait_healthy(store, key)
+                results[key] = bool(ok_h) and clusterctl.verify_instance(store, key)[0]
+            return all(results.values()), results
+
+        return updatesctl.apply_update(
+            store, _ark_root(), warn=warn, save=lambda: clusterctl.save_world(store),
+            stop_all=stop_all, start_all=lambda: clusterctl.launch(store),
+            verify=verify_all,
+            players=lambda: clusterctl.players_online(store), force=force,
+            on_step=_note_update)
+
+    async def _apply_task(force):
+        try:
+            async with cluster_busy:
+                ok, msg, _detail = await asyncio.to_thread(_apply_now, force)
+        except Exception as e:                       # noqa: BLE001 - surfaced below
+            ok, msg = False, "Applying the update failed: %s" % e
+            log.exception("applying the update failed")
+        ujob.update(state="done", ok=ok, message=msg, step="done")
+
+    async def update_apply(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        if ujob["state"] == "running" or cluster_busy.locked():
+            raise web.HTTPFound("/admin/cluster")
+        ujob.update(state="running", ok=None, message="", step="starting",
+                    what="apply", started=time.time())
+        asyncio.create_task(_apply_task(bool(form.get("force"))))
+        raise web.HTTPFound("/admin/cluster")
+
+    async def update_status(request):
+        if not authed(request):
+            return web.json_response({"state": "denied"}, status=403)
+        out = dict(ujob)
+        out["elapsed"] = int(time.time() - ujob["started"]) if ujob["started"] else 0
+        return web.json_response(out)
 
     async def cluster_maps(request):
         """Update the map selection (or apply a preset) without launching anything."""
@@ -606,6 +727,9 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/cloud/disconnect", cloud_disconnect)
     app.router.add_post("/admin/cloud/push", cloud_push)
     app.router.add_post("/admin/cloud/pull", cloud_pull)
+    app.router.add_post("/admin/update/prime", update_prime)
+    app.router.add_post("/admin/update/apply", update_apply)
+    app.router.add_get("/admin/update/status", update_status)
     app.router.add_get("/healthz", healthz)
     return app
 
@@ -679,6 +803,83 @@ async def version_watch():
         await asyncio.sleep(6 * 3600)
 
 
+async def ark_update_watch(store, interval=1800, panel=None):
+    """Notice new ARK builds and mod versions, and apply a staged one when the window
+    opens. One loop, because both jobs are the same question asked at two intervals.
+
+    The checking half is cheap and harmless. The applying half is deliberately hard to
+    trigger: it needs an update that was staged *and* verified, Obelisk to own updates,
+    the setting to be on, the clock inside the window, and that build not to have been
+    applied already. Every one of those is a way for a scheduler to restart a cluster
+    nobody asked it to.
+    """
+    from . import staging as stg, updates as upd
+    while True:
+        try:
+            root = layout.ark_root_of(store)
+            status = await asyncio.to_thread(upd.look, store, root)
+            seen = ARK_UPDATE if panel is None else panel
+            seen.clear()
+            seen.update(status)
+            upd.announce_new(store, status)
+
+            # An always-on staging server updates itself - it is its own master - so
+            # coming back on a new build is a rehearsal that already happened. Grade it
+            # rather than making somebody click Prime for a result already on disk.
+            if stg.mode(store) == "always" and status.get("build", {}).get("newer"):
+                if not upd.primed(store):
+                    log.info("a new build is out and the staging server is running - "
+                             "grading its boot")
+                    await asyncio.to_thread(upd.prime, store, root)
+
+            due, why = upd.due(store)
+            if due:
+                log.info("scheduled ARK update: %s", why)
+                announce.say("ark.window_open", "The update window is open and a "
+                                                "verified update is staged. Applying it.")
+                # Applies through the same routine the button uses, so the scheduled
+                # path cannot drift from the one that gets exercised by hand.
+                await asyncio.to_thread(_scheduled_apply, store)
+        except Exception as e:                          # a bad night must not kill it
+            log.error("ARK update check failed: %s", e)
+        await asyncio.sleep(interval)
+
+
+def _scheduled_apply(store):
+    """The window's apply. Same verbs as the button, assembled in one place."""
+    from . import bot, staging as stg, updates as upd
+
+    def warn(minutes, build):
+        password = str(store.get("admin_password") or "")
+        for _label, host, port in clusterctl.running_instances(store):
+            try:
+                clusterctl.run_coroutine(bot.rcon_with(
+                    host, port, password,
+                    "ServerChat Server restarting in %d minutes to apply ARK build %s"
+                    % (minutes, build), timeout=20))
+            except Exception as e:                      # noqa: BLE001 - best effort
+                log.info("could not warn one map: %s", e)
+        time.sleep(minutes * 60)
+
+    def stop_all():
+        stg.down(store)
+        return clusterctl.stop(store)
+
+    def verify_all():
+        results = {}
+        for key in clusterctl._map_keys(store):
+            ok_h, _why = clusterctl.wait_healthy(store, key)
+            results[key] = bool(ok_h) and clusterctl.verify_instance(store, key)[0]
+        return all(results.values()), results
+
+    return upd.apply_update(
+        store, layout.ark_root_of(store), warn=warn,
+        save=lambda: clusterctl.save_world(store), stop_all=stop_all,
+        start_all=lambda: clusterctl.launch(store), verify=verify_all,
+        players=lambda: clusterctl.players_online(store),
+        on_step=lambda text: log.info("update: %s", text))
+
+
 async def main():
     store, created, code = bootstrap()
 
@@ -747,6 +948,7 @@ async def main():
 
     tasks.append(asyncio.create_task(backup_scheduler(store)))
     tasks.append(asyncio.create_task(version_watch()))
+    tasks.append(asyncio.create_task(ark_update_watch(store)))
 
     from . import bot
     # The relay used to learn its maps from a SERVERS environment variable, which only

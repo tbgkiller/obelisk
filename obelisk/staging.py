@@ -206,6 +206,108 @@ def ensure(ark_root, makedirs=None, chown=None):
     return made
 
 
+# ---------------------------------------------------------------- lifecycle
+
+COMPOSE_NAME = "compose.staging.yml"
+
+
+def compose_file(store):
+    """Beside the cluster's, in whichever folder that one lives in."""
+    from . import cluster, layout as _layout, stack
+    if stack.available():
+        return stack.compose_file(project_name(cluster.project(store)))
+    return "%s/%s" % (_layout.root_of(store), COMPOSE_NAME)
+
+
+def write_compose(store, ark_host_root=None):
+    """Generate the staging stack and put it beside the cluster's. (path, text)."""
+    from . import cluster
+    root = ark_host_root or str(store.get("appdata")).rstrip("/")
+    text = compose_text(store, cluster.project(store), root)
+    path = compose_file(store)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    with open(path, "w", encoding="utf-8", newline="\n") as fh:
+        fh.write(text)
+    log.info("wrote %s (%d bytes)", path, len(text))
+    return path, text
+
+
+def _compose(store, *args, timeout=900):
+    from . import cluster, dockerctl
+    return dockerctl.compose(compose_file(store),
+                             project_name(cluster.project(store)),
+                             list(args), timeout=timeout)
+
+
+def up(store):
+    """Start the staging server, writing its compose file first. (ok, message).
+
+    Always regenerated: the mod list is the reason this instance exists, so starting it
+    from a file written before the last mod change would rehearse the wrong cluster.
+    """
+    from . import cluster, dockerctl
+    ok, why = dockerctl.available()
+    if not ok:
+        return False, "Docker isn't reachable. %s" % why
+    if not enabled(store):
+        return False, "the staging server is turned off"
+    try:
+        ensure(cluster.layout.ark_root_of(store))
+        write_compose(store)
+    except OSError as e:
+        return False, "could not prepare the staging folders: %s" % e
+    rc, out = _compose(store, "up", "-d", timeout=900)
+    if rc != 0:
+        return False, "could not start the staging server: %s" % out[-500:]
+    return True, "the staging server is starting"
+
+
+def down(store):
+    """Stop it. Its throwaway world and its staged files are left alone."""
+    from . import dockerctl
+    ok, why = dockerctl.available()
+    if not ok:
+        return False, "Docker isn't reachable. %s" % why
+    if not os.path.isfile(compose_file(store)):
+        return True, "the staging server was not running"
+    rc, out = _compose(store, "down", timeout=420)
+    if rc != 0:
+        return False, "could not stop the staging server: %s" % out[-500:]
+    return True, "the staging server is stopped"
+
+
+def is_running(store, details=None):
+    from . import cluster, dockerctl
+    details = details or dockerctl.container_details
+    name = container_name(cluster.project(store))
+    got = (details([name]) or {}).get(name, {})
+    return got.get("state") == "running", got
+
+
+def boot_log(store, ark_root=None, read=None, listdir=None):
+    """The staging server's own ShooterGame.log, which is where the proof lives.
+
+    Docker's log is POK's wrapper chatter; the mod verdicts are written by the game into
+    its instance folder. Newest log wins - a server that has restarted has written a
+    fresh one, and reading the stale one would grade the previous boot.
+    """
+    from . import cluster
+    root = ark_root or cluster.layout.ark_root_of(store)
+    logs = "%s/Logs" % paths(root)["instance"]
+    listdir = listdir or os.listdir
+    read = read or (lambda p: open(p, encoding="utf-8", errors="replace").read())
+    try:
+        names = [n for n in listdir(logs) if n == "ShooterGame.log"]
+    except OSError:
+        return ""
+    if not names:
+        return ""
+    try:
+        return read("%s/%s" % (logs, "ShooterGame.log"))
+    except OSError:
+        return ""
+
+
 # ---------------------------------------------------------------- the verdict
 
 def verify(staged_root, boot_log, mod_ids, rcon_ok, target_build=None, read=None):

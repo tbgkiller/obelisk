@@ -505,6 +505,32 @@ def join_network_if_running(store, environ=None, running=None):
     return _join_network(store, environ)
 
 
+def players_online(store, probe=None, timeout=10.0):
+    """(total, per-map counts, maps that did not answer).
+
+    Asked of the servers rather than of Docker, because "the container is running" and
+    "somebody is standing in it" are different questions and only the second one decides
+    whether an update may restart the cluster. A map that does not answer is returned
+    separately and never counted as empty - "we could not ask" is not "nobody is there",
+    and treating it as such is how an update kicks the one person online.
+    """
+    from . import bot
+    password = str(store.get("admin_password") or "")
+
+    def ask(host, port):
+        return run_coroutine(bot.rcon_with(host, port, password, "ListPlayers",
+                                           timeout=timeout))
+
+    probe = probe or ask
+    counts, silent = {}, []
+    for label, host, port in running_instances(store):
+        try:
+            counts[label] = bot.Bot._count_players(probe(host, port) or "")
+        except Exception as e:                    # noqa: BLE001 - the reason is the point
+            silent.append((label, str(e).strip() or e.__class__.__name__))
+    return sum(counts.values()), counts, silent
+
+
 def reachable(store, probe=None, timeout=6.0):
     """(reachable, unreachable) - which maps this container can actually talk to.
 
