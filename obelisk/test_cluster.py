@@ -749,5 +749,78 @@ check("and from inside a running loop, which is where it used to give up",
 
 _botmod.rcon_with = _real_bot_rcon
 
+
+# ---- the manager has to get onto the cluster's network by itself
+#
+# _join_network() was only ever called from launch(). That is fine until the manager is
+# recreated without launching anything - an image update through Unraid's Apply Update,
+# a template change, a host reboot. The cluster is already up, so nothing launches, so
+# nothing joins, and the relay comes back resolving none of ten maps while reporting
+# that it covers all of them. That happened, on a live cluster, for a whole deploy.
+st_n, _dn = fresh(maps="island,ragnarok", cluster_id="netjoin")
+
+joined_calls = []
+
+
+class _NetDocker(FakeDocker):
+    def container_details(self, names, timeout=30):
+        return {n: {"state": "running"} for n in names}
+
+    def network_connect(self, network, container, timeout=30):
+        joined_calls.append((network, container))
+        return True, "connected"
+
+
+clusterctl.dockerctl = _NetDocker()
+ok_j, why_j = clusterctl.join_network_if_running(
+    st_n, environ={"HOST_CONTAINERNAME": "Obelisk"})
+check("a running cluster is joined on start", ok_j, why_j)
+check("to its own network, by name",
+      joined_calls == [("netjoin-net", "Obelisk")], joined_calls)
+
+
+class _NoneRunning(FakeDocker):
+    def container_details(self, names, timeout=30):
+        return {}
+
+
+joined_calls[:] = []
+clusterctl.dockerctl = _NoneRunning()
+ok_j2, why_j2 = clusterctl.join_network_if_running(
+    st_n, environ={"HOST_CONTAINERNAME": "Obelisk"})
+check("with no cluster running there is nothing to join", not ok_j2, why_j2)
+check("and it says so rather than erroring", "nothing to join" in why_j2, why_j2)
+check("no network call is made", joined_calls == [], joined_calls)
+
+# ---- coverage is a claim, so it gets checked
+clusterctl.dockerctl = _NetDocker()
+good, bad = clusterctl.reachable(st_n, probe=lambda h, p: "No Players Connected")
+check("every map answering counts as reachable", len(good) == 2 and not bad, (good, bad))
+
+
+def _half(host, port):
+    if "island" in host:
+        raise OSError("[Errno -2] Name or service not known")
+    return "No Players Connected"
+
+
+good, bad = clusterctl.reachable(st_n, probe=_half)
+check("a map that cannot be resolved is reported unreachable",
+      len(good) == 1 and len(bad) == 1, (good, bad))
+check("and the reason travels with it",
+      "Name or service not known" in bad[0][1], bad)
+check("the reachable one is still counted", good == ["Ragnarok"], good)
+
+
+def _none(host, port):
+    raise OSError("[Errno -2] Name or service not known")
+
+
+good, bad = clusterctl.reachable(st_n, probe=_none)
+check("reaching nothing is reported as reaching nothing, not as covering ten",
+      good == [] and len(bad) == 2, (good, bad))
+
+clusterctl.dockerctl = FakeDocker()
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

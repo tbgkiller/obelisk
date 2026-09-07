@@ -476,6 +476,33 @@ check("posting failures never kill the loop",
 check("it uses the admin channel, not the public one",
       "admin_send" in _botsrc.split("async def announce_loop")[1][:800])
 
+# ---- the manager joins its cluster network on boot, not only on launch
+#
+# Found by deploying the way a user does. An Apply Update recreates the container from
+# the template, which knows nothing about the cluster network - so the relay came back
+# on bridge alone, resolving none of ten maps, while logging that it covered all ten.
+check("the network join happens on start, not only inside launch()",
+      "join_network_if_running" in _mainsrc, "not called at boot")
+check("and before the relay is wired to anything",
+      _mainsrc.index("join_network_if_running") < _mainsrc.index("_wire_relay"),
+      "joined too late to help")
+check("failing to join is not a reason to refuse to start",
+      "could not join the cluster network" in _mainsrc)
+
+check("coverage is measured, not counted from the container list",
+      "clusterctl.reachable" in _mainsrc, "no reachability probe")
+check("and measured off the event loop, since it is ten RCON round trips",
+      "to_thread(clusterctl.reachable" in _mainsrc)
+check("a relay that cannot reach its maps says so at error level",
+      'log.error("relay reaches %d of %d' in _mainsrc)
+check("and announces it, so an admin sees it in Discord rather than a log",
+      '"relay.degraded"' in _mainsrc)
+check("full coverage is announced too, so silence is not the only good news",
+      '"relay.up"' in _mainsrc)
+check("the old unconditional claim is gone",
+      'log.info("relay covering %d map(s): %s"' not in _appsrc,
+      "still claims coverage without checking")
+
 # ---- the from-scratch INI renderer must stay gone
 #
 # generate_ini() rendered GameUserSettings.ini and Game.ini from the schema and headed

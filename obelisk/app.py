@@ -701,9 +701,38 @@ async def main():
     # ever existed when Obelisk wrote itself into the stack it generated. It no longer
     # does, so on a normally-installed Obelisk the relay was permanently inert. It reads
     # the cluster from the store instead - the same place everything else does.
+    # Attach to the cluster's network before wiring anything to it. This used to happen
+    # only inside launch(), so a manager recreated without launching - an image update,
+    # a template change, a reboot - came back unable to resolve a single map while
+    # cheerfully reporting that it covered all ten.
+    try:
+        joined, why_net = clusterctl.join_network_if_running(store)
+        log.info("cluster network: %s", why_net)
+    except Exception as e:                               # never a reason not to start
+        log.warning("could not join the cluster network: %s", e)
+
     wired = _wire_relay(store, bot)
     if wired:
-        log.info("relay covering %d map(s): %s", len(bot.SERVERS), ", ".join(bot.SERVERS))
+        # Coverage is a claim, so check it rather than counting containers. The relay
+        # reported ten maps it could not reach for a full deploy cycle, and the only
+        # sign was a warning per map per poll, in a log nobody was reading.
+        try:
+            good, bad = await asyncio.to_thread(clusterctl.reachable, store)
+        except Exception as e:                           # noqa: BLE001
+            good, bad = [], [("all maps", str(e))]
+        total = len(bot.SERVERS)
+        if bad:
+            names = ", ".join("%s (%s)" % (n, why) for n, why in bad[:4])
+            log.error("relay reaches %d of %d map(s) - cannot reach: %s",
+                      len(good), total, names)
+            announce.say("relay.degraded",
+                         "Chat relay can reach %d of %d maps. Cross-map chat will not "
+                         "work for the rest until this is fixed." % (len(good), total),
+                         level="error", unreachable=", ".join(n for n, _w in bad))
+        else:
+            log.info("relay covering %d map(s), all reachable: %s",
+                     total, ", ".join(bot.SERVERS))
+            announce.say("relay.up", "Chat relay is up and reaching all %d maps." % total)
         tasks.append(asyncio.create_task(bot.main()))
     else:
         log.info("no cluster running yet - relay idle until maps are launched")

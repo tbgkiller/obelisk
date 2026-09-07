@@ -486,3 +486,46 @@ def verify_instance(store, map_key, rcon=None, details=None, logs=None):
         reasons.append("the log says a mod did not load")
         ok = False
     return ok, reasons
+
+
+def join_network_if_running(store, environ=None, running=None):
+    """Attach to the cluster network whenever there is a cluster to attach to.
+
+    _join_network() was only ever called from launch(), which is fine right up until the
+    manager is recreated without launching anything - an image update, a template edit,
+    a host reboot. The cluster is already up, so nothing launches, so nothing joins, and
+    the relay comes back reporting ten maps it cannot resolve.
+
+    Called on every start. Joining a network twice is not an error, and there is nothing
+    to do when no maps are running.
+    """
+    running = running if running is not None else running_instances(store)
+    if not running:
+        return False, "no cluster running, so nothing to join"
+    return _join_network(store, environ)
+
+
+def reachable(store, probe=None, timeout=6.0):
+    """(reachable, unreachable) - which maps this container can actually talk to.
+
+    Being told by Docker that ten containers exist is not the same as being able to
+    reach them, and the relay used to conflate the two: it reported "covering 10 maps"
+    from the container list while resolving none of them, and the only sign was a
+    warning per map per poll. Coverage is a claim, so it gets checked.
+    """
+    from . import bot
+    password = str(store.get("admin_password") or "")
+
+    def ask(host, port):
+        return run_coroutine(bot.rcon_with(host, port, password, "ListPlayers",
+                                           timeout=timeout))
+
+    probe = probe or ask
+    good, bad = [], []
+    for label, host, port in running_instances(store):
+        try:
+            probe(host, port)
+            good.append(label)
+        except Exception as e:                    # noqa: BLE001 - the reason is the point
+            bad.append((label, str(e).strip() or e.__class__.__name__))
+    return good, bad
