@@ -54,6 +54,12 @@ def generate_compose(store, project="ark", in_use_ports=None):
     for i, m in enumerate(chosen):
         key = m["key"]
         row = by_key[key]
+
+        # Per-map values, resolved here rather than by the caller. store.get() falls back
+        # to the cluster value whenever this map has no override, so inheritance is the
+        # ordinary path and an override is the exception - which is the whole contract.
+        def mine(setting, _key=key):
+            return store.get(setting, map_name=_key)
         instance = row["instance"]
         game_port, rcon_port, mem = row["game_port"], row["rcon_port"], row["memory"]
         L += [
@@ -87,23 +93,23 @@ def generate_compose(store, project="ark", in_use_ports=None):
             "      RCON_PORT: %s"             % _q(rcon_port),
             "      RCON_ENABLED: \"TRUE\"",
             "      SERVER_ADMIN_PASSWORD: %s" % _q(store.get("admin_password")),
-            "      SERVER_PASSWORD: %s"       % _q(store.get("server_password")),
-            "      MAX_PLAYERS: %s"           % _q(store.get("max_players")),
+            "      SERVER_PASSWORD: %s"       % _q(mine("server_password")),
+            "      MAX_PLAYERS: %s"           % _q(mine("max_players")),
             "      CLUSTER_ID: %s"            % _q(store.get("cluster_id")),
-            "      MOD_IDS: %s"               % _q(store.get("mod_ids")),
-            "      PASSIVE_MODS: %s"          % _q(store.get("passive_mods")),
-            "      CUSTOM_SERVER_ARGS: %s"    % _q(store.get("custom_server_args")),
-            "      BATTLEEYE: %s"             % _q("TRUE" if store.get("battleye") else "FALSE"),
+            "      MOD_IDS: %s"               % _q(mine("mod_ids")),
+            "      PASSIVE_MODS: %s"          % _q(mine("passive_mods")),
+            "      CUSTOM_SERVER_ARGS: %s"    % _q(mine("custom_server_args")),
+            "      BATTLEEYE: %s"             % _q("TRUE" if mine("battleye") else "FALSE"),
             # POK regenerates [MessageOfTheDay] from these on every start, so the
             # MOTD has to be set here and not in the shared INI.
-            "      ENABLE_MOTD: %s"           % _q("TRUE" if store.get("motd_enabled") else "FALSE"),
-            "      MOTD: %s"                  % _q(store.get("motd")),
+            "      ENABLE_MOTD: %s"           % _q("TRUE" if mine("motd_enabled") else "FALSE"),
+            "      MOTD: %s"                  % _q(mine("motd")),
             "      MOTD_DURATION: \"30\"",
             "      UPDATE_SERVER: \"TRUE\"",
             "      CHECK_FOR_UPDATE_INTERVAL: \"24\"",
-            "      UPDATE_WINDOW_MINIMUM_TIME: %s" % _q(store.get("update_window_start")),
-            "      UPDATE_WINDOW_MAXIMUM_TIME: %s" % _q(store.get("update_window_end")),
-            "      RESTART_NOTICE_MINUTES: %s" % _q(store.get("restart_notice_minutes")),
+            "      UPDATE_WINDOW_MINIMUM_TIME: %s" % _q(mine("update_window_start")),
+            "      UPDATE_WINDOW_MAXIMUM_TIME: %s" % _q(mine("update_window_end")),
+            "      RESTART_NOTICE_MINUTES: %s" % _q(mine("restart_notice_minutes")),
             "      SAVE_WAIT_SECONDS: \"60\"",
             "      RANDOM_STARTUP_DELAY: \"TRUE\"",
             "      SHOW_ADMIN_COMMANDS_IN_CHAT: \"FALSE\"",

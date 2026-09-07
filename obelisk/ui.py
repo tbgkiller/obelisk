@@ -82,6 +82,8 @@ table.rows{min-width:640px}
 table.rows td,table.rows th{padding:4px 8px}
 table.rows input[type=text]{min-width:230px}
 table.rows input[type=number]{max-width:100px}
+table.permap{width:100%;max-width:560px;margin:4px 0}
+table.permap td{padding:4px 8px}
 """
 
 
@@ -330,6 +332,87 @@ def render_row_arrays(store):
             '<div class=gbody>%s</div></fieldset>' % (len(ROW_ARRAYS), "".join(blocks)))
 
 
+
+def render_map_overrides(store):
+    """What each map does differently, and what it simply inherits.
+
+    Blank means inherited, and the cluster's value is in the placeholder so there is no
+    guessing what blank resolves to. Typing a value makes an override; clearing it takes
+    the override away rather than setting the field to nothing - which is the difference
+    between "this map is the same as the others" and "this map has no players allowed".
+    """
+    from .schema import SETTINGS
+    from . import maps as mapcat
+    per_map = [s for s in SETTINGS if s.get("per_map")]
+    raw = store.get("maps")
+    keys = [k.strip() for k in str(raw).split(",") if k.strip()] if isinstance(raw, str) else list(raw or ())
+    if not keys:
+        return ""
+    chosen = mapcat.resolve(keys)
+    ids = mapcat.instance_ids([m["key"] for m in chosen])
+
+    blocks, total = [], 0
+    for m, instance in zip(chosen, ids):
+        here = store.data.get("maps", {}).get(m["key"], {}) or {}
+        rows, n = [], 0
+        for s in per_map:
+            key = s["key"]
+            overridden = key in here
+            if overridden:
+                n += 1
+            cluster = store.get(key)
+            shown = here.get(key, "") if overridden else ""
+            if s["type"] == "bool":
+                ctrl = ('<select name="map:%s:%s"><option value=""%s>inherit (%s)</option>'
+                        '<option value="true"%s>Yes</option>'
+                        '<option value="false"%s>No</option></select>'
+                        % (_e(m["key"]), _e(key), "" if overridden else " selected",
+                           "Yes" if cluster in (True, "true") else "No",
+                           " selected" if shown in (True, "true") else "",
+                           " selected" if overridden and shown in (False, "false") else ""))
+            elif s["type"] == "password":
+                # Never the value, not even as a hint. The placeholder is rendered into
+                # the page, so "inherits <the cluster password>" would put the shared
+                # server password on screen once per map - which is how a field meant to
+                # explain inheritance turns into a secret leak.
+                ctrl = ('<input type=password name="map:%s:%s" value="" '
+                        'placeholder="%s">'
+                        % (_e(m["key"]), _e(key),
+                           "set for this map - type to replace" if overridden
+                           else "inherits the cluster setting"))
+            else:
+                ctrl = ('<input type=%s name="map:%s:%s" value="%s" placeholder="%s">'
+                        % ("number" if s["type"] in ("int", "float") else "text",
+                           _e(m["key"]), _e(key), _e(shown),
+                           _e("inherits %s" % cluster)))
+            rows.append('<tr><td>%s%s</td><td>%s</td></tr>'
+                        % (_e(s["label"]),
+                           ' <span class="tag chg">override</span>' if overridden else "",
+                           ctrl))
+        total += n
+        blocks.append(
+            '<div class=f data-k="map-%s" data-hay="%s" data-changed="%s">'
+            '<label>%s%s</label>'
+            '<table class=permap>%s</table></div>'
+            % (_e(m["key"]),
+               _e(("%s %s per map override" % (m["name"], instance)).lower()),
+               "1" if n else "0", _e(m["name"]),
+               (' <span class=count>%d override%s</span>' % (n, "" if n == 1 else "s"))
+               if n else ' <span class=count>inherits everything</span>',
+               "".join(rows)))
+
+    return ('<fieldset id="g-per-map" class=grp data-group="Per-map">'
+            '<legend><button type=button class="ghost gtoggle" aria-expanded="false">'
+            'Per-map overrides</button><span class=count>%d</span></legend>'
+            '<div class=gbody hidden>'
+            '<div class=help style="margin:8px 0 14px">Blank inherits the cluster value, '
+            'shown in each box. Only these %d settings can differ per map: everything '
+            'that reaches the game through Game.ini or GameUserSettings.ini is shared, '
+            'because the server image links every map to one copy of those files.</div>'
+            '%s</div></fieldset>'
+            % (total, len(per_map), "".join(blocks)))
+
+
 def render_settings(store):
     """The settings page: 194 of them, so finding one has to be a first-class job.
 
@@ -366,6 +449,10 @@ def render_settings(store):
                  '<span class=count>5</span></a>')
     blocks.append(render_row_arrays(store))
     index.append('<a href="#g-engrams">Engrams &amp; lists</a>')
+    _pm = render_map_overrides(store)
+    if _pm:
+        blocks.append(_pm)
+        index.append('<a href="#g-per-map">Per-map overrides</a>')
 
     todo = store.readiness()
     banner = ""

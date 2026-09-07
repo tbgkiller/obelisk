@@ -134,9 +134,29 @@ def build_app(store, docker=None):
                 rows_out[akey] = built
             store.data.setdefault("rows", {}).update(rows_out)
 
+        # Per-map overrides post as map:<map>:<setting>. Blank means inherit, so it
+        # removes the override rather than storing an empty value - "the same as every
+        # other map" and "no players allowed" must not be the same keystroke.
+        from .schema import BY_KEY as _BY
+        map_fields = [n for n in form if n.startswith("map:")]
+        for name in map_fields:
+            _tag, map_key, setting = name.split(":", 2)
+            text = str(form.get(name)).strip()
+            holder = store.data.setdefault("maps", {}).setdefault(map_key, {})
+            if text == "":
+                holder.pop(setting, None)
+                continue
+            try:
+                store.patch({setting: text}, map_name=map_key)
+            except Invalid as e:
+                log.info("per-map override rejected for %s/%s: %s", map_key, setting, e)
+        for map_key in list(store.data.get("maps", {})):
+            if not store.data["maps"][map_key]:
+                del store.data["maps"][map_key]
+
         changes = {k: v for k, v in form.items()
                    if k != "code" and not k.startswith("stat:")
-                   and not k.startswith("row:")}
+                   and not k.startswith("row:") and not k.startswith("map:")}
         # Settings Docker fixed at create time are shown here read-only. A browser that
         # posts them back - an older page, an autofill, a field that was not disabled -
         # must not be able to fail the whole save: the user changed something else and

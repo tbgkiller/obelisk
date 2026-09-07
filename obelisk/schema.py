@@ -379,6 +379,36 @@ SETTINGS += _game.settings()
 # and the write path can tell a real default from a placeholder. Without this the
 # curated five look like unknown-default settings and get written into files that never
 # mentioned them - which is exactly the bug that put XPMultiplier=1.0 into a live config.
+# Named rather than derived from "is it an env var", because plenty of those would be
+# nonsense per map: the cluster id is what makes transfers work, the admin password is
+# shared with the relay, and the ports are assigned by the plan. These are the ones a
+# person would actually want to differ, and that the generator writes per service.
+PER_MAP_KEYS = {
+    "mem_limit", "max_players", "battleye", "server_password",
+    "mod_ids", "passive_mods", "custom_server_args",
+    "motd", "motd_enabled", "restart_notice_minutes",
+    "update_window_start", "update_window_end",
+}
+
+# Which settings can actually differ from map to map, which is not a matter of taste.
+# The server image symlinks both INI files from every instance to one shared copy at
+# every start - `rm -f` then `ln -sf` - so a per-map INI is deleted the next time that
+# map boots. Anything reaching the game through the INI is therefore cluster-wide, and
+# saying otherwise in the UI would promise something the write path cannot keep. What
+# genuinely diverges is what Obelisk writes into each service block of the compose file
+# itself: the environment, and the memory cap.
+for _s in SETTINGS:
+    _t = str(_s.get("target") or "")
+    if _t.startswith("ini:"):
+        _s["per_map"] = False
+        _s["cluster_wide_because"] = (
+            "the server image links every map's copy of this file to one shared file, "
+            "so this value is the same on all maps")
+    elif _s["key"] in PER_MAP_KEYS:
+        _s["per_map"] = True
+    else:
+        _s["per_map"] = False
+
 for _s in SETTINGS:
     _t = str(_s.get("target") or "")
     if _t.startswith("ini:") and "default_known" not in _s:

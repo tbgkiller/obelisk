@@ -413,5 +413,78 @@ check("the engram fields are the five the reference gives",
       == ["EngramClassName", "EngramHidden", "EngramPointsCost",
           "EngramLevelRequirement", "RemoveEngramPreReq"])
 
+
+# ---------------------------------------------------------------- per-map overrides
+#
+# The premise had to be checked before any of this was built, and it did not survive:
+# the server image links every map's Game.ini and GameUserSettings.ini to one shared
+# copy at every start (rm -f, then ln -sf). A per-map INI would be deleted the next time
+# that map booted. So the INI settings are cluster-wide by construction, and the ones
+# that really do differ per map are the ones Obelisk writes into each service block of
+# the compose file it generates.
+from .schema import SETTINGS as _ALL, PER_MAP_KEYS
+from .compose import generate_compose
+import yaml as _yaml
+
+check("nothing INI-backed pretends to be per-map",
+      not any(s.get("per_map") for s in _ALL
+              if str(s.get("target") or "").startswith("ini:")),
+      [s["key"] for s in _ALL
+       if s.get("per_map") and str(s.get("target") or "").startswith("ini:")][:5])
+check("and each one says why it cannot be",
+      all(s.get("cluster_wide_because") for s in _ALL
+          if str(s.get("target") or "").startswith("ini:")))
+check("the per-map set is the named one",
+      {s["key"] for s in _ALL if s.get("per_map")} == PER_MAP_KEYS)
+check("the cluster id is never per map - it is what makes transfers work",
+      "cluster_id" not in PER_MAP_KEYS)
+check("nor the admin password, which the relay shares across maps",
+      "admin_password" not in PER_MAP_KEYS)
+
+st10, conf10 = fresh()
+st10.patch({"appdata": "/srv/ark"}, source="install")
+st10.patch({"maps": "island,ragnarok", "host_ram_gb": 256,
+            "max_players": 70, "mem_limit": "20g", "battleye": True})
+_shared_before = {f: open(os.path.join(conf10, f + ".ini"), encoding="utf-8").read()
+                  for f in gamecfg.FILES}
+
+st10.patch({"max_players": 20, "mem_limit": "8g", "battleye": False},
+           map_name="ragnarok")
+doc = _yaml.safe_load(generate_compose(st10, project="permap"))
+check("the overridden map gets its own value",
+      doc["services"]["ragnarok"]["environment"]["MAX_PLAYERS"] == "20")
+check("and its own memory cap", doc["services"]["ragnarok"]["mem_limit"] == "8g")
+check("and its own BattlEye setting",
+      doc["services"]["ragnarok"]["environment"]["BATTLEEYE"] == "FALSE")
+check("the other map inherits the cluster value",
+      doc["services"]["island"]["environment"]["MAX_PLAYERS"] == "70")
+check("inheriting is not the same as being unset",
+      doc["services"]["island"]["environment"]["BATTLEEYE"] == "TRUE")
+
+# the shared INI files must be nowhere near this
+gamecfg.apply(st10)
+for f in gamecfg.FILES:
+    check("a per-map override does not touch %s.ini" % f,
+          open(os.path.join(conf10, f + ".ini"), encoding="utf-8").read()
+          == _shared_before[f])
+check("and no .bak was made for a file nothing wrote to",
+      not os.path.exists(os.path.join(conf10, "Game.ini.bak")))
+
+# clearing an override falls back rather than zeroing
+del st10.data["maps"]["ragnarok"]["max_players"]
+doc2 = _yaml.safe_load(generate_compose(st10, project="permap"))
+check("clearing an override goes back to the cluster value",
+      doc2["services"]["ragnarok"]["environment"]["MAX_PLAYERS"] == "70",
+      doc2["services"]["ragnarok"]["environment"]["MAX_PLAYERS"])
+check("and does not zero the setting",
+      doc2["services"]["ragnarok"]["environment"]["MAX_PLAYERS"] != "0")
+check("the other overrides on that map survive",
+      doc2["services"]["ragnarok"]["mem_limit"] == "8g")
+
+# a map with nothing set is not an entry at all
+check("a map with no overrides holds nothing",
+      "island" not in st10.data.get("maps", {}),
+      st10.data.get("maps", {}).get("island"))
+
 print("\nFAILURES: %s" % fails if fails else "\nall gamecfg tests passed")
 sys.exit(1 if fails else 0)

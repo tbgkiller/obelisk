@@ -152,15 +152,34 @@ _h = render_settings(_st)
 # The stat grids are rendered as searchable blocks too, so the page holds one entry per
 # setting plus one per stat family - not one per cell, which was the Phase 1 mistake.
 from .gamesettings import STAT_FAMILIES, STATS, ROW_ARRAYS
-check("every setting is on the page, plus a block per stat family and per array",
+_maps_shown = len(re.findall(r'class=f data-k="map-', _h))
+check("every setting is on the page, plus a block per stat family, array and map",
       len(re.findall(r"class=f data-k=", _h))
-      == len(SETTINGS) + len(STAT_FAMILIES) + len(ROW_ARRAYS),
-      "%d blocks for %d settings + %d families + %d arrays"
+      == len(SETTINGS) + len(STAT_FAMILIES) + len(ROW_ARRAYS) + _maps_shown,
+      "%d blocks for %d settings + %d families + %d arrays + %d maps"
       % (len(re.findall(r"class=f data-k=", _h)), len(SETTINGS),
-         len(STAT_FAMILIES), len(ROW_ARRAYS)))
+         len(STAT_FAMILIES), len(ROW_ARRAYS), _maps_shown))
 check("no stat cell is a setting of its own any more",
       not any("[" in s["key"] for s in SETTINGS),
       [s["key"] for s in SETTINGS if "[" in s["key"]])
+
+# ---- per-map overrides, and the secret that must not appear in them
+_stm = Store(os.path.join(tempfile.mkdtemp(), "s.json")).load()
+_stm.patch({"appdata": "/srv/ark", "status_port": 8088}, source="install")
+_stm.patch({"maps": "island,ragnarok", "admin_password": "pw", "cluster_id": "permapt",
+            "max_players": 70, "server_password": "s3cret-join"})
+_stm.patch({"max_players": 20}, map_name="ragnarok")
+_hm = render_settings(_stm)
+check("there is a per-map section", "g-per-map" in _hm)
+check("an override is marked as one", _hm.count(">override</span>") == 1,
+      _hm.count(">override</span>"))
+check("the inherited value is shown so blank is not a mystery", "inherits 70" in _hm)
+check("a map with no overrides says so", "inherits everything" in _hm)
+check("the join password is never printed, not even as a placeholder",
+      "s3cret-join" not in _hm)
+check("its per-map box is a password field", 'type=password name="map:' in _hm)
+check("the page explains what cannot vary per map",
+      "links every map to one copy" in _hm)
 
 # ---- the row editors
 _str = Store(os.path.join(tempfile.mkdtemp(), "s.json")).load()
