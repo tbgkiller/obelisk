@@ -55,6 +55,9 @@ def _timezones():
 
 TIMEZONES = _timezones()
 
+# The map catalogue, so a setting that offers a map offers exactly the maps that exist.
+from . import maps as _mapcat
+
 
 SETTINGS = [
     # ---------------------------------------------------------------- Identity
@@ -342,6 +345,40 @@ SETTINGS = [
          type="int", default=30, min=0, max=180,
          target="obelisk:restart_notice_minutes", apply="recreate",
          help="Minutes of in-game warning before a scheduled restart or update."),
+
+    # ---- the staging server
+    #
+    # Off by default in spirit and on_demand by default in fact: it costs nothing until
+    # an update actually appears, and then it costs one ARK server. That is not a
+    # rounding error - ASA's memory goes to the map, not to the slots, so the lightest
+    # possible instance still wants ~8 GB. A host with the headroom gets more from
+    # "always": every build and every mod release is rehearsed as it lands, and the
+    # cluster is already known-good by the time anyone clicks apply.
+    dict(key="staging_mode", label="Staging server", group="Resources",
+         type="choice", default="on_demand",
+         choices=["off", "on_demand", "always"],
+         target="obelisk:staging_mode", apply="recreate",
+         help="A throwaway ARK server that boots a new build with all your mods before "
+              "your cluster does - it is the only thing that can pre-fetch mods, "
+              "because the game downloads those itself at startup. off: never. "
+              "on_demand: start it when an update appears, stop it after. always: keep "
+              "it running so every update is rehearsed as it lands. Costs about one "
+              "map's RAM while it runs."),
+
+    dict(key="staging_map", label="Staging server map", group="Resources",
+         type="choice", default="scorched",
+         choices=[m["key"] for m in _mapcat.MAPS],
+         target="obelisk:staging_map", apply="recreate",
+         help="Which map the staging server rehearses on. It only ever generates a "
+              "throwaway world, and the mods it fetches are the same on any map, so "
+              "this is purely about which one is cheapest to run."),
+
+    dict(key="staging_memory", label="Staging server RAM cap", group="Resources",
+         type="memory", default="10g", target="obelisk:staging_memory",
+         apply="recreate",
+         help="A cap for the staging server. It has one slot and no players, but ARK's "
+              "memory goes to the map rather than the players - the lightest map on a "
+              "live cluster still sits around 8 GB."),
 
     dict(key="host_ram_gb", label="RAM budget for this host", group="Resources",
          type="int", default=0, min=0, max=4096, target="obelisk:host_ram_gb",
