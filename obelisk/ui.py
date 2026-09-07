@@ -714,7 +714,7 @@ BACKUP_PROGRESS = """
 
 
 def render_restore(store, archives, chosen=None, info=None, notes=(),
-                   message="", problem=""):
+                   message="", problem="", job=None):
     """Restore one map from one archive, with what is in it shown before committing.
 
     The order on the page is the order of the decision: which archive, what is in it,
@@ -729,6 +729,17 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
         banner = '<div class=problem>%s</div>' % _e(problem)
     elif message:
         banner = '<div class=note>%s</div>' % _e(message)
+
+    job = job or {}
+    running = job.get("state") == "running"
+    if job.get("state") == "done" and not message and not problem:
+        if job.get("ok"):
+            message = job.get("message", "")
+        else:
+            problem = job.get("message", "")
+        banner = ('<div class="%s">%s</div>'
+                  % ("note" if job.get("ok") else "problem", _e(
+                      job.get("message", ""))))
 
     if not archives:
         return (banner + '<fieldset><legend>Restore</legend><div class=help>No backups '
@@ -792,8 +803,59 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
             'replaced is kept on disk afterwards - nothing is deleted. Worlds only: '
             'your mod list, ports and cluster id are not touched.</div>'
             '</div></fieldset></form>'
+            '%s%s'
             % (opts, detail, _e(chosen or ""), picks,
-               "" if info else " disabled"))
+               " disabled" if (not info or running) else "",
+               RESTORE_JS, _superseded_block(store)))
+
+
+def _superseded_block(store):
+    """What previous restores are still holding on to, so it can be reclaimed.
+
+    A restore keeps the world it replaced, deliberately and for ever. That is the right
+    default and it is also, eventually, a disk full of worlds nobody wants - so it has
+    to be visible somewhere rather than discovered.
+    """
+    from .restore import superseded_worlds
+    rows = superseded_worlds(store)
+    if not rows:
+        return ""
+    return ('<fieldset><legend>Replaced worlds still on disk</legend>'
+            '<table><tr><th>Folder</th><th class=num>Size</th></tr>%s</table>'
+            '<div class=help>Kept by earlier restores so nothing you replaced is ever '
+            'gone. Delete them by hand once you are happy with the restore - Obelisk '
+            'will not remove a world for you.</div></fieldset>'
+            % "".join('<tr><td><code>%s</code></td><td class=num>%s</td></tr>'
+                      % (_e(r["name"]), _e(r["human"])) for r in rows))
+
+
+# The restore stops a map, swaps a world and then waits minutes for a server to load it.
+# A form post that simply hangs for that long is indistinguishable from one that has
+# failed - and this is the feature where "I do not know what it is doing" is least
+# acceptable, because it is in the middle of touching somebody's saves.
+RESTORE_JS = """
+<div id=rswrap hidden>
+  <div class=note><strong>Restoring</strong> <span id=rsstep></span>
+  <span id=rselapsed></span></div>
+</div>
+<script>
+(function(){
+  function tick(){
+    fetch("/admin/restore/status",{credentials:"same-origin"})
+      .then(function(r){return r.json()}).then(function(j){
+        var w=document.getElementById("rswrap");
+        if(j.state==="running"){
+          w.hidden=false;
+          document.getElementById("rsstep").textContent=j.step||"";
+          document.getElementById("rselapsed").textContent="("+j.elapsed+"s)";
+          setTimeout(tick,2000);
+        } else if(w && !w.hidden){ location.reload(); }
+      }).catch(function(){setTimeout(tick,5000)});
+  }
+  tick();
+})();
+</script>
+"""
 
 
 def render_backups(store, rows, message="", problem=""):

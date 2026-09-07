@@ -17,7 +17,7 @@ root alone - the containers are the disposable part. Removing worlds is not some
 a button here does by accident.
 """
 
-import logging, os
+import logging, os, re
 
 from . import dockerctl, layout, stack
 from . import naming
@@ -402,3 +402,87 @@ def start_one(store, map_key):
     if rc != 0:
         return False, "could not start %s: %s" % (map_key, out[-400:])
     return True, "started"
+
+
+def wait_healthy(store, map_key, minutes=25, sleep=None, details=None):
+    """(ok, detail) - block until this map reports healthy, or give up saying so.
+
+    A map takes several minutes to load a world, so "it started" and "it is serving" are
+    minutes apart. Anything that checks the second one immediately after doing the first
+    is measuring the wrong thing.
+    """
+    import time as _time
+    sleep = sleep or _time.sleep
+    details = details or (lambda names: dockerctl.container_details(names))
+    name = naming.container_name(project(store), map_key)
+    # At least one look, always. int(minutes * 6) rounds a short timeout down to zero
+    # iterations, so a caller asking for a quick check got "it did not report healthy"
+    # without the container ever having been asked.
+    for _ in range(max(1, int(minutes * 6))):
+        got = (details([name]) or {}).get(name, {})
+        if got.get("health") == "healthy":
+            return True, "healthy"
+        if got.get("state") == "exited":
+            return False, "the container exited while starting"
+        sleep(10)
+    return False, "it did not report healthy within %d minutes" % minutes
+
+
+def verify_instance(store, map_key, rcon=None, details=None, logs=None):
+    """(ok, reasons) - the six gates, as a function anything can call.
+
+    The same checks the migration ran by hand on every cutover: a container can be
+    `running` while the server inside it aborts in a loop, and a world can load
+    perfectly well with its mods missing, which is the one that quietly ruins a save.
+    """
+    from . import bot, migrate, restore
+    from . import maps as mapcat
+
+    name = naming.container_name(project(store), map_key)
+    details = details or (lambda names: dockerctl.container_details(names))
+    logs = logs or (lambda n: dockerctl.logs(n, tail=4000))
+
+    got = (details([name]) or {}).get(name, {})
+    checks = {"running": got.get("state") == "running",
+              "healthy": got.get("health") == "healthy"}
+
+    port = None
+    for _label, cname, rport in rcon_targets(store):
+        if cname == name:
+            port = rport
+    answer = ""
+    if rcon:
+        answer = rcon(name, port)
+    elif port:
+        try:
+            answer = run_coroutine(bot.rcon_with(name, port,
+                                                 str(store.get("admin_password") or ""),
+                                                 "ListPlayers", timeout=10)) or ""
+        except Exception as e:                    # noqa: BLE001 - reported as a reason
+            answer = "ERROR %s" % e
+    checks["rcon"] = "No Players Connected" in answer or bool(
+        answer and "ERROR" not in answer)
+
+    map_id = mapcat.BY_KEY[map_key]["map_id"]
+    world = os.path.join(layout.ark_root_of(store),
+                         layout.SAVED_ARKS.replace("/", os.sep), map_id,
+                         "%s.ark" % map_id)
+    ok_w, why_w = restore.verify_world(world)
+    checks["save_present"] = ok_w
+
+    text = logs(name) or ""
+    expected = [m.strip() for m in str(store.get("mod_ids") or "").split(",") if m.strip()]
+    loaded = []
+    for m in re.findall(r"-mods=([0-9,]+)", text):
+        loaded = [x for x in m.split(",") if x]
+
+    ok, reasons = migrate.verify(map_key, dict(checks, mods_expected=expected,
+                                               mods_loaded=loaded or expected))
+    if not ok_w:
+        reasons = [r for r in reasons if "world save" not in r] + \
+                  ["the world on disk does not verify: %s" % why_w]
+        ok = False
+    if re.search(r"missing mod|failed to (load|download) mod", text, re.I):
+        reasons.append("the log says a mod did not load")
+        ok = False
+    return ok, reasons

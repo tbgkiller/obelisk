@@ -422,6 +422,19 @@ check("and it runs off the event loop like the backup does",
 # Phase 1 is worlds-only: the definition restore is not wired up at all yet.
 check("Phase 1 does not restore the cluster definition",
       "definition" not in _runsrc.lower())
+
+# The gap this closes: restore_run passed verify=None, so a restore started the map and
+# called it done. Starting a container and it serving a world are minutes apart.
+check("the restore actually verifies afterwards rather than assuming",
+      "verify=verify_after" in _runsrc, "verify is not wired")
+check("and it waits for the map to be healthy before checking",
+      "wait_healthy" in _runsrc, _runsrc[:200])
+check("the six gates are the same ones the migration used",
+      "verify_instance" in _runsrc)
+check("a restore reports progress while it runs",
+      "/admin/restore/status" in _appsrc)
+check("and only one runs at a time",
+      'rjob["state"] == "running"' in _runsrc)
 check("restore.py says the definition is deliberately out of scope",
       "does not restore the cluster definition"
       in io.open(_restoremod.__file__, encoding="utf-8").read())

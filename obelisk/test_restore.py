@@ -309,5 +309,85 @@ check("and the previous world is still on disk",
 check("so it can be put back by hand",
       world_marker(os.path.join(det3["superseded"], "TheIsland_WP.ark")) == "wasthere")
 
+# ---------------------------------------------------------------- the six gates
+#
+# The gap this closes: restore_run passed verify=None, so a restore started the map and
+# assumed the rest. Starting a container and it serving a world are minutes apart, so
+# "it started" was being reported as "it is restored".
+from . import cluster as clusterctl
+
+st7, ark7 = fresh()
+worlds(ark7, "gated")
+ok, _m, arc7 = backup.create(st7)
+worlds(ark7, "before")
+
+seen = []
+ok_g, msg_g, det_g = restore.restore_map(
+    st7, arc7, "island",
+    stop=lambda k: (True, ""), start=lambda k: (True, ""),
+    verify=lambda k: (seen.append(k) or (True, [])),
+    on_step=lambda t: seen.append("step:%s" % t))
+check("the restore with gates wired succeeds", ok_g, msg_g)
+check("the verify step is actually called", "island" in seen, seen)
+check("and it runs after the swap, not before",
+      seen.index("island") > max(i for i, x in enumerate(seen)
+                                 if x.startswith("step:swapped")), seen)
+check("progress is reported step by step",
+      sum(1 for x in seen if x.startswith("step:")) >= 5, seen)
+
+waited = []
+ok_w, why_w = clusterctl.wait_healthy(
+    st7, "island", minutes=0.05, sleep=lambda n: waited.append(n),
+    details=lambda names: {names[0]: {"state": "running", "health": "starting"}})
+check("waiting for health gives up with a reason",
+      not ok_w and "did not report" in why_w, why_w)
+check("and it looked at least once before giving up", bool(waited), waited)
+
+_looks = []
+clusterctl.wait_healthy(st7, "island", minutes=0, sleep=lambda n: None,
+                        details=lambda names: _looks.append(names) or
+                        {names[0]: {"state": "running", "health": "starting"}})
+check("even a zero-length wait asks the container once",
+      len(_looks) == 1, _looks)
+
+ok_w2, why_w2 = clusterctl.wait_healthy(
+    st7, "island", minutes=5, sleep=lambda n: None,
+    details=lambda names: {names[0]: {"state": "exited", "health": ""}})
+check("a container that exits while starting is not waited on for ever",
+      not ok_w2 and "exited" in why_w2, why_w2)
+
+ok_w3, _w3 = clusterctl.wait_healthy(
+    st7, "island", minutes=5, sleep=lambda n: None,
+    details=lambda names: {names[0]: {"state": "running", "health": "healthy"}})
+check("and a healthy map returns straight away", ok_w3)
+
+
+def gates(state="running", health="healthy", answer="No Players Connected",
+          logtext="-mods=929110,940003"):
+    return clusterctl.verify_instance(
+        st7, "island", rcon=lambda n, p: answer,
+        details=lambda names: {names[0]: {"state": state, "health": health}},
+        logs=lambda n: logtext)
+
+
+st7.patch({"mod_ids": "929110,940003"})
+ok_v, why_v = gates()
+check("a healthy, answering, correctly-modded map passes all gates", ok_v, why_v)
+check("a container that is not running fails", not gates(state="exited")[0])
+check("a container that is not healthy fails", not gates(health="starting")[0])
+check("RCON not answering fails", not gates(answer="ERROR timed out")[0])
+ok_m, why_m = gates(logtext="-mods=940003,929110")
+check("mods in the wrong ORDER fail, not just missing ones", not ok_m, why_m)
+check("and the reason names the order", any("mods differ" in r for r in why_m), why_m)
+ok_mm, why_mm = gates(logtext="-mods=929110,940003 Warning: missing mod 929110")
+check("a missing-mod line in the log fails", not ok_mm, why_mm)
+
+bad_world = os.path.join(ark7, "shared", "SavedArks", "TheIsland_WP", "TheIsland_WP.ark")
+open(bad_world, "wb").write(b"Q" * 4000)
+ok_bw, why_bw = gates()
+check("a world that will not open fails the gates", not ok_bw, why_bw)
+check("and says the world does not verify",
+      any("does not verify" in r for r in why_bw), why_bw)
+
 print("\nFAILURES: %s" % fails if fails else "\nall restore tests passed")
 sys.exit(1 if fails else 0)

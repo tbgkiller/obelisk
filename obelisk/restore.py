@@ -234,7 +234,7 @@ def preflight(store, path, map_key):
 
 # --------------------------------------------------------------------------- doing it
 def restore_map(store, path, map_key, stop=None, start=None, verify=None,
-                snapshot=True, now=None):
+                snapshot=True, now=None, on_step=None):
     """Put one map's world back from an archive. (ok, message, detail).
 
     The order is the whole safety argument: verify the archive, copy the world that is
@@ -252,6 +252,8 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
     def step(text):
         detail["steps"].append(text)
         log.info("restore %s: %s", map_id, text)
+        if on_step:
+            on_step(text)
 
     ok, problems = preflight(store, path, map_key)
     if not ok:

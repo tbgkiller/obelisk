@@ -374,6 +374,12 @@ def build_app(store, docker=None):
 
     # ---- restore
     _looked = {"archive": None, "info": None, "notes": []}
+    # One restore at a time, and what it is currently doing. A restore stops a map,
+    # unpacks, swaps and then waits several minutes for the server to load a world - so
+    # a page that just spins tells the operator nothing about a thing that is, by
+    # design, in the middle of touching their data.
+    rjob = {"state": "idle", "step": "", "message": "", "ok": None,
+            "map": "", "archive": "", "started": 0.0}
 
     def _archive_path(name):
         """Resolve a posted name inside the backups folder, and nowhere else."""
@@ -384,7 +390,8 @@ def build_app(store, docker=None):
     def _restore_body(message="", problem=""):
         return ui.render_restore(store, backupctl.listing(store),
                                  chosen=_looked["archive"], info=_looked["info"],
-                                 notes=_looked["notes"], message=message, problem=problem)
+                                 notes=_looked["notes"], message=message, problem=problem,
+                                 job=rjob)
 
     async def restore_page(request):
         if not authed(request):
@@ -423,18 +430,56 @@ def build_app(store, docker=None):
                                                 "than run alongside it."),
                           "Restore", "/admin/restore")
 
+        if rjob["state"] == "running":
+            raise web.HTTPFound("/admin/restore")
+
+        def note(text):
+            rjob["step"] = text
+
+        def verify_after(key):
+            """Wait for the map to come back, then put it through the six gates.
+
+            Starting a container and asking whether it is serving are minutes apart, so
+            checking immediately would measure the wrong thing and call every restore a
+            success. This is the step that makes the promise real.
+            """
+            note("waiting for %s to come back" % key)
+            ok_h, why_h = clusterctl.wait_healthy(store, key)
+            if not ok_h:
+                return False, [why_h]
+            note("checking it is really serving")
+            return clusterctl.verify_instance(store, key)
+
         def go():
             return restorectl.restore_map(
                 store, path, map_key,
-                stop=lambda k: clusterctl.stop_one(store, k),
-                start=lambda k: clusterctl.start_one(store, k),
-                verify=None)
+                stop=lambda k: (note("stopping %s" % k) or clusterctl.stop_one(store, k)),
+                start=lambda k: (note("starting %s" % k) or clusterctl.start_one(store, k)),
+                verify=verify_after, on_step=note)
 
-        async with cluster_busy:
-            ok, msg, _detail = await asyncio.to_thread(go)
-        return chrome(_restore_body(message=msg if ok else "",
-                                    problem="" if ok else msg),
-                      "Restore", "/admin/restore")
+        async def run_it():
+            try:
+                async with cluster_busy:
+                    ok, msg, detail = await asyncio.to_thread(go)
+            except Exception as e:                       # noqa: BLE001 - surfaced below
+                ok, msg, detail = False, "Restore failed: %s" % e, {}
+                log.exception("restore failed")
+            rjob.update(state="done", ok=ok, message=msg, step="done",
+                        detail=detail)
+
+        rjob.update(state="running", ok=None, message="", step="starting",
+                    map=map_key, archive=os.path.basename(path),
+                    started=time.time(), detail={})
+        asyncio.create_task(run_it())
+        raise web.HTTPFound("/admin/restore")
+
+    async def restore_status(request):
+        if not authed(request):
+            return web.json_response({"state": "denied"}, status=403)
+        out = dict(rjob)
+        out.pop("detail", None)
+        out["elapsed"] = int(time.time() - rjob["started"]) if rjob.get("started") else 0
+        return web.json_response(out)
 
     # ---- cloud
     async def cloud_page(request):
@@ -531,6 +576,7 @@ def build_app(store, docker=None):
     app.router.add_get("/admin/restore", restore_page)
     app.router.add_post("/admin/restore/inspect", restore_inspect)
     app.router.add_post("/admin/restore/run", restore_run)
+    app.router.add_get("/admin/restore/status", restore_status)
     app.router.add_get("/admin/mods", mods_page)
     app.router.add_post("/admin/mods", mods_edit)
     app.router.add_get("/admin/cloud", cloud_page)
