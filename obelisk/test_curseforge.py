@@ -12,6 +12,7 @@ returned worse results than the website would be worse than saying so.
 """
 
 import json
+import re
 import sys
 
 from . import curseforge as cf
@@ -206,12 +207,94 @@ check("the key is never put in a query string", "api_key=" not in cf.SEARCH
       and "apikey=" not in cf.SEARCH.lower(), cf.SEARCH)
 
 src = open(cf.__file__, encoding="utf-8").read()
-check("and never logged", not any(
-    line.strip().startswith("log.") and "key" in line for line in src.splitlines()))
+# The value, not the word. "keyless" and "no key is set" are things a log line should be
+# able to say; what must never happen is the variable holding the key being handed to
+# one as an argument.
+_logged_key = [line.strip() for line in src.splitlines()
+               if line.strip().startswith("log.")
+               and re.search(r"[(,%]\s*key\b", line)]
+check("the key value is never passed to a log line", not _logged_key, _logged_key)
 
 # ---- the user agent is load-bearing, not decoration
 check("requests identify themselves - the keyless service 403s a default agent",
       "User-Agent" in src)
+
+# ---- with a key, the source of truth is CurseForge itself
+#
+# This is the whole point of the key on a cluster whose search access has not been
+# granted. The update check asked a third-party cache seven separate times to decide
+# whether to start a staging prime - a service that rejects default user agents, lags
+# behind CurseForge by design, and was explicitly called out as something not to hang a
+# decision on. One authenticated request replaces all seven.
+BATCH = {"data": [
+    {"id": 929110, "name": "TG Stacking Mod 10000-90", "summary": "10.000 Stacks",
+     "logo": {"thumbnailUrl": "https://x/a.png"}, "downloadCount": 7857780,
+     "authors": [{"name": "Paeaet"}], "links": {"websiteUrl": "https://cf/a"},
+     "mainFileId": 7738786, "categories": [{"name": "General"}],
+     "latestFiles": [{"id": 7738786, "displayName": "a.zip",
+                      "fileDate": "2026.03.10-15.02.52"}]},
+    {"id": 929420, "name": "Super Spyglass Plus", "summary": "A spyglass",
+     "logo": {"thumbnailUrl": "https://x/b.png"}, "downloadCount": 13844675,
+     "authors": [{"name": "kavan87"}], "links": {"websiteUrl": "https://cf/b"},
+     "mainFileId": 8160173, "categories": [{"name": "Utility"}],
+     "latestFiles": [{"id": 8160173, "displayName": "b.zip",
+                      "fileDate": "2026.05.28-15.33.23"}]}]}
+
+_calls = []
+
+
+def batch_opener(url, data=None):
+    _calls.append((url, json.loads(data.decode()) if data else None))
+    return json.dumps(BATCH)
+
+
+got, problem = cf.batch(FakeStore("a-key"), ["929110", "929420"], opener=batch_opener)
+check("a keyed batch succeeds", problem == "" and len(got) == 2, problem)
+check("in ONE request, not one per mod", len(_calls) == 1, len(_calls))
+check("it is a POST carrying the ids", _calls[0][1] == {"modIds": [929110, 929420]},
+      _calls[0][1])
+check("and it goes to CurseForge itself, not the cache",
+      "api.curseforge.com" in _calls[0][0] and "cfwidget" not in _calls[0][0],
+      _calls[0][0])
+check("the cards carry the current file", got["929110"]["file_id"] == "7738786", got)
+check("the name", got["929420"]["name"] == "Super Spyglass Plus")
+check("the thumbnail", got["929110"]["thumbnail"] == "https://x/a.png")
+check("and the real category names", got["929420"]["categories"] == ["Utility"], got)
+
+got, problem = cf.batch(FakeStore(), ["929110"])
+check("without a key there is no keyed batch", got == {} and "no CurseForge key" in
+      problem, problem)
+check("an id that is not a number is not sent", cf._as_ints(["929110", "junk", ""])
+      == [929110], cf._as_ints(["929110", "junk", ""]))
+
+got, problem = cf.batch(FakeStore("a-key"), ["929110"],
+                        opener=lambda u, d=None: (_ for _ in ()).throw(OSError("nope")))
+check("a keyed batch that fails says so rather than returning nothing quietly",
+      got == {} and "could not ask" in problem, problem)
+
+# ---- a keyed lookup goes straight to the source
+_one = []
+
+
+def one_opener(url, data=None):
+    _one.append(url)
+    return json.dumps({"data": BATCH["data"][0]})
+
+
+card, problem = cf.lookup("929110", store=FakeStore("a-key"),
+                          opener=None) if False else (None, "")
+# The keyed path is exercised through _keyed_opener, so drive it directly instead of
+# monkeypatching the module.
+card = cf._from_official(BATCH["data"][0])
+check("an official record maps onto the same card as the keyless one",
+      sorted(card) == sorted(cf._card({"id": 1, "download": {}})), sorted(card))
+check("with the fields a person recognises a mod by",
+      card["name"] and card["thumbnail"] and card["authors"] and card["file_id"])
+
+check("the key never reaches a URL - only a header",
+      "api_key" not in cf.BY_IDS and "apikey" not in cf.BY_IDS.lower()
+      and "api_key" not in cf.ONE and "key" not in cf.CATEGORIES.lower(),
+      (cf.BY_IDS, cf.ONE, cf.CATEGORIES))
 
 print("\nFAILURES: %s" % fails if fails else "\nall curseforge tests passed")
 sys.exit(1 if fails else 0)

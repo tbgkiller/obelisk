@@ -710,8 +710,12 @@ def build_app(store, docker=None):
     async def mods_page(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
+        # Names and categories come from the check the watcher already did, so the
+        # page renders without waiting on anybody's API.
+        known = {r["id"]: r for r in (ARK_UPDATE.get("mods") or [])}
         return chrome(ui.render_mods(store, modsctl.measure(layout.mods_dir(store)),
-                                     found=_found["card"], problem=_found["problem"]),
+                                     found=_found["card"], problem=_found["problem"],
+                                     known=known),
                       "Mods", "/admin/mods")
 
     async def mods_key(request):
@@ -753,7 +757,8 @@ def build_app(store, docker=None):
         form = await request.post()
         # Off the loop: this is two DNS lookups and an HTTPS round trip to a service
         # that is somebody else's, and the chat relay lives on this thread.
-        card, problem = await asyncio.to_thread(cfctl.lookup, form.get("ref"))
+        card, problem = await asyncio.to_thread(
+            lambda: cfctl.lookup(form.get("ref"), store=store))
         _found.update(card=card, problem=problem)
         raise web.HTTPFound("/admin/mods")
 

@@ -1247,7 +1247,7 @@ STATUS_STYLE = {"ok": ("ok", "installed"),
                 "orphan": ("warn", "leftover")}
 
 
-def render_mods(store, health=None, found=None, problem=""):
+def render_mods(store, health=None, found=None, problem="", known=None):
     """The mod list, in load order, with what is actually on disk beside each one.
 
     Order is the first thing people get wrong and install health is the second, so both
@@ -1255,21 +1255,30 @@ def render_mods(store, health=None, found=None, problem=""):
     """
     ids = modlib.parse(store.get("mod_ids"))
     health = health or {}
+    # What the update check already learned about each mod - name and category. Read
+    # from what is in hand rather than fetched here, so opening this page never waits
+    # on CurseForge.
+    known = {str(k): v for k, v in (known or {}).items()}
     rows = []
     for i, m in enumerate(ids):
         h = health.get(m, {})
+        about = known.get(m) or {}
+        title = _e(about.get("name") or "")
+        cats = ", ".join(c for c in (about.get("categories") or []) if c)
+        named = ('<div class=help>%s%s</div>'
+                 % (title, (" &middot; " + _e(cats)) if cats else "")) if title else ""
         cls, label = STATUS_STYLE.get(h.get("status", ""), ("", "not checked"))
         detail = ("%d files, %s MB" % (h["files"], h["mb"])) if h.get("files") else "-"
         note = ('<div class=help>%s</div>' % _e(h["note"])) if h.get("note") else ""
         first = ' <span class=tag title="loads first, so it wins conflicts">first</span>' if i == 0 else ""
         rows.append(
-            "<tr><td class=num>%d</td><td><code>%s</code>%s</td>"
+            "<tr><td class=num>%d</td><td><code>%s</code>%s%s</td>"
             "<td class=%s>%s%s</td><td class=num>%s</td><td class=num>"
             '<button class=ghost name=up value="%s"%s>&uarr;</button> '
             '<button class=ghost name=down value="%s"%s>&darr;</button> '
             '<button class=ghost name=drop value="%s">Remove</button>'
             "%s</td></tr>"
-            % (i + 1, _e(m), first, cls, _e(label), note, _e(detail),
+            % (i + 1, _e(m), first, named, cls, _e(label), note, _e(detail),
                _e(m), " disabled" if i == 0 else "",
                _e(m), " disabled" if i == len(ids) - 1 else "",
                _e(m),

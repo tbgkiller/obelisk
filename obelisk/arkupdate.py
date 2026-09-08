@@ -164,16 +164,47 @@ def _cached_names(serverfiles, read=None):
     return out
 
 
-def available_mods(ids, opener=None):
+def available_mods(ids, opener=None, source=None):
     """{project id: {"file_id", "name", "url", "problem"}} as CurseForge serves it.
 
-    One request per mod, and one failure per mod: a project that cannot be reached
-    leaves the others answerable rather than turning the whole panel into "unknown".
+    `source` is how the caller says "ask CurseForge itself" - one authenticated request
+    for every mod at once, when the operator has supplied a key. It takes the ids and
+    returns the same shape. Without one this falls back to the keyless per-project
+    service, which is what a cluster with no key has always used.
+
+    That distinction matters more here than anywhere else on the page: this is the
+    answer that decides whether a staging prime starts, and a third-party cache is not
+    something to hang that on when the operator has given us a better source.
     """
+    ids = _as_ids(ids)
+    if source is not None:
+        got, problem = source(ids)
+        if not problem:
+            out = {}
+            for project in ids:
+                card = got.get(project)
+                if card and card.get("file_id"):
+                    out[project] = {"file_id": str(card["file_id"]),
+                                    "name": card.get("name") or "",
+                                    "url": card.get("url") or "",
+                                    "categories": card.get("categories") or [],
+                                    "problem": ""}
+                else:
+                    out[project] = {"file_id": None, "name": card.get("name") or ""
+                                    if card else "", "url": "", "categories": [],
+                                    "problem": ("CurseForge listed no downloadable file"
+                                                if card else
+                                                "CurseForge does not know this mod")}
+            return out
+        # A key that cannot answer is not a reason to report every mod unknown when
+        # there is a keyless service that can. Say what happened and carry on.
+        log.info("the keyed CurseForge lookup failed (%s) - falling back", problem)
+
     opener = opener or _fetch
     out = {}
     for project in _as_ids(ids):
-        entry = {"file_id": None, "name": "", "url": "", "problem": ""}
+        entry = {"file_id": None, "name": "", "url": "", "categories": [],
+                 "problem": ""}
         try:
             data = json.loads(opener(CFWIDGET % project))
         except Exception as e:                 # noqa: BLE001
@@ -184,6 +215,9 @@ def available_mods(ids, opener=None):
         file_id = download.get("id")
         entry["name"] = str(data.get("title") or "")
         entry["url"] = str((data.get("urls") or {}).get("curseforge") or "")
+        entry["categories"] = [str(c.get("name") or "")
+                               for c in (data.get("categories") or [])
+                               if isinstance(c, dict)]
         if file_id is None:
             entry["problem"] = "CurseForge listed no downloadable file for this mod"
         else:
@@ -225,12 +259,14 @@ def compare(installed, available):
             "latest": latest,
             "newer": newer,
             "url": want.get("url") or "",
+            "categories": want.get("categories") or [],
             "problem": problem,
         })
     return rows
 
 
-def status(serverfiles, mod_ids, opener=None, listdir=None, read=None):
+def status(serverfiles, mod_ids, opener=None, listdir=None, read=None,
+           source=None):
     """Everything the update panel needs, in one shape.
 
     `build["newer"]` and each row's `newer` are True, False or None, and None is a real
@@ -241,7 +277,7 @@ def status(serverfiles, mod_ids, opener=None, listdir=None, read=None):
     ids = _as_ids(mod_ids)
 
     installed = installed_mods(serverfiles, listdir=listdir, read=read)
-    available = available_mods(ids, opener=opener) if ids else {}
+    available = available_mods(ids, opener=opener, source=source) if ids else {}
 
     # Mods on disk nobody asked for are left out of the comparison: they are leftovers
     # of a removed mod, and mods.health() is the page that talks about those.

@@ -77,15 +77,34 @@ def _fetch(url):
         return r.read().decode("utf-8", "replace")
 
 
-def lookup(text, opener=None):
+def lookup(text, opener=None, store=None):
     """(card, problem) for one mod, from an id or a page address.
 
     `card` carries what a person needs to recognise a mod: the name, the picture, who
     wrote it, what it says it does, how many people use it, and which file is current.
+
+    With a key, an id goes straight to CurseForge - authoritative, and no dependence on
+    a cache that may be days behind. Without one, or for a name out of a URL, the
+    keyless service answers. Same card either way, so nothing downstream can tell which
+    door it came through.
     """
     kind, value = parse_ref(text)
     if not kind:
         return None, value
+    if kind == "id" and store is not None and opener is None:
+        keyed = _keyed_opener(store)
+        if keyed:
+            try:
+                data = json.loads(keyed(ONE % value))
+            except Exception as e:                  # noqa: BLE001 - fall back, say why
+                log.info("CurseForge did not answer for %s (%s) - trying the keyless "
+                         "lookup", value, e)
+            else:
+                mod = data.get("data") or {}
+                if mod.get("id"):
+                    return _from_official(mod), ""
+                return None, ("CurseForge has no ARK mod with id %s. Check the number, "
+                              "or whether the mod has been taken down." % value)
     opener = opener or _fetch
     url = (BY_ID % value) if kind == "id" else (BY_SLUG % value)
     try:
@@ -129,6 +148,94 @@ def _card(data):
 
 def has_key(store):
     return bool(str(store.get("curseforge_api_key") or "").strip())
+
+
+# The endpoints a console key actually has. Search is not among them - CurseForge grants
+# that separately - but everything below answers 200, which is enough to stop the part
+# that matters depending on somebody else's cache.
+BY_IDS = "https://api.curseforge.com/v1/mods"
+ONE = "https://api.curseforge.com/v1/mods/%s"
+CATEGORIES = "https://api.curseforge.com/v1/categories?gameId=83374"
+
+
+def _keyed_opener(store):
+    """A fetcher that speaks to CurseForge as this operator, or None without a key.
+
+    The key travels in a header. Never a query string: an exception carries the URL it
+    was fetching, and a URL that carries a credential is a credential in a log line.
+    """
+    key = str(store.get("curseforge_api_key") or "").strip()
+    if not key:
+        return None
+
+    def fetch(url, data=None):
+        req = urllib.request.Request(
+            url, data=data, method="POST" if data is not None else "GET",
+            headers={"Accept": "application/json", "Content-Type": "application/json",
+                     "x-api-key": key, "User-Agent": "obelisk"})
+        with urllib.request.urlopen(req, timeout=TIMEOUT) as r:
+            return r.read().decode("utf-8", "replace")
+    return fetch
+
+
+def batch(store, ids, opener=None):
+    """({project id: card}, problem) for many mods in ONE authenticated request.
+
+    This is the point of the key. The update checker asked a third-party cache seven
+    separate times to decide whether to stage an update - a service that rejects default
+    user agents, lags behind CurseForge by design, and was explicitly not something to
+    make load-bearing. With a key it is one call to CurseForge itself, and the answer
+    that gates a staging prime comes from the place that knows.
+    """
+    wanted = _as_ints(ids)
+    if not wanted:
+        return {}, ""
+    fetch = opener or _keyed_opener(store)
+    if not fetch:
+        return {}, "no CurseForge key is set"
+    body = json.dumps({"modIds": wanted}).encode("utf-8")
+    try:
+        data = json.loads(fetch(BY_IDS, body))
+    except Exception as e:                          # noqa: BLE001 - reported, not raised
+        return {}, "could not ask CurseForge: %s" % str(e)[:200]
+    out = {}
+    for mod in data.get("data") or []:
+        card = _from_official(mod)
+        if card["id"]:
+            out[card["id"]] = card
+    return out, ""
+
+
+def _as_ints(ids):
+    if isinstance(ids, str):
+        ids = ids.split(",")
+    out = []
+    for one in ids or []:
+        text = str(one).strip()
+        if text.isdigit():
+            out.append(int(text))
+    return out
+
+
+def categories(store, opener=None):
+    """{category id: name} for this game. Read once and kept - they do not move."""
+    if _CATEGORIES:
+        return _CATEGORIES
+    fetch = opener or _keyed_opener(store)
+    if not fetch:
+        return {}
+    try:
+        data = json.loads(fetch(CATEGORIES))
+    except Exception as e:                          # noqa: BLE001 - a nicety, not a need
+        log.info("could not read CurseForge categories: %s", e)
+        return {}
+    for row in data.get("data") or []:
+        if row.get("id") and row.get("name"):
+            _CATEGORIES[str(row["id"])] = str(row["name"])
+    return _CATEGORIES
+
+
+_CATEGORIES = {}
 
 
 def search(store, query, limit=24, opener=None):

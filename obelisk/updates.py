@@ -168,12 +168,20 @@ def note_attempt(store, key, ok, now=None):
 
 # ---------------------------------------------------------------- detect
 
-def look(store, ark_root, opener=None, listdir=None, read=None):
-    """Current status, with the mod list the cluster is actually configured for."""
-    from . import layout
+def look(store, ark_root, opener=None, listdir=None, read=None, source=None):
+    """Current status, with the mod list the cluster is actually configured for.
+
+    When the operator has given us a CurseForge key, the mod half of this comes from
+    CurseForge itself in one authenticated request rather than seven to a third-party
+    cache. This is the answer that decides whether a staging prime starts, so it is
+    worth asking the source when we can.
+    """
+    from . import curseforge, layout
     serverfiles = layout.ark_paths(ark_root)["serverfiles"]
+    if source is None and curseforge.has_key(store):
+        source = lambda ids: curseforge.batch(store, ids)     # noqa: E731 - one line
     return arkupdate.status(serverfiles, store.get("mod_ids"), opener=opener,
-                            listdir=listdir, read=read)
+                            listdir=listdir, read=read, source=source)
 
 
 def announce_new(store, status):
