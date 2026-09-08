@@ -88,6 +88,9 @@ tr:last-child td{border-bottom:none}
 .badge.new{background:#3a2f14;color:#ffc46b;border:1px solid #7d642f}
 .badge.unk{background:#2b2440;color:#c9a0ff;border:1px solid #4d3f7d}
 td.points{line-height:2.4}
+table.allpoints{margin:8px 0 2px;max-width:520px}
+table.allpoints td{padding:3px 10px}
+details summary{color:#8b94a3;font-size:12px;cursor:pointer;margin-top:6px}
 td.points button{margin:0 6px 6px 0}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
 .chip{font-size:11px;border-radius:6px;padding:3px 8px;border:1px solid #303845;background:#12151a;color:#a9b4c4;white-space:nowrap}
@@ -1514,10 +1517,13 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
 def render_savepoints(by_map, job=None, limit=6):
     """The saves the game already took, offered per map as one-click rollbacks.
 
-    Every button carries the consequence rather than linking to it, because the
-    consequence is the whole decision: the world goes back, and the people who played
-    since then do not. A warning somebody has to go and find is a warning that gets
-    found afterwards.
+    The recent few are buttons; *all* of them are behind a fold, because "roll back to
+    the oldest point you have" is a real thing to want after a griefing that was not
+    noticed for a day, and a count of what you cannot reach is not an offer.
+
+    Nothing stops until the operator confirms. The consequence used to live in a hover
+    tooltip, which meant clicking a point stopped a server with no warning anybody had
+    read - a tooltip is documentation, not consent.
     """
     if not by_map:
         return ""
@@ -1526,25 +1532,26 @@ def render_savepoints(by_map, job=None, limit=6):
     for map_name, points in by_map:
         if not points:
             continue
-        buttons = []
-        for p in points[:limit]:
-            buttons.append(
-                '<button class=ghost type=submit name=point value="%s|%s" '
-                'title="%s">%s<span class=help> &middot; %s</span></button>'
-                % (_e(p["map"]), _e(p["name"]), _e(WARN_TEXT % p["local"]),
-                   _e(p["ago"]), _e(p["local"])))
-        more = ""
+        quick = "".join(_point_button(map_name, p, ghost=True) for p in points[:limit])
+        rest = ""
         if len(points) > limit:
-            more = ('<span class=help>+%d older, back to %s</span>'
-                    % (len(points) - limit, _e(points[-1]["ago"])))
-        rows.append('<tr><td>%s</td><td class=points>%s %s</td></tr>'
-                    % (_e(map_name), "".join(buttons), more))
+            older = "".join(
+                '<tr><td>%s</td><td class=help>%s</td><td class=help>%s</td>'
+                '<td class=num>%s</td></tr>'
+                % (_e(p["local"]), _e(p["ago"]), _e(p.get("human_size") or ""),
+                   _point_button(map_name, p, ghost=True, label="restore"))
+                for p in points)
+            rest = ('<details><summary>all %d restore points for %s, back to %s'
+                    '</summary><table class=allpoints>%s</table></details>'
+                    % (len(points), _e(map_name), _e(points[-1]["ago"]), older))
+        rows.append('<tr><td>%s</td><td class=points>%s%s</td></tr>'
+                    % (_e(map_name), quick, rest))
 
     if not rows:
         return ""
 
     busy = (job or {}).get("state") == "running"
-    return ('<form method=post action="/admin/restore/point">'
+    return ('<form method=post action="/admin/restore/point" id=pointform>'
             '<fieldset><legend>Quick restore points</legend>'
             '<div class=note>ARK saves every world every 15 minutes and keeps about '
             '<b>45 hours</b> of dated copies beside the live one. Rolling one map back '
@@ -1559,14 +1566,49 @@ def render_savepoints(by_map, job=None, limit=6):
             'The archives above are what survive the machine.</div>'
             '<label class=inline><input type=checkbox name=force value=1> restore even '
             'with players on that map</label>'
-            '</fieldset></form>'
+            '</fieldset></form>%s'
             % ('<div class=note>Working: %s</div>' % _e((job or {}).get("step") or "")
-               if busy else "", "".join(rows)))
+               if busy else "", "".join(rows), POINT_CONFIRM_JS))
 
+
+def _point_button(map_name, point, ghost=False, label=None):
+    """One restore point, carrying the sentence the operator has to agree to."""
+    text = CONFIRM_TEXT % (map_name, point["local"])
+    return ('<button%s type=submit name=point value="%s|%s" data-confirm="%s">'
+            '%s%s</button>'
+            % (" class=ghost" if ghost else "", _e(point["map"]), _e(point["name"]),
+               _e(text), _e(label or point["ago"]),
+               "" if label else '<span class=help> &middot; %s</span>' % _e(point["local"])))
+
+
+CONFIRM_TEXT = ("This will stop %s, roll its world back to %s, and restart it "
+                "(about 3 minutes).\n\n"
+                "Player characters and tribes are NOT rolled back - anything gained "
+                "since then stays on the player but disappears from the world.\n\n"
+                "Continue?")
 
 WARN_TEXT = ("Rolls this map's world back to %s. Player characters and tribes are NOT "
              "rolled back - anything gained since then stays on the player but "
              "disappears from the world.")
+
+# A confirm, not a tooltip. The first version put the consequence in a title attribute,
+# so clicking a restore point stopped a live server without anybody having read a word
+# of it - a hover is documentation, and this needs consent.
+POINT_CONFIRM_JS = """
+<script>
+(function(){
+  const form = document.getElementById('pointform');
+  if (!form) return;
+  form.addEventListener('submit', function(e){
+    const b = e.submitter;
+    if (!b || b.name !== 'point') return;
+    if (!window.confirm(b.dataset.confirm || 'Roll this map back?')) {
+      e.preventDefault();
+    }
+  });
+})();
+</script>
+"""
 
 
 def _superseded_block(store):

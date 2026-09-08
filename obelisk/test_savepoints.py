@@ -278,6 +278,122 @@ check("a path in the name is resolved against the listing, not joined on",
 found = savepoints.find_point(st2, "ragnarok", "../../etc/passwd", ark_root=root3)
 check("and something outside entirely is simply not a point", found is None, found)
 
+# ---- the Genesis failure, reproduced
+#
+# A restore point was refused on a healthy world with "SQLite will not read it (attempt
+# to write a readonly database)". Genesis had stopped answering RCON, so its save could
+# not be verified and the container went down hard - and a hard-killed SQLite leaves a
+# hot journal beside its database. The swap then put a *different* world at that path
+# and left the old journal next to it. Opening it meant replaying that journal first,
+# which needs a write, which read-only refuses.
+#
+# The refusal was the system working. The danger was one step further on: had the check
+# passed, the server would have started on a world with a foreign journal beside it.
+def hot_journal(world_path):
+    """What a server that was killed mid-write leaves behind."""
+    with open(world_path + "-journal", "wb") as fh:
+        # SQLite's rollback-journal magic, enough for it to be treated as hot.
+        fh.write(b"\xd9\xd5\x05\xf9\x20\xa1\x63\xd7" + b"\x00" * 64)
+    return world_path + "-journal"
+
+
+root4, folder4 = ark_root(["Ragnarok_WP_07.09.2026_19.02.33.ark"])
+live4 = os.path.join(folder4, "Ragnarok_WP.ark")
+journal = hot_journal(live4)
+check("a world with a hot journal beside it is the failing shape",
+      os.path.isfile(journal))
+
+# The old check - read-only but not immutable - is what produced the Genesis message.
+import sqlite3 as _sq
+
+try:
+    _con = _sq.connect("file:%s?mode=ro" % live4, uri=True)
+    _con.execute("PRAGMA integrity_check;").fetchone()
+    _con.close()
+    _old_failed = False
+except Exception as _e:
+    _old_failed = "readonly database" in str(_e)
+check("mode=ro alone fails on it, exactly as it did on Genesis", _old_failed,
+      "the reproduction did not reproduce")
+
+ok, why = savepoints.verify_point(live4)
+check("and immutable=1 reads it fine - the fix", ok, why)
+
+# And the swap must take the journal away, not leave it beside a world it does not
+# describe.
+st5, root5, folder5 = fresh()
+live5 = os.path.join(folder5, "Ragnarok_WP.ark")
+hot_journal(live5)
+c = Cluster()
+ok, msg, detail = savepoints.restore_point(
+    st5, "ragnarok", "Ragnarok_WP_07.09.2026_19.02.33.ark",
+    stop=c.stop, start=c.start, verify=c.verify, players=lambda: (0, {}, []),
+    ark_root=root5, now=lambda: NOW)
+check("a restore over a hot journal now succeeds", ok, msg)
+check("and the stale journal is gone, not left beside the new world",
+      not os.path.exists(live5 + "-journal"),
+      os.listdir(folder5))
+check("the operator is told it was there", any("stale journal" in s
+                                               for s in detail["steps"]), detail["steps"])
+
+for _suffix in ("-wal", "-shm", "-journal"):
+    st6, root6, folder6 = fresh()
+    live6 = os.path.join(folder6, "Ragnarok_WP.ark")
+    open(live6 + _suffix, "wb").close()
+    savepoints.restore_point(
+        st6, "ragnarok", "Ragnarok_WP_07.09.2026_19.02.33.ark",
+        stop=Cluster().stop, start=Cluster().start, players=lambda: (0, {}, []),
+        ark_root=root6, now=lambda: NOW)
+    check("%s is cleared too" % _suffix, not os.path.exists(live6 + _suffix))
+
+
+# ---- the world is handed to the server's user
+st7, root7, folder7 = fresh()
+_owned = []
+_real_chown = getattr(os, "chown", None)
+try:
+    os.chown = lambda p, u, g: _owned.append((os.path.basename(p), u, g))
+    savepoints.restore_point(
+        st7, "ragnarok", "Ragnarok_WP_07.09.2026_19.02.33.ark",
+        stop=Cluster().stop, start=Cluster().start, players=lambda: (0, {}, []),
+        ark_root=root7, now=lambda: NOW)
+finally:
+    if _real_chown is None:
+        delattr(os, "chown")
+    else:
+        os.chown = _real_chown
+check("the swapped world is given to the server's user",
+      ("Ragnarok_WP.ark", 7777, 7777) in _owned, _owned)
+
+
+# ---- the pre-stop save is best effort
+st8, root8, _f8 = fresh()
+c = Cluster()
+_saves = []
+ok, msg, detail = savepoints.restore_point(
+    st8, "ragnarok", "Ragnarok_WP_07.09.2026_19.02.33.ark",
+    stop=c.stop, start=c.start, verify=c.verify, players=lambda: (0, {}, []),
+    save=lambda k: (_saves.append(k), (True, "saved"))[1],
+    ark_root=root8, now=lambda: NOW)
+check("the map is asked to save before it is stopped", _saves == ["ragnarok"], _saves)
+check("and that happens before the stop",
+      detail["steps"].index("saved") < detail["steps"].index("stopped ragnarok"),
+      detail["steps"])
+
+st9, root9, _f9 = fresh()
+c = Cluster()
+ok, msg, detail = savepoints.restore_point(
+    st9, "ragnarok", "Ragnarok_WP_07.09.2026_19.02.33.ark",
+    stop=c.stop, start=c.start, verify=c.verify, players=lambda: (0, {}, []),
+    save=lambda k: (False, "not answering RCON"),
+    ark_root=root9, now=lambda: NOW)
+check("a map that will not answer RCON does not block the restore", ok, msg)
+check("it is recorded rather than swallowed",
+      any("carrying on" in s for s in detail["steps"]), detail["steps"])
+check("because the world was already copied aside as a file, not over RCON",
+      any("copied aside" in s for s in detail["steps"]), detail["steps"])
+
+
 # ---- worlds only, and the module says so
 src = open(savepoints.__file__, encoding="utf-8").read()
 for word in ("arkprofile", "profilebak", "arktribe", "tribebak"):

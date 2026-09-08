@@ -709,8 +709,13 @@ check("labelled by how long ago", "2h ago" in _sp and "4h ago" in _sp)
 check("and by the local clock time", "07 Sep 14:02" in _sp)
 check("the button carries the map and the file it would restore",
       'value="ragnarok|Ragnarok_WP_07.09.2026_19.02.33.ark"' in _sp, _sp[:400])
-check("the warning is on the button itself, not somewhere to go and find",
-      "NOT rolled back" in _sp and "title=" in _sp, _sp[:600])
+check("nothing happens until the operator confirms",
+      "data-confirm" in _sp and "window.confirm" in _sp and "e.submitter" in _sp,
+      _sp[:400])
+check("and the confirm says what it will do",
+      "This will stop Ragnarok" in _sp and "roll its world back to" in _sp
+      and "about 3 minutes" in _sp and "Continue?" in _sp, _sp[:600])
+check("including the part about players", "NOT rolled back" in _sp)
 check("it says what that means for a player",
       "stays on the player but disappears from the world" in _sp)
 check("and that these are not a substitute for the archives",
@@ -721,11 +726,23 @@ check("a map with no points shows nothing rather than an empty row",
       ui.render_savepoints([("Ragnarok", [])]) == "")
 check("and no maps at all renders nothing", ui.render_savepoints([]) == "")
 
-_many = [dict(_pts[0], name="p%d" % i, ago="%dh ago" % i) for i in range(12)]
+# Every point has to be reachable. A count of what you cannot click is not an offer,
+# and "roll back to the oldest thing you have" is a real thing to want after a griefing
+# that went unnoticed for a day.
+_many = [dict(_pts[0], name="p%d" % i, ago="%dh ago" % i, local="07 Sep %02d:00" % i,
+              human_size="57 MB") for i in range(20)]
 _spm = ui.render_savepoints([("Ragnarok", _many)], limit=6)
-check("only the recent few get buttons", _spm.count("<button") == 6,
-      _spm.count("<button"))
-check("and the rest are counted rather than listed", "+6 older" in _spm, _spm[-300:])
+check("the recent few are offered up front", _spm.count("class=ghost type=submit") >= 6)
+check("but every one of the 20 is clickable",
+      all(('value="ragnarok|p%d"' % i) in _spm for i in range(20)),
+      [i for i in range(20) if ('value="ragnarok|p%d"' % i) not in _spm])
+check("the rest behind a fold that says how far back they go",
+      "all 20 restore points" in _spm and "19h ago" in _spm, _spm[-400:])
+check("and each carries its own confirm",
+      _spm.count("data-confirm") == _spm.count("name=point"),
+      (_spm.count("data-confirm"), _spm.count("name=point")))
+check("the dead '+N older' label is gone", "+14 older" not in _spm
+      and "+6 older" not in _spm)
 
 _spb = ui.render_savepoints([("Ragnarok", _pts)],
                             job={"state": "running", "step": "stopping ragnarok"})

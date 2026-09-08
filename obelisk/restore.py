@@ -163,6 +163,58 @@ def compare(store, info):
 
 
 # --------------------------------------------------------------------------- checking
+# SQLite's sidecars. They belong to the database they were written beside, and to no
+# other - which is the whole problem when a world file is replaced underneath them.
+SIDECARS = ("-wal", "-shm", "-journal")
+
+
+def clear_sidecars(path, remove=None, exists=None):
+    """Remove any journal left beside a world that is about to be replaced.
+
+    This is a data-safety fix, not a tidy-up. A server that is killed rather than shut
+    down cleanly - which is what happens when RCON stops answering and the save cannot
+    be verified - leaves a hot journal next to its world. Copy a *different* world over
+    that file and the journal is still there, still describing the old database, and the
+    next thing to open it will try to replay one into the other.
+
+    It came to light as a refused restore, because the read-only integrity check would
+    not perform the recovery. That refusal was the system working. The danger was one
+    step further on: had the check passed, the server would have started on a world with
+    a foreign journal beside it.
+    """
+    remove = remove or os.remove
+    exists = exists or os.path.exists
+    gone = []
+    for suffix in SIDECARS:
+        beside = path + suffix
+        if exists(beside):
+            try:
+                remove(beside)
+                gone.append(os.path.basename(beside))
+            except OSError as e:
+                log.warning("could not remove %s: %s", beside, e)
+    return gone
+
+
+def give_world_to_server(path, chown=None):
+    """Hand a swapped-in world to the user the server runs as.
+
+    shutil.copy2 preserves the destination's ownership when it already exists, so this
+    is usually a no-op - but a world copied where none was leaves a root-owned file the
+    server cannot write, and that failure looks like a slow start rather than a broken
+    one. The same trap as every other folder in this codebase, so the same answer.
+    """
+    chown = chown or getattr(os, "chown", None)
+    if chown is None:
+        return True
+    try:
+        chown(path, layout.SERVER_UID, layout.SERVER_GID)
+        return True
+    except OSError as e:
+        log.warning("could not give %s to the server's user: %s", path, e)
+        return False
+
+
 def verify_world(path):
     """(ok, detail) - is this actually a world, or just a path that exists?
 
@@ -187,7 +239,16 @@ def verify_world(path):
     if size < 1024:
         return False, "the world file is only %d bytes, which is not a world" % size
     try:
-        con = sqlite3.connect("file:%s?mode=ro" % path.replace("?", "%3f"), uri=True)
+        # immutable=1, not merely mode=ro. Read-only stops SQLite *writing*; it does not
+        # stop it *wanting* to. A world left by a server that was killed rather than
+        # shut down has a hot journal beside it, and opening the database means replaying
+        # that journal first - which needs a write, which read-only refuses, which comes
+        # back as "attempt to write a readonly database" on a file that is perfectly
+        # fine. That failed a Genesis restore point on a healthy world. immutable says
+        # what is actually true here: this is a static file being inspected, and no
+        # journal belonging to it should be applied.
+        con = sqlite3.connect("file:%s?mode=ro&immutable=1" % path.replace("?", "%3f"),
+                              uri=True)
         try:
             integrity = con.execute("PRAGMA integrity_check;").fetchone()[0]
             rows = con.execute("SELECT count(*) FROM game;").fetchone()[0]
@@ -325,6 +386,14 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
         os.makedirs(os.path.dirname(live), exist_ok=True)
         os.replace(staged, live)
         layout.give_to_server([live])
+        # An archive can carry a journal that was written beside a *different* copy of
+        # this world - taken from a server that was killed rather than stopped. Replaying
+        # it into the restored database would be replaying it into one it does not
+        # describe. See clear_sidecars.
+        dropped = clear_sidecars(os.path.join(live, "%s.ark" % map_id))
+        if dropped:
+            step("dropped a stale journal that came out of the archive (%s)"
+                 % ", ".join(dropped))
     except OSError as e:
         if superseded and not os.path.exists(live):
             os.replace(superseded, live)          # put it back exactly as it was

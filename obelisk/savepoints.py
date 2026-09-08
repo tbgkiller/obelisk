@@ -145,7 +145,7 @@ WARNING = ("Rolls this map's world back to %s. Player characters and tribes are 
 
 def restore_point(store, map_key, name, stop=None, start=None, verify=None,
                   players=None, force=False, on_step=None, ark_root=None, now=None,
-                  listdir=None, getsize=None):
+                  listdir=None, getsize=None, save=None):
     """Put one map back on one of its own dated saves. (ok, message, detail).
 
     The order is the safety argument, and it is restore_map's: prove the point first,
@@ -207,6 +207,17 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
             # than implying it is a world somebody could go back to.
             step("current world copied aside, but it does not verify (%s)" % detail_now)
 
+    # Ask the map to write its world out before it is stopped, and carry on either way.
+    # Best effort on purpose: the world being replaced has already been copied aside as
+    # a file, so a save that does not happen costs nothing here - and blocking on it
+    # would refuse to restore a map exactly when it is unhealthy, which is when somebody
+    # most wants to. It is still worth trying, because a map that shuts down cleanly is
+    # a map that does not leave a hot journal behind.
+    if save:
+        step("asking %s to save first" % map_key)
+        ok_sv, why_sv = save(map_key)
+        step("saved" if ok_sv else "it did not answer, carrying on: %s" % why_sv)
+
     stop = stop or (lambda key: (True, "stopped"))
     ok_s, why_s = stop(map_key)
     if not ok_s:
@@ -214,10 +225,18 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
                        % (map_id, why_s)), detail
     step("stopped %s" % map_key)
 
+    # Any journal beside the world belongs to the world being replaced, not to the one
+    # arriving. Left in place it would be replayed into a database it knows nothing
+    # about - see restore.clear_sidecars.
+    gone = restore.clear_sidecars(live)
+    if gone:
+        step("cleared a stale journal left by the last shutdown (%s)" % ", ".join(gone))
+
     try:
         # copy, not move: the point stays where it is, so the same one can be tried
         # again if the first attempt does not come up.
         shutil.copy2(point["path"], live)
+        restore.give_world_to_server(live)
     except OSError as e:
         _restart(start, map_key, detail, step)
         return False, ("could not put the world in place, so %s is starting again on "
@@ -227,7 +246,9 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
     ok_v, why_v = verify_point(live)
     if not ok_v:
         if keep and os.path.isfile(keep):
+            restore.clear_sidecars(live)
             shutil.copy2(keep, live)
+            restore.give_world_to_server(live)
             step("the swapped world did not verify, so the previous one was put back")
         _restart(start, map_key, detail, step)
         return False, "the restored world does not verify: %s" % why_v, detail

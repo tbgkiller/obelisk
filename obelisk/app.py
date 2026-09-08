@@ -28,6 +28,7 @@ from . import staging as stagingctl
 from . import updates as updatesctl
 from . import pending as pendingctl
 from . import savepoints as pointsctl
+from . import maps as mapsmod
 from .firstrun import bootstrap
 from .plan import build_plan
 from .settings import Invalid, validate as validate_setting
@@ -885,6 +886,28 @@ def build_app(store, docker=None):
             note("checking it is really serving")
             return clusterctl.verify_instance(store, key)
 
+        def _save_one(key):
+            """Ask this one map to write its world out. Best effort, by design.
+
+            A map that shuts down cleanly does not leave a hot journal beside its world,
+            which is what refused the Genesis restore. So it is worth asking - but the
+            world has already been copied aside as a file, so a map that cannot answer
+            must not be a map that cannot be restored. That is precisely when somebody
+            wants to.
+            """
+            from . import bot
+            password = str(store.get("admin_password") or "")
+            for label, host, port in clusterctl.running_instances(store):
+                if label not in (key, mapsmod.BY_KEY[key]["name"]):
+                    continue
+                try:
+                    clusterctl.run_coroutine(
+                        bot.rcon_with(host, port, password, "SaveWorld", timeout=30))
+                    return True, "saved"
+                except Exception as e:               # noqa: BLE001 - reported, not fatal
+                    return False, str(e).strip() or e.__class__.__name__
+            return False, "it is not running"
+
         def go():
             return pointsctl.restore_point(
                 store, map_key, name,
@@ -892,7 +915,8 @@ def build_app(store, docker=None):
                 start=lambda k: (note("starting %s" % k)
                                  or clusterctl.start_one(store, k)),
                 verify=verify_after, force=force, on_step=note,
-                players=lambda: clusterctl.players_online(store))
+                players=lambda: clusterctl.players_online(store),
+                save=_save_one)
 
         async def run_it():
             try:
