@@ -448,6 +448,7 @@ check("restore.py says the definition is deliberately out of scope",
 from . import announce as _ann
 
 _mainsrc = _appsrc.split("async def main")[1]
+_appsrc_all = _appsrc          # the whole module, for things main() delegates
 check("secrets are registered before anything can announce",
       "guard_secrets" in _mainsrc, "not registered at boot")
 check("and before the relay that would carry them is started",
@@ -496,10 +497,15 @@ check("and measured off the event loop, since it is ten RCON round trips",
       "to_thread(clusterctl.reachable" in _mainsrc)
 check("a relay that cannot reach its maps says so at error level",
       'log.error("relay reaches %d of %d' in _mainsrc)
+# These two used to look inside main() for the announcement. Both announcements now
+# live in _say_coverage, which boot and the re-wire loop share so the count and the
+# wording cannot disagree - so the assertion follows them there. The behaviour is what
+# matters and it is checked directly further down, by calling the helper and reading the
+# event it emits.
 check("and announces it, so an admin sees it in Discord rather than a log",
-      '"relay.degraded"' in _mainsrc)
+      '"relay.degraded"' in _appsrc_all)
 check("full coverage is announced too, so silence is not the only good news",
-      '"relay.up"' in _mainsrc)
+      '"relay.up"' in _appsrc_all)
 check("the old unconditional claim is gone",
       'log.info("relay covering %d map(s): %s"' not in _appsrc,
       "still claims coverage without checking")
@@ -610,3 +616,62 @@ check("and non-numeric folders are not mistaken for mods", "notamod" not in _m, 
 
 import ast as _ast
 import io as _io
+
+
+# ---- coverage is described in one place, and counts agree with their nouns
+#
+# It announced "Chat relay is up and reaching all 1 maps" - true, and it read like a bug
+# because it was one: the relay had wired at boot to the only map running during a
+# staggered restart, and never looked again.
+from . import announce as _ann
+from . import app as _app
+
+
+def _coverage(reachable, total, bad=()):
+    while _ann.pop_all(limit=100):
+        pass
+    _app._say_coverage(reachable, total, list(bad))
+    got = _ann.pop_all(limit=10)
+    return got[0] if got else {}
+
+
+_one = _coverage(1, 1)
+check("one map is not 'all 1 maps'", "all 1 maps" not in _one.get("text", ""),
+      _one.get("text"))
+check("and it reads as a sentence", "the only map" in _one.get("text", ""),
+      _one.get("text"))
+
+_tenc = _coverage(10, 10)
+check("ten maps is plural", "all 10 maps" in _tenc.get("text", ""), _tenc.get("text"))
+check("and is reported as up", _tenc.get("event") == "relay.up", _tenc.get("event"))
+
+_part = _coverage(7, 10, [("Genesis", "timeout"), ("Astraeos", "timeout")])
+check("partial coverage is degraded, not up",
+      _part.get("event") == "relay.degraded", _part.get("event"))
+check("with the right count and noun", "7 of 10 maps" in _part.get("text", ""),
+      _part.get("text"))
+check("and names what it cannot reach", "Genesis" in _part.get("fields", ""),
+      _part.get("fields"))
+
+_onebad = _coverage(0, 1, [("The Island", "timeout")])
+check("a single unreachable map is singular too",
+      "0 of 1 map" in _onebad.get("text", "")
+      and "0 of 1 maps" not in _onebad.get("text", ""), _onebad.get("text"))
+
+check("the relay re-checks its coverage rather than wiring once and hoping",
+      callable(getattr(_app, "relay_watch", None)))
+_appnow = open(_app.__file__, encoding="utf-8").read()
+check("and the boot path actually starts that loop",
+      "relay_watch(store, bot)" in _appnow, "relay_watch is never scheduled")
+check("boot and the loop describe coverage through the same helper, so the count and "
+      "the wording cannot disagree", _appnow.count("_say_coverage(") >= 3,
+      _appnow.count("_say_coverage("))
+
+
+# ---- this file could not fail
+#
+# There was no summary and no exit, so every check here printed PASS or FAIL and the
+# process returned 0 either way. A test that cannot fail the build is a test that is
+# not being run, however many lines of it there are.
+print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
+sys.exit(1 if fails else 0)

@@ -1277,6 +1277,56 @@ async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
             streak = 0
 
 
+async def relay_watch(store, bot, interval=120):
+    """Keep the relay pointed at every player map, as they come and go.
+
+    It wired once, at boot, from whatever happened to be running at that instant - and a
+    staggered start is exactly the instant it should not have trusted. On 8 September
+    the cluster was relaunched, nine maps were still waiting behind the island's health
+    check, and the relay came up covering one map and stayed there. Chat was broken for
+    the rest of the cluster until somebody restarted the manager by hand.
+
+    So coverage is re-checked rather than assumed. It already measures reachability -
+    that is where relay.up and relay.degraded come from - and this drives the re-wire off
+    the same measurement, on a loop. A cluster that comes up in pieces heals to full
+    coverage on its own.
+    """
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            before = set(bot.SERVERS or {})
+            if not _wire_relay(store, bot):
+                continue
+            after = set(bot.SERVERS or {})
+            if after == before:
+                continue
+            log.info("relay re-wired: now covering %d map(s) (was %d)",
+                     len(after), len(before))
+            good, bad = await asyncio.to_thread(clusterctl.reachable, store)
+            _say_coverage(len(good), len(after), bad)
+        except Exception as e:                          # noqa: BLE001 - never fatal
+            log.info("relay coverage check skipped: %s", e)
+
+
+def _say_coverage(reachable, total, bad):
+    """One place that describes coverage, so the count and the wording agree.
+
+    It said "reaching all 1 maps" - true, and read like a bug because it was one.
+    """
+    RELAY_INFO.update(total=total, reachable=reachable,
+                      unreachable=", ".join(n for n, _w in bad))
+    maps = "map" if total == 1 else "maps"
+    if bad:
+        announce.say("relay.degraded",
+                     "Chat relay can reach %d of %d %s. Cross-map chat will not work "
+                     "for the rest until this is fixed." % (reachable, total, maps),
+                     level="error", unreachable=", ".join(n for n, _w in bad))
+    else:
+        announce.say("relay.up",
+                     "Chat relay is up and reaching %s."
+                     % ("the only map" if total == 1 else "all %d maps" % total))
+
+
 async def events_persist(store, interval=5):
     """Write the activity feed out when it changes, so it survives a restart.
 
@@ -1528,20 +1578,17 @@ async def main():
             good, bad = [], [("all maps", str(e))]
         total = len(bot.SERVERS)
         if bad:
-            names = ", ".join("%s (%s)" % (n, why) for n, why in bad[:4])
             log.error("relay reaches %d of %d map(s) - cannot reach: %s",
-                      len(good), total, names)
-            RELAY_INFO.update(total=total, reachable=len(good),
-                              unreachable=", ".join(n for n, _w in bad))
-            announce.say("relay.degraded",
-                         "Chat relay can reach %d of %d maps. Cross-map chat will not "
-                         "work for the rest until this is fixed." % (len(good), total),
-                         level="error", unreachable=", ".join(n for n, _w in bad))
+                      len(good), total,
+                      ", ".join("%s (%s)" % (n, why) for n, why in bad[:4]))
         else:
             log.info("relay covering %d map(s), all reachable: %s",
                      total, ", ".join(bot.SERVERS))
-            RELAY_INFO.update(total=total, reachable=total, unreachable="")
-            announce.say("relay.up", "Chat relay is up and reaching all %d maps." % total)
+        _say_coverage(len(good), total, bad)
+        log.info("relaying chat between: %s", ", ".join(bot.SERVERS))
+        # And keep checking. A cluster that comes up in pieces used to leave the relay
+        # pointed at whatever was running when the manager booted.
+        tasks.append(asyncio.create_task(relay_watch(store, bot)))
         tasks.append(asyncio.create_task(bot.main()))
     else:
         log.info("no cluster running yet - relay idle until maps are launched")

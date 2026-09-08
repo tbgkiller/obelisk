@@ -958,5 +958,27 @@ check("a cluster with no maps defined is never ready",
       not clusterctl.cluster_ready(_nomaps)[0],
       clusterctl.cluster_ready(_nomaps)[1])
 
+
+# ---- the staging server is not a map
+#
+# Coverage is ten player maps, not eleven things that happen to run the same image. The
+# staging server lives in its own compose project and is not in the map list, so it is
+# excluded by construction rather than by a rule somebody has to remember - but that is
+# worth an assertion, because "by construction" is exactly the kind of thing a later
+# change breaks quietly.
+from . import staging as _stg
+
+_ten = _PlayerStore()
+_ten.values["maps"] = "island,center,scorched,ragnarok,aberration,extinction,valguero,astraeos,lostcolony,genesis"
+_names = clusterctl.target_names(_ten)
+check("the coverage target is exactly the player maps", len(_names) == 10, len(_names))
+_staging_name = _stg.container_name(clusterctl.project(_ten))
+check("and the staging server is not among them",
+      _staging_name not in _names, (_staging_name, _names[:2]))
+check("nor in what the relay would be pointed at",
+      all("staging" not in n for n in _names), _names)
+check("because it is a compose project of its own",
+      _stg.project_name(clusterctl.project(_ten)) != clusterctl.project(_ten))
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)
