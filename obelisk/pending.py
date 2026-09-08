@@ -123,13 +123,15 @@ def split(changes, store, map_name=None):
         if not stageable(key):
             now[key] = value
             continue
-        if _same(store.get(key, map_name=map_name), value):
+        if same(store.get(key, map_name=map_name), value):
             continue
         later[key] = value
     return now, later
 
 
-def _same(a, b):
+def same(a, b):
+    """Are these the same setting value? Types come back from a form as strings, so
+    70 and "70" are the same answer to the same question."""
     if isinstance(a, bool) or isinstance(b, bool):
         return bool(a) == bool(b)
     if isinstance(a, (int, float)) and isinstance(b, (int, float)):
@@ -152,7 +154,7 @@ def stage(store, changes, map_name=None, now=None):
         if not stageable(key) or key not in BY_KEY:
             continue
         holder = data["cluster"] if not map_name else data["maps"].setdefault(map_name, {})
-        if _same(store.get(key, map_name=map_name), value):
+        if same(store.get(key, map_name=map_name), value):
             holder.pop(key, None)          # back to what is running: nothing to do
             continue
         holder[key] = value

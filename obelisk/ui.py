@@ -21,6 +21,13 @@ CSS = """
 :root{color-scheme:dark}
 *{box-sizing:border-box}
 body{background:#12151a;color:#e6e9ef;font:14px/1.55 ui-sans-serif,system-ui,-apple-system,Segoe UI,Roboto,sans-serif;margin:0;padding:24px}
+/* The tabs, the search and Save stay put. On a page that is 75 KB of settings, having
+   to scroll back to the top to search or save is most of the work of using it. The
+   header's real height goes into --topH so the toolbar can sit directly under it
+   without anybody hardcoding a number that a longer title would break. */
+header.top{position:sticky;top:-24px;z-index:30;background:#12151a;
+  margin:-24px -24px 0;padding:24px 24px 0}
+header.top nav{margin-bottom:0;padding-bottom:10px}
 .wrap{max-width:940px;margin:0 auto}
 h1{font-size:19px;margin:0 0 2px;letter-spacing:.3px}
 .sub{color:#8b94a3;font-size:12px;margin-bottom:20px}
@@ -114,7 +121,9 @@ form[data-busy] button{opacity:.45;cursor:progress}
 .problem{background:#2a1d1f;color:#ffb4ab;border:1px solid #4a2b2e}
 .ok{color:#3fb950}
 .foot{color:#5b6472;font-size:11px;margin-top:22px}
-.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin:0 0 10px}
+.toolbar{display:flex;gap:10px;align-items:center;flex-wrap:wrap;
+  position:sticky;top:var(--topH,86px);z-index:20;background:#12151a;
+  padding:10px 0;margin:0 0 10px;border-bottom:1px solid #20262f}
 .toolbar input[type=search]{flex:1;min-width:240px;max-width:none}
 .chk{display:flex;gap:6px;align-items:center;font-weight:500;margin:0;white-space:nowrap}
 .hint{color:#8b94a3;font-size:12px}
@@ -146,6 +155,23 @@ class _Unset(object):
 _UNSET = _Unset()
 
 
+# Measured rather than assumed: the header is a title plus a row of tabs, and both wrap
+# on a narrow screen. A hardcoded offset would tuck the toolbar under the tabs on a
+# phone, which is exactly where scrolling back up hurts most.
+STICKY_JS = """
+<script>
+(function(){
+  const top = document.querySelector('header.top');
+  if (!top) return;
+  const set = () => document.documentElement.style.setProperty(
+    '--topH', (top.offsetHeight - 24) + 'px');
+  set();
+  addEventListener('resize', set);
+})();
+</script>
+"""
+
+
 def _e(v):
     return html.escape("" if v is None else str(v), quote=True)
 
@@ -161,9 +187,9 @@ def page(title, body, nav_on=""):
     return ("<!doctype html><html><head><meta charset=utf-8>"
             "<meta name=viewport content=\"width=device-width,initial-scale=1\">"
             "<title>%s</title><style>%s</style></head><body><div class=wrap>"
-            "<h1>%s</h1><nav>%s</nav>%s"
-            "<div class=foot>Obelisk</div></div></body></html>"
-            % (_e(title), CSS, _e(title), nav, body))
+            "<header class=top><h1>%s</h1><nav>%s</nav></header>%s"
+            "<div class=foot>Obelisk</div></div>%s</body></html>"
+            % (_e(title), CSS, _e(title), nav, body, STICKY_JS))
 
 
 def _field(s, value, locked, pending_value=_UNSET):
@@ -1076,6 +1102,7 @@ def render_settings(store):
         '(%d)</label>'
         '<button type=button class=ghost id=expandall>Expand all</button>'
         '<span class=hint id=qcount></span>'
+        '<button type=submit>Save changes</button>'
         '</div>'
         '<div class=index>%s</div>'
         '<div class=help style="margin:-4px 0 14px">%d of these have a documented game '
@@ -1083,8 +1110,7 @@ def render_settings(store):
         'not marked either way rather than guessed at.</div>'
         % (len(SETTINGS), total_changed, "".join(index), known))
 
-    return ('<form method=post action="/admin/save">%s%s%s%s'
-            '<button type=submit>Save changes</button></form>'
+    return ('<form method=post action="/admin/save">%s%s%s%s</form>'
             % (banner, toolbar, "".join(blocks), SETTINGS_JS))
 
 

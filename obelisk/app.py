@@ -218,6 +218,14 @@ def build_app(store, docker=None):
         # what these settings already did, except invisibly: the value went into the
         # store and waited for whatever Launch came next.
         live, later = _stage_or_apply(changes)
+        # Which staging-scope values are *different*, worked out before the patch that
+        # makes them the same. The form posts every field on the page, so "a staging
+        # key is in this submission" is true of every save ever made - restarting the
+        # staging server on that would bounce it, and kill any prime it was in the
+        # middle of, every time somebody changed an unrelated setting.
+        restage = [k for k in live
+                   if pendingctl.scope_of(k) == "staging"
+                   and not pendingctl.same(store.get(k), live[k])]
         try:
             store.patch(live)
             store.save()
@@ -241,7 +249,7 @@ def build_app(store, docker=None):
             # they disturb is a server with no players on it and a world regenerated
             # every rehearsal. Making those wait for an empty cluster would be treating
             # a free change like an expensive one.
-            await _restage_if_needed(changes)
+            await _restage_if_needed(restage)
         except Invalid as e:
             return chrome('<div class=problem>%s</div>%s'
                           % (ui._e(str(e)), ui.render_settings(store)),
@@ -249,8 +257,8 @@ def build_app(store, docker=None):
         raise web.HTTPFound("/admin")
 
     async def _restage_if_needed(changed):
-        from .schema import scope_of
-        if not any(scope_of(k) == "staging" for k in (changed or {})):
+        """Bounce the staging server, but only for a value that actually moved."""
+        if not changed:
             return
 
         def go():

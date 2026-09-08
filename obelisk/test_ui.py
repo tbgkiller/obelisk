@@ -666,5 +666,33 @@ check("while the live value is untouched", _fld.get("max_players") == 70)
 check("a setting that is not queued is unaffected",
       'value="20g"' in _after or "20g" in _after)
 
+
+# ---- the top bar stays put
+#
+# On a page that is 75 KB of settings, scrolling back to the top to search, switch tabs
+# or save is most of the work of using it.
+_shell = page("Obelisk", "<p>body</p>", nav_on="/admin")
+check("the title and tabs are in a sticky header",
+      "<header class=top>" in _shell and "header.top{position:sticky" in _shell)
+check("the tabs are inside it, so switching pages never needs a scroll",
+      _shell.index("<nav>") > _shell.index("<header class=top>")
+      and _shell.index("</nav>") < _shell.index("</header>"))
+check("its height is measured rather than hardcoded - a title that wraps on a phone "
+      "would otherwise tuck the toolbar underneath the tabs",
+      "--topH" in _shell and "offsetHeight" in _shell)
+
+_sett = render_settings(store())
+check("the search box is in the sticky toolbar", "id=q" in _sett)
+check("and so is Save, so it is reachable from anywhere on the page",
+      _sett.count("Save changes") == 1
+      and _sett.index("Save changes") < _sett.index("<fieldset"), _sett.count("Save changes"))
+check("the toolbar sticks below the header rather than over it",
+      "top:var(--topH" in uimod.CSS)
+check("the form still opens and closes exactly once",
+      _sett.count("<form") == _sett.count("</form>") == 1,
+      (_sett.count("<form"), _sett.count("</form>")))
+check("render_settings still carries only its own script",
+      _sett.count("<script>") == 1, _sett.count("<script>"))
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

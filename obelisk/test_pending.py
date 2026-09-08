@@ -61,6 +61,34 @@ check("setting something to what it already is queues nothing", later == {}, lat
 check("because a queue that counts no-ops lies about how much is waiting", True)
 
 
+# ---- "present in the submission" is not "changed"
+#
+# The settings form posts every field on the page, so every save carries every setting.
+# Deciding to act on a key because it *appeared* meant the staging server was stopped
+# and restarted on every save anybody ever made - and on a cluster with staging set to
+# always, that would kill a prime that was half way through a 12 GB download because
+# somebody edited the message of the day.
+st = store()
+check("a value that came back unchanged is the same value",
+      pending.same(st.get("max_players"), "70"), st.get("max_players"))
+check("even though the form sent it as text", pending.same(70, "70"))
+check("and a real change is not", not pending.same(st.get("max_players"), "250"))
+check("bools survive the round trip", pending.same(True, True)
+      and not pending.same(True, False))
+check("so does a memory string", pending.same("20g", "20g")
+      and not pending.same("20g", "36g"))
+
+_posted = {"staging_memory": "10g", "staging_mode": "always", "motd": "hello"}
+_st = store(staging_memory="10g", staging_mode="always")
+_moved = [k for k in _posted
+          if pending.scope_of(k) == "staging" and not pending.same(_st.get(k), _posted[k])]
+check("a save that changed nothing about staging restages nothing", _moved == [], _moved)
+_posted["staging_memory"] = "12g"
+_moved = [k for k in _posted
+          if pending.scope_of(k) == "staging" and not pending.same(_st.get(k), _posted[k])]
+check("and one that did, restages", _moved == ["staging_memory"], _moved)
+
+
 # ---- the queue is an overlay, never a write
 #
 # The single most important property here. If a pending value reached the live store,
