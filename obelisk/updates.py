@@ -614,6 +614,61 @@ def in_window(store, now_minutes):
     return now_minutes >= start or now_minutes <= end
 
 
+def newer_build(running, staged):
+    """Is `staged` strictly newer than `running`? Build ids only ever climb.
+
+    Strictly newer, not merely different. A staged tree that is *older* than what is
+    running is not an update either - applying it would be a downgrade dressed as one.
+    """
+    a, b = str(running or "").strip(), str(staged or "").strip()
+    if not a or not b:
+        return False
+    if a.isdigit() and b.isdigit():
+        return int(b) > int(a)
+    return b != a
+
+
+def worth_applying(store, installed=None, ark_root=None):
+    """(is there anything to apply, why) - the gate every trigger shares.
+
+    **A primed build is not an update.** With staging set to always, the staging server
+    deliberately rehearses the *current* build to warm the tree and prove the path, which
+    writes a verified primed record for the build already running. Reading that as work
+    to do is what stopped ten servers to install what they were already on - and because
+    a restart empties the cluster, the empty-cluster trigger then fired again, and again.
+
+    So the question is not "is something primed". It is "is there a change, or a build
+    strictly newer than the one running".
+    """
+    from . import pending
+
+    waiting = pending.count(store)
+    if waiting:
+        return True, "%d setting change(s) are waiting" % waiting
+
+    ready = primed(store)
+    if not ready:
+        return False, "nothing is queued and nothing is staged"
+    if not owns_updates(store):
+        return False, "a build is staged but POK applies updates on this cluster"
+
+    if installed is None:
+        from . import layout
+        root = ark_root or layout.ark_root_of(store)
+        installed, _why = arkupdate.installed_build(
+            layout.ark_paths(root)["serverfiles"])
+    if not installed:
+        # Not knowing what is running is not a reason to restart ten servers on the
+        # chance that the staged thing is newer.
+        return False, ("the installed build could not be read, so it is not known "
+                       "whether the staged one is newer")
+    if not newer_build(installed, ready.get("build")):
+        return False, ("the staged build (%s) is the one already running, so there is "
+                       "nothing to apply" % ready.get("build"))
+    return True, "build %s is staged and verified, newer than %s" % (
+        ready.get("build"), installed)
+
+
 def empty_enough(store, streak, needed=3):
     """(may we apply now, why) given how many consecutive polls found nobody.
 
@@ -630,7 +685,7 @@ def empty_enough(store, streak, needed=3):
     return True, "the cluster has been empty for %d checks running" % streak
 
 
-def due(store, now=None):
+def due(store, now=None, installed=None):
     """(due, why) - should the scheduler apply the staged update right now?
 
     Deliberately narrow. It fires only for an update that has been staged *and* proved,
@@ -639,13 +694,12 @@ def due(store, now=None):
     """
     from . import pending
 
-    ready = primed(store)
-    waiting = pending.count(store)
-    swap_files = bool(ready) and owns_updates(store)
-    if not swap_files and not waiting:
-        if ready and not owns_updates(store):
-            return False, "POK applies updates on this cluster, not Obelisk"
-        return False, "nothing staged and verified, and nothing queued"
+    # The same gate the empty path uses: a primed record for the build already running
+    # is not an update. Duplicating the question in two places is how the empty path
+    # ended up without the check the window already had.
+    worth, why_worth = worth_applying(store, installed=installed)
+    if not worth:
+        return False, why_worth
     if not store.get("update_apply_in_window"):
         return False, "applying in the window is switched off"
 
@@ -668,12 +722,4 @@ def due(store, now=None):
     # A build already applied does not fire again the next night. Queued settings are
     # not subject to that: they are removed from the queue when they land, so their
     # absence is what stops them repeating.
-    last = state(store).get("applied") or {}
-    if swap_files and not waiting and             str(last.get("build") or "") == str(ready.get("build")):
-        return False, "build %s has already been applied" % ready.get("build")
-    what = []
-    if swap_files:
-        what.append("build %s is staged and verified" % ready.get("build"))
-    if waiting:
-        what.append("%d setting change(s) are queued" % waiting)
-    return True, "%s and the window is open" % " and ".join(what)
+    return True, "%s and the window is open" % why_worth

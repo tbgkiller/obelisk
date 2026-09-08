@@ -882,5 +882,81 @@ check("a map that raises is silent rather than empty - the distinction Apply dep
       _total == 0 and _counts == {} and [l for l, _ in _silent] == ["Genesis"],
       (_total, _counts, _silent))
 
+
+# ---- "empty" is a fact about a cluster that has finished starting
+#
+# It fired on a cluster where nine maps were still `Created` behind the island's health
+# check and only the island was up: zero players across one map, three checks running,
+# and an apply began on a cluster that had not come up yet. Of course it was empty - it
+# had just been restarted.
+_ready_store = _PlayerStore()
+_ready_store.values["maps"] = "island,center"
+_NAMES = clusterctl.target_names(_ready_store)
+check("the cluster knows every map it expects", len(_NAMES) == 2, _NAMES)
+
+
+def _details_for(states):
+    return lambda names: {n: states[n] for n in names if n in states}
+
+
+_HEALTHY = {n: {"state": "running", "health": "healthy"} for n in _NAMES}
+_answers = {n: "No Players Connected" for n in _NAMES}
+_orig_running = clusterctl.running_instances
+clusterctl.running_instances = lambda store: [
+    (n.rsplit("-", 1)[-1], n, 27020 + i) for i, n in enumerate(_NAMES)]
+try:
+    ok, why, total = clusterctl.cluster_ready(
+        _ready_store, details=_details_for(_HEALTHY),
+        probe=lambda h, p: _answers[h])
+    check("all maps up, healthy and answering is ready", ok, why)
+    check("and reports nobody on", total == 0, total)
+
+    # Only the island up: the nine others not created yet.
+    ok, why, _t = clusterctl.cluster_ready(
+        _ready_store, details=_details_for({_NAMES[0]: _HEALTHY[_NAMES[0]]}),
+        probe=lambda h, p: _answers[h])
+    check("a cluster with maps missing is NOT ready - the loop's exact shape", not ok, why)
+    check("and names how many are absent", "not there yet" in why, why)
+
+    # Created but not started - what depends_on leaves behind while the master boots.
+    _starting = dict(_HEALTHY)
+    _starting[_NAMES[1]] = {"state": "created", "health": ""}
+    ok, why, _t = clusterctl.cluster_ready(
+        _ready_store, details=_details_for(_starting), probe=lambda h, p: _answers[h])
+    check("a map that is created but not running is not ready", not ok, why)
+
+    _starting[_NAMES[1]] = {"state": "running", "health": "starting"}
+    ok, why, _t = clusterctl.cluster_ready(
+        _ready_store, details=_details_for(_starting), probe=lambda h, p: _answers[h])
+    check("nor is one that is still loading its world", not ok, why)
+    check("which is what stops the window opening right after a restart",
+          "not up and healthy yet" in why, why)
+
+    # Up and healthy but not answering RCON.
+    def _one_silent(host, port):
+        if host == _NAMES[1]:
+            raise OSError("timed out")
+        return _answers[host]
+
+    ok, why, _t = clusterctl.cluster_ready(
+        _ready_store, details=_details_for(_HEALTHY), probe=_one_silent)
+    check("a healthy map that will not answer RCON is not ready either", not ok, why)
+    check("and says which", "did not answer" in why, why)
+
+    # Somebody playing.
+    ok, why, total = clusterctl.cluster_ready(
+        _ready_store, details=_details_for(_HEALTHY),
+        probe=lambda h, p: "0. Alice, 1234" if h == _NAMES[0] else _answers[h])
+    check("a ready cluster with a player on reports the count, not emptiness",
+          ok and total == 1, (ok, total))
+finally:
+    clusterctl.running_instances = _orig_running
+
+_nomaps = _PlayerStore()
+_nomaps.values["maps"] = ""
+check("a cluster with no maps defined is never ready",
+      not clusterctl.cluster_ready(_nomaps)[0],
+      clusterctl.cluster_ready(_nomaps)[1])
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

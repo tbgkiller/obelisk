@@ -129,39 +129,42 @@ def at(hour, minute=0):
 
 
 # ---- due(): four separate reasons not to fire, and each one alone must stop it
+# The build the cluster is on. "newer than running" is the gate now, so a
+# test that wants an apply to fire has to say what it is newer *than*.
+OLD_BUILD = "25117056"
 ready = {"ok": True, "build": "25200000", "loaded": LOADED}
 
 s = FakeStore(update_apply_in_window=True)
 updates.remember(s, primed=ready)
-ok, why = updates.due(s, now=lambda: at(5))
+ok, why = updates.due(s, now=lambda: at(5), installed=OLD_BUILD)
 check("staged, verified, in the window, Obelisk in charge - fires", ok, why)
 
-ok, why = updates.due(s, now=lambda: at(12))
+ok, why = updates.due(s, now=lambda: at(12), installed=OLD_BUILD)
 check("outside the window it does not fire", not ok, why)
 check("and says why", "window" in why, why)
 
 s2 = FakeStore(update_apply_in_window=False)
 updates.remember(s2, primed=ready)
-ok, why = updates.due(s2, now=lambda: at(5))
+ok, why = updates.due(s2, now=lambda: at(5), installed=OLD_BUILD)
 check("with the setting off it does not fire", not ok, why)
 
 s3 = FakeStore(update_apply_in_window=True, ark_update_mode="automatic")
 updates.remember(s3, primed=ready)
-ok, why = updates.due(s3, now=lambda: at(5))
+ok, why = updates.due(s3, now=lambda: at(5), installed=OLD_BUILD)
 check("it never fires while the server image owns updates", not ok, why)
 check("and says which system is in charge", "POK" in why, why)
 
 s4 = FakeStore(update_apply_in_window=True)
 updates.remember(s4, primed={"ok": False, "build": "25200000"})
-ok, why = updates.due(s4, now=lambda: at(5))
+ok, why = updates.due(s4, now=lambda: at(5), installed=OLD_BUILD)
 check("an update that failed its rehearsal never fires", not ok, why)
 
 s5 = FakeStore(update_apply_in_window=True)
 updates.remember(s5, primed=ready,
                  applied={"build": "25200000", "when": 1, "ok": True})
-ok, why = updates.due(s5, now=lambda: at(5))
-check("a build already applied does not fire again the next night", not ok, why)
-check("and says so", "already been applied" in why, why)
+ok, why = updates.due(s5, now=lambda: at(5), installed=OLD_BUILD)
+check("a build already applied still fires if it is newer than what runs",
+      ok, why)
 
 
 # ---- staging ahead: what to stage, and not staging it over and over
@@ -687,18 +690,63 @@ check("with the setting off it never fires",
 # ---- due() now fires for queued settings, not only a staged build
 st = real_store(update_apply_in_window=True)
 _pend.stage(st, {"max_players": 250})
-ok, why = updates.due(st, now=lambda: at(5))
+ok, why = updates.due(st, now=lambda: at(5), installed=OLD_BUILD)
 check("the window applies queued settings even with nothing staged", ok, why)
 check("and says what it is applying", "setting change" in why, why)
 
 st = real_store(update_apply_in_window=True, ark_update_mode="automatic")
 _pend.stage(st, {"max_players": 250})
-ok, why = updates.due(st, now=lambda: at(5))
+ok, why = updates.due(st, now=lambda: at(5), installed=OLD_BUILD)
 check("queued settings apply in the window whoever owns updates", ok, why)
 
 st = real_store(update_apply_in_window=True)
-ok, why = updates.due(st, now=lambda: at(5))
+ok, why = updates.due(st, now=lambda: at(5), installed=OLD_BUILD)
 check("with nothing queued and nothing staged it does not fire", not ok, why)
+
+
+# ---- a primed build is not an update
+#
+# The loop that ran on the live cluster. With staging set to always, the staging server
+# deliberately rehearses the *current* build to warm the tree - which writes a verified
+# primed record for the build already running. The empty-cluster trigger read "something
+# is primed" as "there is an update", stopped ten servers to install what they were
+# already on, and the restart emptied the cluster, which armed the trigger again.
+st = real_store()
+updates.remember(st, primed={"ok": True, "build": "25117056", "loaded": LOADED})
+worth, why = updates.worth_applying(st, installed="25117056")
+check("a staged build that equals the running one is not something to apply",
+      not worth, why)
+check("and it says so in those words", "already running" in why, why)
+
+worth, why = updates.worth_applying(st, installed="25200000")
+check("nor is a staged build OLDER than the running one - that is a downgrade",
+      not worth, why)
+
+updates.remember(st, primed={"ok": True, "build": "25200000", "loaded": LOADED})
+worth, why = updates.worth_applying(st, installed="25117056")
+check("a strictly newer staged build is", worth, why)
+
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+worth, why = updates.worth_applying(st, installed="25117056")
+check("and so is a queued setting change, with nothing staged at all", worth, why)
+
+st = real_store()
+updates.remember(st, primed={"ok": True, "build": "25200000", "loaded": LOADED})
+worth, why = updates.worth_applying(st, installed=None, ark_root="/nowhere")
+check("a build we cannot read is not a licence to restart on the chance", not worth, why)
+check("and says that is what happened", "could not be read" in why, why)
+
+check("strictly newer, numerically", updates.newer_build("25117056", "25200000")
+      and not updates.newer_build("25200000", "25117056")
+      and not updates.newer_build("25117056", "25117056"))
+check("an unreadable pair is never 'newer'",
+      not updates.newer_build("", "25200000") and not updates.newer_build("2511", ""))
+
+st = real_store(update_apply_in_window=True)
+updates.remember(st, primed={"ok": True, "build": "25117056", "loaded": LOADED})
+ok, why = updates.due(st, now=lambda: at(5), installed="25117056")
+check("so the window does not fire for it either", not ok, why)
 
 
 # ---- the window is a backstop, not a second schedule
@@ -712,24 +760,24 @@ _five_am = at(5)
 st = real_store(update_apply_in_window=True)
 _pend.stage(st, {"max_players": 250})
 updates.remember(st, last_apply=_five_am - 3 * 3600)
-ok, why = updates.due(st, now=lambda: _five_am)
+ok, why = updates.due(st, now=lambda: _five_am, installed=OLD_BUILD)
 check("an apply three hours ago suppresses the window", not ok, why)
 check("and says how long ago, so the silence is explicable",
       "3 hour(s) ago" in why and "nothing to add" in why, why)
 
 updates.remember(st, last_apply=_five_am - 23 * 3600)
-ok, why = updates.due(st, now=lambda: _five_am)
+ok, why = updates.due(st, now=lambda: _five_am, installed=OLD_BUILD)
 check("still suppressed at 23 hours - inside the day", not ok, why)
 
 updates.remember(st, last_apply=_five_am - 25 * 3600)
-ok, why = updates.due(st, now=lambda: _five_am)
+ok, why = updates.due(st, now=lambda: _five_am, installed=OLD_BUILD)
 check("but a cluster that never emptied for 25 hours gets its backstop", ok, why)
 check("and the reason names what is waiting", "setting change" in why, why)
 
 # A cluster that has never applied anything has nothing to suppress it.
 st = real_store(update_apply_in_window=True)
 _pend.stage(st, {"max_players": 250})
-ok, why = updates.due(st, now=lambda: _five_am)
+ok, why = updates.due(st, now=lambda: _five_am, installed=OLD_BUILD)
 check("a cluster that has never applied anything is not suppressed", ok, why)
 
 # Suppression is about the restart, not about what the restart achieved: a batch that
@@ -744,7 +792,7 @@ updates.apply_batch(st, ARK, warn=c.warn, save=c.save, stop_all=c.stop,
                     exists=tree_exists(), now=lambda: _five_am - 3600)
 check("a batch that stopped the cluster records the restart",
       updates.state(st).get("last_apply"), updates.state(st))
-ok, why = updates.due(st, now=lambda: _five_am)
+ok, why = updates.due(st, now=lambda: _five_am, installed=OLD_BUILD)
 check("so a failed batch still holds the window off - the servers did restart",
       not ok and "nothing to add" in why, why)
 

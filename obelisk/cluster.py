@@ -505,6 +505,55 @@ def join_network_if_running(store, environ=None, running=None):
     return _join_network(store, environ)
 
 
+def cluster_ready(store, details=None, probe=None):
+    """(ready, why, total players) - is the WHOLE cluster up, healthy and answering?
+
+    "Nobody is playing" is only a fact about a cluster that is actually running. It
+    fired on a cluster where nine maps were still `Created` behind the island's health
+    check and only the island was up: zero players across one map, three checks running,
+    and an apply began on a cluster that had not finished starting. Of course it was
+    empty - it had just come up.
+
+    So every map this cluster defines has to exist, report running *and* healthy, and
+    answer RCON before the count means anything. A map that is starting fails this the
+    same way a silent one does, which is also what stops the window opening in the
+    minutes after a restart: the cluster has to come all the way back first.
+    """
+    expected = target_names(store)
+    if not expected:
+        return False, "this cluster has no maps defined", 0
+    details = details or dockerctl.container_details
+    try:
+        got = details(expected) or {}
+    except Exception as e:                        # noqa: BLE001 - never raises upward
+        return False, "could not ask Docker about the maps: %s" % e, 0
+
+    missing = [n for n in expected if n not in got]
+    if missing:
+        return False, ("%d map(s) are not there yet: %s"
+                       % (len(missing), ", ".join(_short(m) for m in missing[:4]))), 0
+    unwell = [n for n in expected
+              if got[n].get("state") != "running" or got[n].get("health") != "healthy"]
+    if unwell:
+        return False, ("%d map(s) are not up and healthy yet: %s"
+                       % (len(unwell), ", ".join(
+                           "%s (%s)" % (_short(n), got[n].get("health")
+                                        or got[n].get("state") or "?")
+                           for n in unwell[:4]))), 0
+
+    total, counts, silent = players_online(store, probe=probe)
+    if silent:
+        return False, ("%d map(s) did not answer RCON: %s"
+                       % (len(silent), ", ".join(l for l, _w in silent[:4]))), total
+    if len(counts) != len(expected):
+        return False, ("only %d of %d maps answered" % (len(counts), len(expected))), total
+    return True, "all %d maps are up, healthy and answering" % len(expected), total
+
+
+def _short(container_name):
+    return str(container_name).rsplit("-", 1)[-1]
+
+
 def players_online(store, probe=None, timeout=10.0):
     """(total, per-map counts, maps that did not answer).
 

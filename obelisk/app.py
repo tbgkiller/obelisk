@@ -26,6 +26,7 @@ from . import mods as modsctl
 from . import curseforge as cfctl
 from . import staging as stagingctl
 from . import updates as updatesctl
+from . import arkupdate
 from . import pending as pendingctl
 from . import savepoints as pointsctl
 from . import maps as mapsmod
@@ -1229,9 +1230,18 @@ async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
     while True:
         await asyncio.sleep(interval)
         try:
-            if not (pnd.any_pending(store) or upd.primed(store)):
+            # Is there anything to apply at all? Asked first because it is free and
+            # because the answer was wrong: a primed record for the build already
+            # running is not an update, and reading it as one restarted ten servers to
+            # install what they were already on - which emptied the cluster, which
+            # started the whole thing again.
+            worth, why_worth = upd.worth_applying(
+                store, installed=arkupdate.installed_build(
+                    layout.ark_paths(layout.ark_root_of(store))["serverfiles"])[0])
+            if not worth:
                 streak = 0
                 continue
+
             lock = APPLY_LOCK if busy is None else busy
             if lock.locked():
                 # Something is already stopping and starting the cluster. Not a moment
@@ -1239,11 +1249,13 @@ async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
                 streak = 0
                 continue
 
-            total, counts, silent = await asyncio.to_thread(
-                clusterctl.players_online, store)
-            if silent or not counts:
-                # Nobody answering is not nobody playing. It is also what a stopped
-                # cluster looks like, and restarting one of those helps no one.
+            # And is the cluster actually up? Zero players across a cluster that has
+            # not finished starting is not an empty cluster, it is an unfinished one.
+            ready, why_ready, total = await asyncio.to_thread(
+                clusterctl.cluster_ready, store)
+            if not ready:
+                if streak:
+                    log.info("empty streak reset: %s", why_ready)
                 streak = 0
                 continue
             streak = streak + 1 if total == 0 else 0
@@ -1254,9 +1266,9 @@ async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
 
             log.info("nobody is on and something is waiting: %s", why)
             announce.say("change.window_open",
-                         "The cluster has been empty for %d minute(s) and there are "
-                         "changes waiting, so they are being applied now."
-                         % (streak * interval // 60))
+                         "The cluster has been empty for %d minute(s) and %s, so it is "
+                         "being applied now."
+                         % (streak * interval // 60, why_worth))
             streak = 0
             async with lock:
                 await asyncio.to_thread(apply_now or (lambda: _scheduled_apply(store)))
