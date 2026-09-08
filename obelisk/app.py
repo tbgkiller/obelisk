@@ -51,6 +51,19 @@ ARK_UPDATE = {}
 # so the dashboard can show the same fact as a colour instead of a sentence.
 RELAY_INFO = {}
 
+# One lock for anything that stops and starts the cluster - the buttons and, crucially,
+# the two loops that fire on their own.
+#
+# It used to be created inside build_app, so it guarded the web routes and nothing else.
+# The empty-cluster watcher took a `busy` argument that main() never passed, and the
+# scheduled window took no lock at all. On 8 September the empty watcher began an apply
+# at 03:58 and the window started a second one at 04:28 while the first was still
+# stopping and starting ten servers. Aberration's world was half-written when the second
+# stop reached it, and the map spent the next five hours refusing to load a corrupt
+# database. Guarding the buttons and not the unattended paths is the worst possible half
+# of this to have done.
+APPLY_LOCK = asyncio.Lock()
+
 COOKIE = "obelisk_session"
 # Long enough that signing in is a thing you do occasionally, short enough that a
 # forgotten browser on someone else's machine does not stay signed in for ever.
@@ -583,7 +596,7 @@ def build_app(store, docker=None):
             return chrome(_cluster_body(request, problem=str(e)), "Cluster", "/admin/cluster")
         raise web.HTTPFound("/admin/cluster")
 
-    cluster_busy = asyncio.Lock()
+    cluster_busy = APPLY_LOCK          # module level: see the comment there
 
     def _act(fn, request):
         announce.say("cluster.%s" % fn.__name__, "%s requested from the web UI."
@@ -1219,8 +1232,11 @@ async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
             if not (pnd.any_pending(store) or upd.primed(store)):
                 streak = 0
                 continue
-            if busy is not None and busy.locked():
-                streak = 0                       # something else is working on it
+            lock = APPLY_LOCK if busy is None else busy
+            if lock.locked():
+                # Something is already stopping and starting the cluster. Not a moment
+                # to start a second one, and not a moment to count as "idle" either.
+                streak = 0
                 continue
 
             total, counts, silent = await asyncio.to_thread(
@@ -1242,7 +1258,8 @@ async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
                          "changes waiting, so they are being applied now."
                          % (streak * interval // 60))
             streak = 0
-            await asyncio.to_thread(apply_now or (lambda: _scheduled_apply(store)))
+            async with lock:
+                await asyncio.to_thread(apply_now or (lambda: _scheduled_apply(store)))
         except Exception as e:                          # a bad minute must not kill it
             log.error("empty-cluster check failed: %s", e)
             streak = 0
@@ -1313,12 +1330,21 @@ async def ark_update_watch(store, interval=1800, panel=None):
 
             due, why = upd.due(store)
             if due:
-                log.info("scheduled ARK update: %s", why)
-                announce.say("ark.window_open", "The update window is open and a "
-                                                "verified update is staged. Applying it.")
-                # Applies through the same routine the button uses, so the scheduled
-                # path cannot drift from the one that gets exercised by hand.
-                await asyncio.to_thread(_scheduled_apply, store)
+                if APPLY_LOCK.locked():
+                    log.info("the window is open but an apply is already running - "
+                             "leaving it to finish")
+                else:
+                    log.info("scheduled ARK update: %s", why)
+                    # Say what is actually being applied. This announced "a verified
+                    # update is staged" whatever the batch held, so a night that applied
+                    # one setting change read like a build rollout in the channel.
+                    announce.say("ark.window_open",
+                                 "The update window is open and there are changes "
+                                 "waiting: %s. Applying them." % why)
+                    async with APPLY_LOCK:
+                        # Through the same routine the button uses, so the scheduled
+                        # path cannot drift from the one exercised by hand.
+                        await asyncio.to_thread(_scheduled_apply, store)
         except Exception as e:                          # a bad night must not kill it
             log.error("ARK update check failed: %s", e)
         await asyncio.sleep(interval)

@@ -522,14 +522,25 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                                               "ok": bool(ok_gates)})
     if not ok_gates:
         bad = ", ".join(k for k, v in (per_map or {}).items() if not v)
+        # A batch that failed its gates did not succeed, so its settings do not stay.
+        # They did: `ark_update_mode` went from automatic to obelisk through a batch
+        # that reported itself failed, because this branch returned without putting
+        # anything back. A change that lands through a failure is a change nobody chose
+        # the moment of - it goes back in the queue for a batch that works.
+        if waiting and before is not None:
+            pending.restore(store, before, requeue=queue_was)
+            step("the settings were put back and requeued - this batch did not pass")
         announce.say("ark.update_failed" if swap_files else "change.batch_failed",
-                     "Build %s is live but %s did not pass verification. The previous "
-                     "build is still on disk as ServerFiles.staging if it has to go "
-                     "back." % (build, bad or "some maps"), level="error", build=build,
+                     "%s did not pass verification after the restart, so the settings "
+                     "were put back and are waiting again.%s"
+                     % (bad or "Some maps",
+                        (" The previous build is still on disk as ServerFiles.staging "
+                         "if it has to go back." if swap_files else "")),
+                     level="error", build=build if swap_files else "",
                      detail=_lines("%-14s %s" % (k, "passed" if v else "FAILED")
                                    for k, v in sorted((per_map or {}).items())))
-        return False, "applied, but verification failed on: %s" % (bad or "some maps"), {
-            "swapped": True, "maps": per_map}
+        return False, "verification failed on: %s" % (bad or "some maps"), {
+            "swapped": swap_files, "maps": per_map, "undone": bool(waiting)}
 
     announce.say("ark.update_applied" if swap_files else "change.applied",
                  "%s - every map passed verification." % " and ".join(what).capitalize(),

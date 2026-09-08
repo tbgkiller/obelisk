@@ -573,6 +573,105 @@ check("apply_update is still the same routine, under its old name",
       updates.apply_update is updates.apply_batch)
 
 
+# ---- a failed batch does not keep its settings
+#
+# It did. `ark_update_mode` went from automatic to obelisk through a batch that reported
+# itself failed, because the gate-failure branch returned without putting anything back.
+# A change that lands through a failure is a change nobody chose the moment of.
+drain()
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+c = Cluster(gates=False)
+_, rename = moved_nothing()
+ok, msg, detail = updates.apply_batch(
+    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    exists=tree_exists(), now=lambda: 1000)
+check("a batch whose gates fail is a failure", not ok, msg)
+check("the setting is back to what was running", st.get("max_players") == 70,
+      st.get("max_players"))
+check("and is queued again rather than lost", _pend.count(st) == 1, _pend.rows(st))
+check("the announcement says the settings were put back",
+      any("put back" in (i.get("text") or "") for i in drain()))
+
+
+# ---- two triggers cannot both restart the cluster
+#
+# This is the one that corrupted a world. The empty-cluster watcher began an apply at
+# 03:58; the scheduled window started a second at 04:28 while the first was still
+# stopping and starting ten servers. Aberration's world was half-written when the second
+# stop reached it, and the map spent five hours refusing to load a corrupt database.
+#
+# The lock existed - it was created inside build_app, so it guarded the buttons and
+# neither of the two things that fire on their own.
+import asyncio as _aio
+
+from . import app as _app
+
+check("the lock outlives the web app, because the unattended paths do",
+      isinstance(getattr(_app, "APPLY_LOCK", None), _aio.Lock),
+      type(getattr(_app, "APPLY_LOCK", None)))
+
+
+def _overlap():
+    """Both loops, told to fire at once, against one shared lock."""
+    running, overlaps, done = {"n": 0}, {"n": 0}, []
+
+    async def slow_apply():
+        running["n"] += 1
+        if running["n"] > 1:
+            overlaps["n"] += 1          # two applies inside the cluster at once
+        await _aio.sleep(0.05)
+        done.append(1)
+        running["n"] -= 1
+        return True, "applied", {}
+
+    async def empty_trigger():
+        async with _app.APPLY_LOCK:
+            await slow_apply()
+
+    async def window_trigger():
+        # What the scheduled path does now: skip when one is already in flight.
+        if _app.APPLY_LOCK.locked():
+            return
+        async with _app.APPLY_LOCK:
+            await slow_apply()
+
+    async def main():
+        await _aio.gather(empty_trigger(), window_trigger(), window_trigger())
+
+    _aio.run(main())
+    return overlaps["n"], len(done)
+
+
+_overlaps, _ran = _overlap()
+check("two triggers firing together never run two applies at once", _overlaps == 0,
+      "%d overlapping applies" % _overlaps)
+check("and the ones that were skipped did not run a second restart", _ran <= 1, _ran)
+
+
+def _without_lock():
+    """The same race with no lock - the shape the bug had, so the test can fail."""
+    running, overlaps = {"n": 0}, {"n": 0}
+
+    async def slow_apply():
+        running["n"] += 1
+        if running["n"] > 1:
+            overlaps["n"] += 1
+        await _aio.sleep(0.05)
+        running["n"] -= 1
+
+    async def main():
+        await _aio.gather(slow_apply(), slow_apply())
+
+    _aio.run(main())
+    return overlaps["n"]
+
+
+check("and the unguarded version really does overlap - so this test can fail",
+      _without_lock() > 0, "the reproduction did not reproduce")
+
+
 # ---- applying to an empty cluster, and the debounce that keeps it honest
 s = FakeStore()
 check("one empty poll is a moment, not a state",
