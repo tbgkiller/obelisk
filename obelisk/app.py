@@ -27,6 +27,7 @@ from . import curseforge as cfctl
 from . import staging as stagingctl
 from . import updates as updatesctl
 from . import pending as pendingctl
+from . import savepoints as pointsctl
 from .firstrun import bootstrap
 from .plan import build_plan
 from .settings import Invalid, validate as validate_setting
@@ -753,11 +754,25 @@ def build_app(store, docker=None):
         p = os.path.abspath(os.path.join(base, os.path.basename(str(name or ""))))
         return p if p.startswith(base + os.sep) and os.path.isfile(p) else None
 
+    def _points_by_map():
+        """Read from disk each time - the game prunes these on its own schedule."""
+        out = []
+        for key in clusterctl._map_keys(store):
+            try:
+                found = pointsctl.list_points(store, key)
+            except Exception as e:                   # noqa: BLE001 - never a blank page
+                log.info("could not list restore points for %s: %s", key, e)
+                continue
+            if found:
+                from .maps import BY_KEY as _MAPS
+                out.append((_MAPS[key]["name"], found))
+        return out
+
     def _restore_body(message="", problem=""):
         return ui.render_restore(store, backupctl.listing(store),
                                  chosen=_looked["archive"], info=_looked["info"],
                                  notes=_looked["notes"], message=message, problem=problem,
-                                 job=rjob)
+                                 job=rjob, savepoints_by_map=_points_by_map())
 
     async def restore_page(request):
         if not authed(request):
@@ -843,6 +858,60 @@ def build_app(store, docker=None):
         rjob.update(state="running", ok=None, message="", step="starting",
                     map=map_key, archive=os.path.basename(path),
                     started=time.time(), detail={})
+        asyncio.create_task(run_it())
+        raise web.HTTPFound("/admin/restore")
+
+    async def restore_point(request):
+        """Roll one map back to one of the game's own dated saves."""
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        map_key, _, name = str(form.get("point") or "").partition("|")
+        force = bool(form.get("force"))
+        if not map_key or not name:
+            raise web.HTTPFound("/admin/restore")
+        if rjob["state"] == "running" or cluster_busy.locked():
+            raise web.HTTPFound("/admin/restore")
+
+        def note(text):
+            rjob["step"] = text
+            announce.say("restore.phase", text, map=map_key)
+
+        def verify_after(key):
+            note("waiting for %s to come back" % key)
+            ok_h, why_h = clusterctl.wait_healthy(store, key)
+            if not ok_h:
+                return False, [why_h]
+            note("checking it is really serving")
+            return clusterctl.verify_instance(store, key)
+
+        def go():
+            return pointsctl.restore_point(
+                store, map_key, name,
+                stop=lambda k: (note("stopping %s" % k) or clusterctl.stop_one(store, k)),
+                start=lambda k: (note("starting %s" % k)
+                                 or clusterctl.start_one(store, k)),
+                verify=verify_after, force=force, on_step=note,
+                players=lambda: clusterctl.players_online(store))
+
+        async def run_it():
+            try:
+                async with cluster_busy:
+                    ok, msg, detail = await asyncio.to_thread(go)
+            except Exception as e:                   # noqa: BLE001 - surfaced below
+                ok, msg, detail = False, "Restore point failed: %s" % e, {}
+                log.exception("restore point failed")
+            announce.say("restore.done" if ok else "restore.failed", str(msg),
+                         level="info" if ok else "error", map=map_key,
+                         detail="\n".join(detail.get("steps") or []))
+            rjob.update(state="done", ok=ok, message=msg, step="done", detail=detail)
+
+        announce.say("restore.point_start",
+                     "Rolling %s back to its save %s. Only that map stops; its current "
+                     "world is copied first." % (map_key, name),
+                     map=map_key, point=name)
+        rjob.update(state="running", ok=None, message="", step="starting",
+                    map=map_key, archive=name, started=time.time(), detail={})
         asyncio.create_task(run_it())
         raise web.HTTPFound("/admin/restore")
 
@@ -960,6 +1029,7 @@ def build_app(store, docker=None):
     app.router.add_get("/admin/restore", restore_page)
     app.router.add_post("/admin/restore/inspect", restore_inspect)
     app.router.add_post("/admin/restore/run", restore_run)
+    app.router.add_post("/admin/restore/point", restore_point)
     app.router.add_get("/admin/restore/status", restore_status)
     app.router.add_get("/admin/mods", mods_page)
     app.router.add_post("/admin/mods", mods_edit)

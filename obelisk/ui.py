@@ -87,6 +87,8 @@ tr:last-child td{border-bottom:none}
 .badge.bad{background:#38191b;color:#ff9d94;border:1px solid #7d2f2f}
 .badge.new{background:#3a2f14;color:#ffc46b;border:1px solid #7d642f}
 .badge.unk{background:#2b2440;color:#c9a0ff;border:1px solid #4d3f7d}
+td.points{line-height:2.4}
+td.points button{margin:0 6px 6px 0}
 .chips{display:flex;flex-wrap:wrap;gap:6px;margin-top:9px}
 .chip{font-size:11px;border-radius:6px;padding:3px 8px;border:1px solid #303845;background:#12151a;color:#a9b4c4;white-space:nowrap}
 .chip b{font-weight:600;color:#e6e9ef}
@@ -1410,14 +1412,18 @@ BACKUP_PROGRESS = """
 
 
 def render_restore(store, archives, chosen=None, info=None, notes=(),
-                   message="", problem="", job=None):
+                   message="", problem="", job=None, savepoints_by_map=None):
     """Restore one map from one archive, with what is in it shown before committing.
 
     The order on the page is the order of the decision: which archive, what is in it,
     how it differs from what is running, and only then which map - because "this archive
     is from a different cluster" is something you want to read before choosing a map,
     not after.
+
+    The quick restore points come after, deliberately: they are the commoner answer but
+    the smaller one, and putting them first would make the archives look optional.
     """
+    points_block = render_savepoints(savepoints_by_map or [], job=job)
     from . import maps as mapcat
     from .backup import human_size
     banner = ""
@@ -1499,10 +1505,68 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
             'replaced is kept on disk afterwards - nothing is deleted. Worlds only: '
             'your mod list, ports and cluster id are not touched.</div>'
             '</div></fieldset></form>'
-            '%s%s'
+            '%s%s%s'
             % (opts, detail, _e(chosen or ""), picks,
                " disabled" if (not info or running) else "",
-               RESTORE_JS, _superseded_block(store)))
+               RESTORE_JS, points_block, _superseded_block(store)))
+
+
+def render_savepoints(by_map, job=None, limit=6):
+    """The saves the game already took, offered per map as one-click rollbacks.
+
+    Every button carries the consequence rather than linking to it, because the
+    consequence is the whole decision: the world goes back, and the people who played
+    since then do not. A warning somebody has to go and find is a warning that gets
+    found afterwards.
+    """
+    if not by_map:
+        return ""
+
+    rows = []
+    for map_name, points in by_map:
+        if not points:
+            continue
+        buttons = []
+        for p in points[:limit]:
+            buttons.append(
+                '<button class=ghost type=submit name=point value="%s|%s" '
+                'title="%s">%s<span class=help> &middot; %s</span></button>'
+                % (_e(p["map"]), _e(p["name"]), _e(WARN_TEXT % p["local"]),
+                   _e(p["ago"]), _e(p["local"])))
+        more = ""
+        if len(points) > limit:
+            more = ('<span class=help>+%d older, back to %s</span>'
+                    % (len(points) - limit, _e(points[-1]["ago"])))
+        rows.append('<tr><td>%s</td><td class=points>%s %s</td></tr>'
+                    % (_e(map_name), "".join(buttons), more))
+
+    if not rows:
+        return ""
+
+    busy = (job or {}).get("state") == "running"
+    return ('<form method=post action="/admin/restore/point">'
+            '<fieldset><legend>Quick restore points</legend>'
+            '<div class=note>ARK saves every world every 15 minutes and keeps about '
+            '<b>45 hours</b> of dated copies beside the live one. Rolling one map back '
+            'to any of them takes a couple of minutes and stops only that map.</div>'
+            '%s<table>%s</table>'
+            '<div class=help style="margin-top:10px"><b>The world goes back; players do '
+            'not.</b> Characters, levels and tribes are not rolled back - anything '
+            'gained since the point you pick stays on the player but disappears from '
+            'the world.</div>'
+            '<div class=help>These live on the same disk as the cluster. They are for '
+            'griefing, a bad wipe or a mod that ate something - not for a failed disk. '
+            'The archives above are what survive the machine.</div>'
+            '<label class=inline><input type=checkbox name=force value=1> restore even '
+            'with players on that map</label>'
+            '</fieldset></form>'
+            % ('<div class=note>Working: %s</div>' % _e((job or {}).get("step") or "")
+               if busy else "", "".join(rows)))
+
+
+WARN_TEXT = ("Rolls this map's world back to %s. Player characters and tribes are NOT "
+             "rolled back - anything gained since then stays on the player but "
+             "disappears from the world.")
 
 
 def _superseded_block(store):

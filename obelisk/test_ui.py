@@ -694,5 +694,43 @@ check("the form still opens and closes exactly once",
 check("render_settings still carries only its own script",
       _sett.count("<script>") == 1, _sett.count("<script>"))
 
+
+# ---- quick restore points
+#
+# The consequence goes on the button rather than in a doc, because the consequence is
+# the whole decision: the world goes back and the people who played since then do not.
+_pts = [{"map": "ragnarok", "name": "Ragnarok_WP_07.09.2026_19.02.33.ark",
+         "ago": "2h ago", "local": "07 Sep 14:02"},
+        {"map": "ragnarok", "name": "Ragnarok_WP_07.09.2026_16.47.33.ark",
+         "ago": "4h ago", "local": "07 Sep 11:47"}]
+_sp = ui.render_savepoints([("Ragnarok", _pts)])
+check("each point is a button", _sp.count("<button") == 2, _sp.count("<button"))
+check("labelled by how long ago", "2h ago" in _sp and "4h ago" in _sp)
+check("and by the local clock time", "07 Sep 14:02" in _sp)
+check("the button carries the map and the file it would restore",
+      'value="ragnarok|Ragnarok_WP_07.09.2026_19.02.33.ark"' in _sp, _sp[:400])
+check("the warning is on the button itself, not somewhere to go and find",
+      "NOT rolled back" in _sp and "title=" in _sp, _sp[:600])
+check("it says what that means for a player",
+      "stays on the player but disappears from the world" in _sp)
+check("and that these are not a substitute for the archives",
+      "not for a failed disk" in _sp and "survive the machine" in _sp)
+check("with force available for a map somebody is on",
+      'name=force' in _sp)
+check("a map with no points shows nothing rather than an empty row",
+      ui.render_savepoints([("Ragnarok", [])]) == "")
+check("and no maps at all renders nothing", ui.render_savepoints([]) == "")
+
+_many = [dict(_pts[0], name="p%d" % i, ago="%dh ago" % i) for i in range(12)]
+_spm = ui.render_savepoints([("Ragnarok", _many)], limit=6)
+check("only the recent few get buttons", _spm.count("<button") == 6,
+      _spm.count("<button"))
+check("and the rest are counted rather than listed", "+6 older" in _spm, _spm[-300:])
+
+_spb = ui.render_savepoints([("Ragnarok", _pts)],
+                            job={"state": "running", "step": "stopping ragnarok"})
+check("while one is running the page says so",
+      "stopping ragnarok" in _spb, _spb[:300])
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
