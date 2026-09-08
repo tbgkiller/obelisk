@@ -89,6 +89,15 @@ def owns_updates(store):
 PRIME_TRIES = 3
 PRIME_BACKOFF = (0, 2 * 3600, 6 * 3600)
 
+# How long the scheduled window stays out of the way after a real restart.
+#
+# Empty is the primary trigger, and on a ten-map cluster there is usually an idle hour
+# every day - so the window is a backstop for the cluster that never empties, not a
+# second schedule running alongside the first. Firing it the morning after an apply that
+# already happened would be a restart for nothing, and a restart for nothing is exactly
+# what corrupted a world on 8 September.
+BACKSTOP_HOURS = 24
+
 
 def target_key(status):
     """A fingerprint of what would be staged: the build, and every mod's newest file.
@@ -466,6 +475,12 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                      level="error")
         return False, "could not stop the cluster: %s" % detail, {}
 
+    # From here the cluster has actually been disturbed, so this is the moment that
+    # counts - whatever the rest of the batch does. The backstop window reads it to
+    # decide whether a 4 a.m. restart would be adding anything, and a batch that got
+    # this far has already spent the disruption the window exists to arrange.
+    remember(store, last_apply=int(now()))
+
     done = []
     if swap_files:
         step("swapping the staged files in")
@@ -634,9 +649,21 @@ def due(store, now=None):
     if not store.get("update_apply_in_window"):
         return False, "applying in the window is switched off"
 
-    when = time.localtime(now() if now else time.time())
+    seconds = now() if now else time.time()
+    when = time.localtime(seconds)
     if not in_window(store, when.tm_hour * 60 + when.tm_min):
         return False, "outside the update window"
+
+    # The window is a backstop, not a second schedule. Empty is the primary trigger and
+    # a ten-map cluster usually has an idle hour every day, so by four in the morning
+    # the queue has normally already landed. Firing anyway would be a restart that
+    # changes nothing - and a restart that changes nothing is exactly what overlapped
+    # with another on 8 September and left a world half-written. So the window only
+    # speaks up for the cluster that never got a quiet moment.
+    since = seconds - float(state(store).get("last_apply") or 0)
+    if state(store).get("last_apply") and since < BACKSTOP_HOURS * 3600:
+        return False, ("the cluster was restarted %d hour(s) ago, so the window has "
+                       "nothing to add" % int(since / 3600))
 
     # A build already applied does not fire again the next night. Queued settings are
     # not subject to that: they are removed from the queue when they land, so their

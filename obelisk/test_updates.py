@@ -701,6 +701,63 @@ ok, why = updates.due(st, now=lambda: at(5))
 check("with nothing queued and nothing staged it does not fire", not ok, why)
 
 
+# ---- the window is a backstop, not a second schedule
+#
+# Empty is the primary trigger, and a ten-map cluster usually has an idle hour every
+# day - so by four in the morning the queue has normally already landed. Firing anyway
+# would be a restart that changes nothing, and a restart that changes nothing is exactly
+# what overlapped with another on 8 September and left a world half-written.
+_five_am = at(5)
+
+st = real_store(update_apply_in_window=True)
+_pend.stage(st, {"max_players": 250})
+updates.remember(st, last_apply=_five_am - 3 * 3600)
+ok, why = updates.due(st, now=lambda: _five_am)
+check("an apply three hours ago suppresses the window", not ok, why)
+check("and says how long ago, so the silence is explicable",
+      "3 hour(s) ago" in why and "nothing to add" in why, why)
+
+updates.remember(st, last_apply=_five_am - 23 * 3600)
+ok, why = updates.due(st, now=lambda: _five_am)
+check("still suppressed at 23 hours - inside the day", not ok, why)
+
+updates.remember(st, last_apply=_five_am - 25 * 3600)
+ok, why = updates.due(st, now=lambda: _five_am)
+check("but a cluster that never emptied for 25 hours gets its backstop", ok, why)
+check("and the reason names what is waiting", "setting change" in why, why)
+
+# A cluster that has never applied anything has nothing to suppress it.
+st = real_store(update_apply_in_window=True)
+_pend.stage(st, {"max_players": 250})
+ok, why = updates.due(st, now=lambda: _five_am)
+check("a cluster that has never applied anything is not suppressed", ok, why)
+
+# Suppression is about the restart, not about what the restart achieved: a batch that
+# stopped the cluster spent the disruption whether or not its gates passed.
+st = real_store(update_apply_in_window=True)
+_pend.stage(st, {"max_players": 250})
+c = Cluster(gates=False)
+_, rename = moved_nothing()
+updates.apply_batch(st, ARK, warn=c.warn, save=c.save, stop_all=c.stop,
+                    start_all=c.start, verify=c.verify,
+                    players=lambda: (0, {}, []), rename=rename,
+                    exists=tree_exists(), now=lambda: _five_am - 3600)
+check("a batch that stopped the cluster records the restart",
+      updates.state(st).get("last_apply"), updates.state(st))
+ok, why = updates.due(st, now=lambda: _five_am)
+check("so a failed batch still holds the window off - the servers did restart",
+      not ok and "nothing to add" in why, why)
+
+# And a batch that refused before touching anything records nothing.
+st = real_store(update_apply_in_window=True)
+_pend.stage(st, {"max_players": 250})
+_, rename = moved_nothing()
+updates.apply_batch(st, ARK, players=lambda: (3, {"island": 3}, []),
+                    rename=rename, exists=tree_exists(), now=lambda: _five_am - 3600)
+check("a batch refused before it stopped anything records no restart",
+      not updates.state(st).get("last_apply"), updates.state(st))
+
+
 # ---- apply: a swap that fails is put back, and the cluster comes up on the old build
 drain()
 s = FakeStore()

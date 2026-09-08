@@ -1329,12 +1329,17 @@ async def ark_update_watch(store, interval=1800, panel=None):
                 log.info("not staging: %s", why)
 
             due, why = upd.due(store)
+            if not due and "nothing to add" in why:
+                # Worth one line so the absence of a 4 a.m. restart is a thing somebody
+                # can see rather than something they have to infer.
+                log.info("update window skipped: %s", why)
             if due:
                 if APPLY_LOCK.locked():
                     log.info("the window is open but an apply is already running - "
                              "leaving it to finish")
                 else:
-                    log.info("scheduled ARK update: %s", why)
+                    log.info("the update window is the backstop, and it is needed: %s",
+                             why)
                     # Say what is actually being applied. This announced "a verified
                     # update is staged" whatever the batch held, so a night that applied
                     # one setting change read like a build rollout in the channel.
