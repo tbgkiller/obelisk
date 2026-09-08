@@ -749,5 +749,40 @@ _spb = ui.render_savepoints([("Ragnarok", _pts)],
 check("while one is running the page says so",
       "stopping ragnarok" in _spb, _spb[:300])
 
+
+# ---- the API key is reachable from the page that needs it
+#
+# It was only in the Advanced group - eleventh of twenty, about 39% down a 177 KB
+# settings page - and the Mods page told people to "add it under Advanced" without
+# saying where Advanced was. A pointer to a place somebody cannot find is not a pointer.
+_nokey = store()
+_mods_nokey = uimod.render_mods(_nokey, {})
+check("the key can be pasted on the Mods page itself",
+      "name=apikey" in _mods_nokey, "no key field on the mods page")
+check("as a password field, not plain text",
+      "type=password name=apikey" in _mods_nokey)
+check("with somewhere to save it", "Save key" in _mods_nokey)
+check("and it says where to get one", "console.curseforge.com" in _mods_nokey)
+check("and that it is optional", "Project ID" in _mods_nokey)
+check("the dead pointer to Advanced is gone",
+      "add it under <b>Advanced</b>" not in _mods_nokey)
+
+_haskey = store(curseforge_api_key="a-real-looking-secret-key")
+_mods_key = uimod.render_mods(_haskey, {})
+check("with a key set the page says so rather than asking again",
+      "A key is set" in _mods_key and "name=apikey" not in _mods_key, _mods_key[:200])
+check("and offers to remove it", "clearkey" in _mods_key)
+check("but never renders the key itself",
+      "a-real-looking-secret-key" not in _mods_key)
+
+check("the canonical setting still lives in the schema, so there is one definition",
+      BY_KEY["curseforge_api_key"]["group"] == "Advanced")
+check("and its help now points at the other door",
+      "Mods page" in BY_KEY["curseforge_api_key"]["help"])
+check("it is still a secret", BY_KEY["curseforge_api_key"]["type"] == "password")
+from obelisk.backup import SECRET_KEYS as _SK
+
+check("and still guarded against being announced", "curseforge_api_key" in _SK)
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

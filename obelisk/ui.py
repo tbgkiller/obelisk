@@ -1352,21 +1352,44 @@ def _add_a_mod(store, found=None, problem=""):
     if found:
         body += _mod_card(found, str(store.get("mod_ids") or ""))
     keyed = bool(str(store.get("curseforge_api_key") or "").strip())
+    # The key input lives here, where somebody actually wants it, rather than only in
+    # the Advanced group eleven sections down a settings page. The canonical setting is
+    # still the schema's - this posts to it - so there is one definition and one place
+    # it is stored, and two doors to it.
+    if keyed:
+        key_box = ('<div class=f><label>CurseForge API key</label>'
+                   '<div class=note>A key is set, so search and browse are available. '
+                   '<button class=ghost type=submit name=clearkey value=1>Remove it'
+                   '</button></div></div>')
+    else:
+        key_box = ('<div class=f><label>CurseForge API key '
+                   '<span class=help>enables search and browse</span></label>'
+                   '<input type=password name=apikey autocomplete=off '
+                   'placeholder="paste a key from console.curseforge.com"> '
+                   '<button type=submit>Save key</button>'
+                   '<div class=help>Free from <code>console.curseforge.com</code>. '
+                   'Without one you can still add any mod by pasting its Project ID '
+                   'above - the key only adds searching from in here. Stored like any '
+                   'other password and never written to a log or the Discord channel.'
+                   '</div></div>')
     note = ('Paste the mod&rsquo;s CurseForge address or its Project ID. Obelisk looks '
             'it up first, so you can see what you are adding. New mods go last so they '
             'cannot silently outrank something that already works &mdash; and the '
             'staging server fetches and checks it before your cluster ever loads it.')
     if not keyed:
-        note += ('<br>Searching CurseForge from here needs a free API key from '
-                 '<code>console.curseforge.com</code>; add it under <b>Advanced</b>. '
-                 'Adding by Project ID works without one.')
+        note += ('<br>Pasting the Project ID is the reliable route: the keyless lookup '
+                 'can only resolve a name from the address for mods it happens to have '
+                 'seen before.')
     return ('<form method=post action="/admin/mods/find">'
             '<fieldset><legend>Add a mod</legend><div class=f>'
             '<label>CurseForge address or Project ID</label>'
             '<input type=text name=ref placeholder="929110 or '
             'https://www.curseforge.com/ark-survival-ascended/mods/...">'
             ' <button type=submit class=ghost>Look up</button>'
-            '<div class=help>%s</div></div>%s</fieldset></form>' % (note, body))
+            '<div class=help>%s</div></div>%s</fieldset></form>'
+            '<form method=post action="/admin/mods/key">'
+            '<fieldset><legend>Searching CurseForge</legend>%s</fieldset></form>'
+            % (note, body, key_box))
 
 # The backup runs on a worker thread now, so the page it was started from is free to
 # say what it is doing. Same rule as the launch phases: name the step, show how far in,

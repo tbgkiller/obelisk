@@ -251,6 +251,7 @@ def build_app(store, docker=None):
             # they disturb is a server with no players on it and a world regenerated
             # every rehearsal. Making those wait for an empty cluster would be treating
             # a free change like an expensive one.
+            _reguard()
             await _restage_if_needed(restage)
         except Invalid as e:
             return chrome('<div class=problem>%s</div>%s'
@@ -311,6 +312,20 @@ def build_app(store, docker=None):
         except Exception as e:                       # noqa: BLE001 - never a blank page
             log.warning("could not render the update panel: %s", e)
             return ""
+
+    def _reguard():
+        """Re-register the secrets after one of them changes.
+
+        guard_secrets ran once at boot, so a password changed through the UI was not
+        scrubbed from announcements until the next restart - and the most likely way a
+        secret reaches the channel is inside an exception message nobody wrote by hand.
+        The guard is a net; a net that only knows last week's values is most of a net.
+        """
+        from .backup import SECRET_KEYS
+        try:
+            announce.guard_secrets([store.get(k) for k in SECRET_KEYS])
+        except Exception as e:                       # noqa: BLE001 - never fatal
+            log.warning("could not re-register the secrets: %s", e)
 
     def _running_now():
         try:
@@ -699,6 +714,38 @@ def build_app(store, docker=None):
                                      found=_found["card"], problem=_found["problem"]),
                       "Mods", "/admin/mods")
 
+    async def mods_key(request):
+        """Save or clear the CurseForge key, from the page where it is wanted.
+
+        The canonical setting is still the schema's - this writes to it - so there is
+        one definition and one place it is stored, reachable from two doors.
+        """
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        if form.get("clearkey"):
+            store.patch({"curseforge_api_key": ""})
+            store.save()
+            _reguard()
+            announce.say("mods.key_cleared",
+                         "The CurseForge API key was removed. Searching is off; adding "
+                         "a mod by Project ID still works.")
+            raise web.HTTPFound("/admin/mods")
+        value = str(form.get("apikey") or "").strip()
+        if value:
+            try:
+                store.patch({"curseforge_api_key": value})
+                store.save()
+                _reguard()
+                # The value is never in the message, the log line or the fields - only
+                # that there now is one.
+                announce.say("mods.key_set",
+                             "A CurseForge API key was saved. Searching and browsing "
+                             "from the Mods page are now available.")
+            except Invalid as e:
+                log.info("CurseForge key rejected: %s", e)
+        raise web.HTTPFound("/admin/mods")
+
     async def mods_find(request):
         """Look a mod up before it can be added. Never writes anything."""
         if not authed(request):
@@ -1058,6 +1105,7 @@ def build_app(store, docker=None):
     app.router.add_get("/admin/mods", mods_page)
     app.router.add_post("/admin/mods", mods_edit)
     app.router.add_post("/admin/mods/find", mods_find)
+    app.router.add_post("/admin/mods/key", mods_key)
     app.router.add_get("/admin/cloud", cloud_page)
     app.router.add_post("/admin/cloud/connect", cloud_connect)
     app.router.add_post("/admin/cloud/disconnect", cloud_disconnect)

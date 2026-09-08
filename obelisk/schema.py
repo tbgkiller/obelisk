@@ -352,7 +352,9 @@ SETTINGS = [
          help="Optional, and free from console.curseforge.com. With a key the Mods "
               "page can search and browse CurseForge; without one you can still add "
               "any mod by pasting its Project ID, which is what the keyless lookup "
-              "can answer. Stored like any other secret and never logged."),
+              "can answer. You can paste it straight into the Mods page instead of "
+              "hunting for it here - same setting, same storage, two doors. Stored "
+              "like any other secret and never logged."),
 
     # ---- who applies ARK updates
     #
