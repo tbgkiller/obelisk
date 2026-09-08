@@ -162,6 +162,19 @@ def search(store, query, limit=24, opener=None):
         # The key is never echoed back, here or anywhere - the exception text can carry
         # the request URL, and the URL is not where the key is, but this is the one
         # place it would be easy to get wrong.
+        #
+        # 403 here does not mean the key is bad, and saying so would send somebody off
+        # to generate a new one that behaves identically. CurseForge gates
+        # /v1/mods/search separately from the rest of the API: a console key reads
+        # /v1/games, /v1/mods/{id}, /v1/categories and POST /v1/mods perfectly well and
+        # is still refused for search - measured against a real key, and refused for
+        # every game, not just this one. What is missing is a permission on the key,
+        # and that is a different thing to go and ask for.
+        if "403" in str(e) or "Forbidden" in str(e):
+            return [], ("This CurseForge key works, but it does not have search access "
+                        "- CurseForge grants that separately from the rest of the API. "
+                        "Ask for search on the key at console.curseforge.com; nothing "
+                        "else needs to change. Adding a mod by Project ID is unaffected.")
         return [], "CurseForge refused the search: %s" % str(e)[:200]
     return [_from_official(m) for m in (data.get("data") or [])], ""
 

@@ -177,10 +177,27 @@ check("the thumbnail", got["thumbnail"] == "https://x/logo.png", got)
 check("the author", got["authors"] == ["Paeaet"], got)
 check("and the current file", got["file_id"] == "7738786", got)
 
+# A 403 on search is not a bad key, and saying so would send somebody off to generate a
+# new one that behaves identically. Measured against a real key on the live host:
+# /v1/games, /v1/games/83374, /v1/mods/{id}, /v1/categories and POST /v1/mods all
+# answered 200 with that key in that header, and /v1/mods/search answered 403 - for
+# Minecraft as well as ARK. The permission is missing, not the key.
 rows, problem = cf.search(FakeStore("a-key"), "stacking",
-                          opener=lambda u: (_ for _ in ()).throw(OSError("403")))
-check("a refused search reports the refusal rather than an empty shelf",
-      rows == [] and "refused" in problem, problem)
+                          opener=lambda u: (_ for _ in ()).throw(
+                              OSError("HTTP Error 403: Forbidden")))
+check("a search refused with 403 does not blame the key", rows == [] and problem,
+      problem)
+check("it says the key works and the permission does not",
+      "works" in problem and "search access" in problem, problem)
+check("and points at the thing to actually go and ask for",
+      "console.curseforge.com" in problem, problem)
+check("without implying the rest of the page is broken",
+      "Project ID is unaffected" in problem, problem)
+
+rows, problem = cf.search(FakeStore("a-key"), "stacking",
+                          opener=lambda u: (_ for _ in ()).throw(OSError("boom")))
+check("any other failure is still reported as itself",
+      rows == [] and "refused" in problem and "search access" not in problem, problem)
 
 # The key travels in a header, so it is not in the URL an exception would quote. Worth
 # an assertion anyway: this is the one place where getting it wrong posts a credential
