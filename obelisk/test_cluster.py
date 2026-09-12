@@ -321,9 +321,122 @@ check("a failed compose reports the output", not ok and "boom" in msg, msg)
 
 clusterctl.dockerctl = fake
 calls.clear()
-ok, msg = clusterctl.stop(st)
+ok, msg = clusterctl.stop(st, close_worlds=False)
 check("stop runs docker compose down", ok and calls[-1][2] == ["down"], (ok, calls))
 check("stop says saves are safe", "untouched" in msg, msg)
+
+# ---- closing each world before the stop signal is ever sent
+#
+# The apply on 2026-09-12 proved its save and still lost three worlds. The proof was
+# right about the write it watched; what it could not see was the server image's own
+# shutdown save, which SIGTERM starts and a deadline ends. So nothing is left to shut
+# down: DoExit closes each world on the server's own schedule, and a server that is
+# already gone makes the dangerous second save a no-op ("Server is not running, no need
+# to save world before stopping container").
+TARGETS_X = [("The Island", "asa-testcluster-island", 27020),
+             ("Ragnarok", "asa-testcluster-ragnarok", 27021)]
+sent_x, alive_x = [], {"island": True, "ragnarok": True}
+
+
+def rcon_x(host, port, cmd):
+    """Stands in for ten servers: DoExit closes one, and a closed one stops answering."""
+    key = "island" if "island" in host else "ragnarok"
+    sent_x.append((key, cmd))
+    if cmd == "DoExit":
+        alive_x[key] = False
+        return "Exiting..."
+    if not alive_x[key]:
+        raise OSError("connection refused")
+    return "No Players Connected"
+
+
+class ClockX:
+    def __init__(self): self.t = 0.0
+    def now(self): return self.t
+    def wait(self, s): self.t += s
+
+
+clk_x = ClockX()
+out_x = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_x, now=clk_x.now, wait=clk_x.wait)
+check("every running map is asked to close its own world",
+      sorted(c[0] for c in sent_x if c[1] == "DoExit") == ["island", "ragnarok"], sent_x)
+check("and DoExit is what it is asked - not a kill, not a signal",
+      all(c[1] in ("DoExit", "ListPlayers") for c in sent_x), sent_x)
+check("a map that stops answering is a map that closed its world",
+      all(o["exited"] for o in out_x.values()), out_x)
+check("which is what the stop waits for, rather than the command returning",
+      all("exited" in o["why"] or "closed" in o["why"] for o in out_x.values()), out_x)
+
+# A server that keeps answering has NOT closed. It must not be reported as though it had.
+alive_y = {"island": True, "ragnarok": True}
+
+
+def rcon_y(host, port, cmd):
+    key = "island" if "island" in host else "ragnarok"
+    if cmd == "DoExit" and key == "island":
+        alive_y[key] = False
+        return "Exiting..."
+    if not alive_y[key]:
+        raise OSError("connection refused")
+    return "No Players Connected"        # ragnarok ignores DoExit and keeps serving
+
+
+clk_y = ClockX()
+out_y = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_y, now=clk_y.now, wait=clk_y.wait,
+                               budget=60)
+check("a map that never closes is not called closed",
+      out_y["The Island"]["exited"] and not out_y["Ragnarok"]["exited"], out_y)
+check("and it says so rather than silently passing",
+      "still answering" in out_y["Ragnarok"]["why"], out_y)
+check("the wait is bounded - one stuck map cannot hold the stop forever",
+      clk_y.t <= 60 + 5, clk_y.t)
+
+
+# A map that will not even take DoExit is not a reason to refuse the stop: the ordinary
+# shutdown still follows, which is exactly what happened before this existed.
+def rcon_dead(host, port, cmd):
+    raise OSError("no route to host")
+
+
+out_d = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_dead, now=ClockX().now,
+                               wait=lambda s: None)
+check("a map that cannot be reached does not block the stop",
+      all(o["exited"] for o in out_d.values()), out_d)
+check("but the reason is recorded as unreachable, not as a clean close",
+      all("did not answer" in o["why"] for o in out_d.values()), out_d)
+
+# And the ordering the whole fix rests on: every world closed BEFORE compose down runs.
+order_x = []
+clusterctl.dockerctl = FakeDocker()
+_real_compose = clusterctl.dockerctl.compose
+
+
+def spy_compose(path, proj, args, timeout=900):
+    order_x.append("down" if args == ["down"] else " ".join(args))
+    return _real_compose(path, proj, args, timeout)
+
+
+clusterctl.dockerctl.compose = spy_compose
+alive_z = {"island": True, "ragnarok": True}
+
+
+def rcon_z(host, port, cmd):
+    key = "island" if "island" in host else "ragnarok"
+    if cmd == "DoExit":
+        alive_z[key] = False
+        order_x.append("exit:%s" % key)
+        return "Exiting..."
+    if not alive_z[key]:
+        raise OSError("connection refused")
+    return "No Players Connected"
+
+
+ok_z, msg_z = clusterctl.stop(st, running=lambda s: TARGETS_X, rcon=rcon_z, now=ClockX().now, wait=lambda s: None)
+check("stop closes every world before it signals anything",
+      order_x and order_x[-1] == "down"
+      and {"exit:island", "exit:ragnarok"} <= set(order_x[:-1]), order_x)
+check("and the stop still succeeds", ok_z, msg_z)
+clusterctl.dockerctl = fake
 
 s = clusterctl.status(st)
 check("status reports what is running", s["running"] == 1 and s["services"][0]["service"] == "island", s)
