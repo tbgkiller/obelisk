@@ -352,8 +352,11 @@ ok, msg, detail = updates.apply_update(
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a clean apply succeeds", ok, msg)
-check("in the right order: warn, save, stop, start, verify",
-      c.log == ["warn:30", "save", "stop", "start", "verify"], c.log)
+# No warn step, and that is the point: this apply answers (0, {}, []) - an empty
+# cluster - so there is nobody to count down to. The order either side of it is
+# unchanged, which is what this has always been here to hold.
+check("in the right order: save, stop, start, verify",
+      c.log == ["save", "stop", "start", "verify"], c.log)
 check("the swap happened between stopping and starting", len(renamed) >= 3, renamed)
 check("the live tree ends up holding the staged build",
       ("/ark/ServerFiles.staging", "/ark/ServerFiles") in renamed, renamed)
@@ -707,6 +710,60 @@ check("each one said to be verified on disk, not merely acknowledged",
 check("and it is one line per map",
       _saved and len([l for l in _saved[0]["detail"].splitlines() if l.strip()]) == 2,
       _saved and _saved[0]["detail"])
+
+
+# ---- warning the people who are actually there
+#
+# The apply proved the cluster empty one refusal earlier and then announced a restart to
+# nobody for thirty minutes. The count was already in hand; the countdown just never
+# looked at it. These pin the four cases, because the expensive mistake is skipping a
+# warning somebody was owed, not running one nobody needed.
+def warned(players_answer, force=False, minutes=30):
+    """(what the flow did, the events it raised) for one player-count answer."""
+    drain()
+    st_ = real_store(restart_notice_minutes=minutes)
+    updates.remember(st_, primed=ready)
+    clk_ = _Clock()
+    c_ = Cluster()
+    _, rn_ = moved_nothing()
+    disk_ = _Disk(_QUIET)
+    updates.apply_batch(
+        st_, ARK, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
+        save=lambda: _cl.save_and_settle(
+            st_, ARK, rcon=lambda h, p, cmd: None, now=clk_.now, stat=disk_.stat,
+            exists=disk_.exists, wait=clk_.wait, budget=60),
+        players=lambda: players_answer, force=force, rename=rn_,
+        exists=tree_exists(), now=lambda: 4242)
+    return c_.log, drain()
+
+
+# 1. empty cluster - no warning, and it says why rather than going quiet
+log_e, ev_e = warned((0, {}, []))
+check("an empty cluster is not warned - it goes straight to saving",
+      not any(l.startswith("warn") for l in log_e), log_e)
+check("and the cluster is still stopped and started exactly once",
+      log_e.count("stop") == 1 and log_e.count("start") == 1, log_e)
+check("the skipped warning is announced, not silently dropped",
+      any("skipp" in (i["text"] or "").lower() for i in ev_e),
+      [i["text"] for i in ev_e])
+
+# 2. players online, forced - the one case a warning is actually owed
+log_p, _ev_p = warned((3, {"The Island": 3}, []), force=True)
+check("a forced apply with players online still warns them",
+      "warn:30" in log_p, log_p)
+check("and the warning comes before the stop",
+      log_p.index("warn:30") < log_p.index("stop"), log_p)
+
+# 3. a map that did not answer is not an empty map. Forced, so the refusal is skipped -
+#    which is exactly when this has to decide for itself.
+log_s, _ev_s = warned((0, {}, [("Astraeos", "timed out")]), force=True)
+check("a silent map buys the warning - 'we could not ask' is not 'nobody is home'",
+      "warn:30" in log_s, log_s)
+
+# 4. the setting still means what it says: zero minutes is no countdown either way
+log_z, _ev_z = warned((3, {"The Island": 3}, []), force=True, minutes=0)
+check("a zero-minute warning is still no warning, players or not",
+      not any(l.startswith("warn") for l in log_z), log_z)
 
 # 2. one world never settles - nothing is stopped, and the refusal names it
 drain()

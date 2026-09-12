@@ -433,8 +433,24 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
         return False, ("nothing is waiting to be applied - no settings queued, and no "
                        "update staged and verified"), {}
 
+    # Who is actually on, asked once. Two things need the answer and only one of them
+    # used to ask: the refusals below, and the warning countdown further down. The
+    # countdown never checked, so an apply on an empty cluster spent thirty minutes
+    # announcing a restart to nobody - and the apply that did it had *already* proved
+    # the cluster was empty, one refusal earlier.
+    #
+    # `force` skips the refusals, not the question. It is a judgement about restarting
+    # while people are playing, which is exactly the case where a warning is owed.
+    total, counts, silent = None, {}, []
+    if players:
+        try:
+            total, counts, silent = players()
+        except Exception as e:                      # noqa: BLE001 - never fatal
+            # Unknown, and unknown is not empty. The warning below treats it that way.
+            log.warning("could not count players before applying: %s", e)
+            total, counts, silent = None, {}, []
+
     if not force:
-        total, counts, silent = (players or (lambda: (0, {}, [])))()
         if silent:
             return False, ("%d map(s) did not answer, so it is not known whether "
                            "anyone is on them: %s. Apply with force if you mean to "
@@ -459,9 +475,21 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                  detail=pending.summary(store) if waiting else "")
 
     minutes = int(store.get("restart_notice_minutes") or 0)
-    if warn and minutes:
+    # Somebody to warn, or no way of knowing there isn't. "We could not ask" is not
+    # "nobody is home" - the same rule the refusal above states out loud - so an
+    # unreadable count buys the countdown rather than skipping it. Only a cluster
+    # measured empty skips.
+    nobody = players is not None and total == 0 and not silent
+    if warn and minutes and not nobody:
         step("warning players (%d minutes)" % minutes)
         warn(minutes, build)
+    elif warn and minutes:
+        # Said out loud, because a missing half-hour is the kind of thing an operator
+        # should be able to see a reason for rather than wonder about.
+        step("nobody is on, so the %d-minute warning is skipped" % minutes)
+        announce.say("ark.apply_note",
+                     "Nobody is on any map, so the %d-minute restart warning is being "
+                     "skipped and the update starts now." % minutes)
 
     if save:
         step("saving every world")
