@@ -151,17 +151,123 @@ def launch(store, in_use_ports=None):
                   % (n, "" if n == 1 else "s"))
 
 
-def stop(store):
-    """Stop the cluster's containers. Saves and the data root are untouched."""
+# ------------------------------------------------- letting each server close its own world
+#
+# On 2026-09-12 three worlds came back corrupt from an apply whose save had been proved.
+# The proof was not wrong; it was measuring the wrong write. save_and_settle proves the
+# world SaveWorld put on disk, and then `docker compose down` sends SIGTERM, and the
+# server image performs a *second* save of its own on the way out - "verified two-stage
+# ASA shutdown", in its words. That second save is the one that produced the damage, on
+# exactly the three largest worlds, and nothing in Obelisk could see it.
+#
+# The fix is to make sure there is nothing left to shut down. ARK's own `DoExit` saves
+# the world and closes the process on the server's schedule, with no deadline attached
+# to it - unlike SIGTERM, which starts a clock. And the server image is explicit about
+# what it does when it is signalled with the game already gone:
+#
+#     Container stop signal received; starting verified two-stage ASA shutdown...
+#     Server is not running, no need to save world before stopping container.
+#
+# So a map that has already exited is a map whose dangerous second save never happens.
+EXIT_BUDGET = 900             # seconds to let every map finish DoExit before moving on
+EXIT_INTERVAL = 5
+
+
+def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
+                interval=EXIT_INTERVAL, running=None, on_exited=None):
+    """Ask every running map to save and close itself. {label: {"exited", "why"}}.
+
+    Sent, then waited for, because the point is the waiting: `DoExit` returns as soon as
+    the command is accepted, which is the same lie SaveWorld tells. What says the world
+    is closed is the server no longer answering at all.
+
+    Best-effort per map on purpose. A map that will not exit is not a reason to refuse
+    the stop - it is a reason to say so and let the ordinary shutdown handle it, which is
+    no worse than what happened before this existed.
+    """
+    from . import bot
+    now = now or time.time
+    wait = wait or time.sleep
+    targets = running(store) if running else running_instances(store)
+    if not targets:
+        return {}
+
+    password = str(store.get("admin_password") or "")
+    if rcon is None:
+        def rcon(host, port, cmd):
+            return run_coroutine(bot.rcon_with(host, port, password, cmd, timeout=30))
+
+    seen = {}
+    for label, host, port in targets:
+        try:
+            rcon(host, port, "DoExit")
+            seen[label] = {"exited": False, "why": "asked to exit", "at": (host, port)}
+        except Exception as e:
+            # It did not take the command. Nothing has been disturbed - the ordinary
+            # stop still follows - so this is reported, not raised.
+            seen[label] = {"exited": True, "why": "did not answer DoExit (%s)" % e,
+                           "at": None}
+
+    started = now()
+    for _turn in range(max(1, int(budget / max(1, interval)) + 1)):
+        for label, one in seen.items():
+            if one["exited"]:
+                continue
+            host, port = one["at"]
+            try:
+                rcon(host, port, "ListPlayers")
+            except Exception:
+                # Silence is the signal. The world is written and the process is gone.
+                one["exited"], one["why"] = True, "closed its world and exited"
+                if on_exited:
+                    try:
+                        on_exited(label)
+                    except Exception as e:          # noqa: BLE001 - reporting only
+                        log.warning("could not report %s exiting: %s", label, e)
+        if all(one["exited"] for one in seen.values()):
+            break
+        if now() - started >= budget:
+            break
+        wait(interval)
+
+    for label, one in seen.items():
+        if not one["exited"]:
+            one["why"] = "still answering %ds after DoExit" % budget
+            log.warning("%s did not close its world: %s", label, one["why"])
+    return {l: {"exited": o["exited"], "why": o["why"]} for l, o in seen.items()}
+
+
+def stop(store, close_worlds=True, **kw):
+    """Stop the cluster's containers. Saves and the data root are untouched.
+
+    Every map is asked to close its own world first. `close_worlds=False` skips that for
+    a caller that has already done it, or that is stopping a cluster whose worlds are
+    not worth waiting on.
+    """
     ok, why = dockerctl.available()
     if not ok:
         return False, "Docker isn't reachable. %s" % why
     if not os.path.isfile(compose_path(store)):
         return False, "No compose file yet - this cluster has never been launched."
+
+    closed = {}
+    if close_worlds:
+        try:
+            closed = exit_worlds(store, **kw)
+        except Exception as e:                      # noqa: BLE001 - never blocks a stop
+            log.warning("could not close the worlds before stopping: %s", e)
+
     rc, out = _compose(store, "down")
     if rc != 0:
         return False, "docker compose down failed:\n%s" % out[-1500:]
-    return True, "Cluster stopped. Saves and settings are untouched; Launch brings it back."
+
+    late = sorted(l for l, c in closed.items() if not c.get("exited"))
+    note = ""
+    if late:
+        note = (" %s had to be stopped without closing first."
+                % ", ".join(late))
+    return True, ("Cluster stopped. Saves and settings are untouched; Launch brings it "
+                  "back.%s" % note)
 
 
 def restart(store):
