@@ -172,6 +172,12 @@ def launch(store, in_use_ports=None):
 EXIT_BUDGET = 900             # seconds to let every map finish DoExit before moving on
 EXIT_INTERVAL = 5
 
+# One story, one message. Every stage of a stop is said into this slot, so the admin
+# channel shows a single status line that keeps changing from "stopping" through
+# "3 of 10 closed" to "stopped" - rather than six lines scrolling past over five
+# minutes, or ten.
+STOP_SLOT = "cluster.stop"
+
 
 def _and(names):
     """"Ragnarok", or "Ragnarok and Valguero", or "A, B and C" - for a sentence a
@@ -268,7 +274,13 @@ def stop(store, close_worlds=True, say=None, **kw):
 
     def say(*a, **kw):
         """Telling somebody must never be what stops a cluster stopping. The channel
-        being down is not a reason to leave ten servers running."""
+        being down is not a reason to leave ten servers running.
+
+        Every stage goes into one slot, so the channel carries a single status line for
+        the whole stop rather than a scroll of them. The UI feed still gets each stage
+        as its own entry - it is the record, not the glance.
+        """
+        kw.setdefault("slot", STOP_SLOT)
         try:
             _say(*a, **kw)
         except Exception as e:                      # noqa: BLE001 - reporting only

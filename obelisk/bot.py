@@ -233,11 +233,39 @@ def count_players(text):
     return sum(1 for ln in text.splitlines() if ln.strip() and "," in ln)
 
 
+def _coalesce_slots(items):
+    """Drop stages a slot has already moved past, within one batch.
+
+    The queue is polled every few seconds, so ten maps closing in quick succession
+    arrive together. Editing one message ten times in a row to land on the tenth is ten
+    API calls into a rate limit to show a number that was already stale - so only the
+    last stage of each slot in a batch is worth sending. Anything without a slot is a
+    moment rather than a story and every one of them is kept.
+
+    A stage that ends its slot is never dropped: it is the line the channel is left
+    showing.
+    """
+    items = list(items)
+    last = {}
+    for i, item in enumerate(items):
+        slot = item.get("slot") or ""
+        if slot and not item.get("slot_end"):
+            last[slot] = i
+    out = []
+    for i, item in enumerate(items):
+        slot = item.get("slot") or ""
+        if slot and not item.get("slot_end") and last.get(slot) != i:
+            continue
+        out.append(item)
+    return out
+
+
 class Relay:
     def __init__(self):
         self.discord_send = None            # set by the Discord side when ready
         self.tribelog_send = None           # set by the Discord side if a tribelog channel is configured
         self.admin_send = None              # set by the Discord side if an admin channel is configured
+        self._slot_messages = {}            # slot -> the admin message it is updating in place
         self.down = set()                   # labels currently unreachable (for one-shot alerts)
         self.broken = {}                    # label -> next retry time
         self.recent = {}                    # (label, name, what) -> time, for join/leave de-dupe
@@ -326,6 +354,41 @@ class Relay:
                 log.warning("DestroyWildDinos %s failed: %s", label, e)
         await asyncio.gather(*(one(l, hp) for l, hp in SERVERS.items()))
 
+    async def _post_or_edit(self, send, ann, item):
+        """Post an announcement, or edit the one this slot is already showing.
+
+        A slot is a story in progress. The first stage posts and the message is kept;
+        every stage after it edits that same message, so a five-minute stop is one line
+        in the channel that keeps changing rather than six that scroll past.
+
+        Every way this can go wrong ends in a posted message rather than a silent one.
+        The message can be deleted by hand, the edit can be rate-limited, Discord can
+        have been restarted since - and a stop that says nothing is the failure this
+        whole feature exists to remove, so a failed edit posts afresh.
+        """
+        text = ann.format_for_discord(item)
+        slot = item.get("slot") or ""
+        edited = False
+        if slot:
+            held = self._slot_messages.get(slot)
+            if held is not None:
+                try:
+                    await held.edit(content=text[:1990])
+                    edited = True
+                except Exception as e:                    # noqa: BLE001
+                    log.info("could not edit the %s status message, posting a new "
+                             "one: %s", slot, e)
+                    self._slot_messages.pop(slot, None)
+        if not edited:
+            msg = await send(text)
+            if slot and msg is not None:
+                self._slot_messages[slot] = msg
+        # The end of a story releases its slot, whichever way the last stage landed, so
+        # the next stop starts a new message rather than quietly rewriting the one
+        # somebody may still be reading.
+        if slot and item.get("slot_end"):
+            self._slot_messages.pop(slot, None)
+
     async def announce_loop(self):
         """Mirror Obelisk's own announcements into the Discord admin channel.
 
@@ -339,9 +402,9 @@ class Relay:
             try:
                 send = getattr(self, "admin_send", None)
                 if send:
-                    for item in ann.pop_all():
+                    for item in _coalesce_slots(ann.pop_all()):
                         try:
-                            await send(ann.format_for_discord(item))
+                            await self._post_or_edit(send, ann, item)
                         except Exception as e:            # noqa: BLE001
                             log.warning("could not post announcement %s: %s",
                                         item.get("event"), e)
@@ -668,7 +731,11 @@ async def run_discord(relay):
                 log.error("Admin channel %s not found / not visible to the bot", ADMIN_CHANNEL_ID)
             else:
                 async def send_ad(text):
-                    await ad.send(text[:1990], allowed_mentions=discord.AllowedMentions.none())
+                    # Returns the message, which is what makes a live-updating status
+                    # line possible: a bot editing its own message needs no permission
+                    # beyond the one it already used to post it.
+                    return await ad.send(
+                        text[:1990], allowed_mentions=discord.AllowedMentions.none())
                 relay.admin_send = send_ad
                 log.info("Admin channel -> #%s (role gate: %s)", getattr(ad, "name", ad.id), ADMIN_ROLE_ID or "none")
 

@@ -616,11 +616,17 @@ def build_app(store, docker=None):
     cluster_busy = APPLY_LOCK          # module level: see the comment there
 
     def _act(fn, request):
+        # A stop is a story rather than a moment: the request, every stage inside it and
+        # the result all belong to one slot, so the channel carries a single status line
+        # from "Stop requested" to "Cluster stopped." The result ends the slot, so the
+        # next stop starts a fresh message instead of rewriting this one.
+        slot = clusterctl.STOP_SLOT if fn is clusterctl.stop else None
         announce.say("cluster.%s" % fn.__name__, "%s requested from the web UI."
-                     % fn.__name__.title())
+                     % fn.__name__.title(), slot=slot)
         ok, msg = fn(store)
         announce.say("cluster.%s.%s" % (fn.__name__, "done" if ok else "failed"), msg,
-                     level="info" if ok else "error")
+                     level="info" if ok else "error",
+                     slot=slot, slot_end=bool(slot))
         body = _cluster_body(request, message=msg if ok else "", problem="" if ok else msg)
         return chrome(body, "Cluster", "/admin/cluster")
 

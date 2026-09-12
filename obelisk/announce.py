@@ -75,7 +75,8 @@ def scrub(text):
     return out
 
 
-def say(event, text, level="info", detail=None, **fields):
+def say(event, text, level="info", detail=None, slot=None, slot_end=False,
+        **fields):
     """Record something worth an admin knowing. Never raises, never blocks.
 
     `event` is a dotted machine name - backup.start, restore.failed, update.phase - so
@@ -85,6 +86,12 @@ def say(event, text, level="info", detail=None, **fields):
     per-mod list, the tail of a log. It goes to the feed and the log, and Discord gets
     the sentence. That asymmetry is deliberate - a chat channel wants one readable line,
     and the admin who needs the full story should not have to leave the UI to get it.
+
+    `slot` names a running story rather than a moment - "the stop that is happening now".
+    Everything said into the same slot replaces the last thing said into it, so a
+    sequence that takes five minutes is one message in the channel that keeps changing
+    instead of six that scroll. It changes nothing about the feed: every stage is still
+    its own entry there, because the feed is the record and the channel is the glance.
     """
     text = scrub(text)
     extra = " ".join("%s=%s" % (k, scrub(v)) for k, v in sorted(fields.items())
@@ -96,7 +103,8 @@ def say(event, text, level="info", detail=None, **fields):
         log.info("EVENT %s detail: %s", event, detail.replace("\n", " / ")[:2000])
 
     item = {"event": event, "text": text, "fields": extra, "level": level,
-            "at": time.time(), "detail": detail}
+            "at": time.time(), "detail": detail, "slot": slot or "",
+            "slot_end": bool(slot_end)}
 
     # The feed first, and outside the try. Whether Discord can take an announcement has
     # nothing to do with whether the UI should show it - and the queue filling up is

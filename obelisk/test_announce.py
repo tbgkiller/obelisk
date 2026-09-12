@@ -208,6 +208,97 @@ with open(_path, "w", encoding="utf-8") as fh:
     fh.write("{ this is not json")
 check("and neither is a corrupt one", announce.load_from(_path) == 0)
 
+# ---- a slot: one message in the channel that keeps changing
+#
+# A stop takes five minutes and used to be six lines scrolling past. A slot says "this
+# is the same story" so the channel edits one message instead - while the feed keeps
+# every stage, because the feed is the record and the channel is the glance.
+import asyncio as _aio                                          # noqa: E402
+from . import bot as _bot                                       # noqa: E402
+
+while announce.pop_all(limit=100):
+    pass
+announce.say("cluster.stop", "Stop requested.", slot="s1")
+announce.say("cluster.closing", "Closing worlds.", slot="s1")
+announce.say("cluster.world_closed", "1 of 2.", slot="s1")
+announce.say("cluster.world_closed", "2 of 2.", slot="s1")
+announce.say("backup.start", "A backup started.")               # a moment, not a story
+announce.say("cluster.stop.done", "Cluster stopped.", slot="s1", slot_end=True)
+batch = announce.pop_all(limit=100)
+
+kept = _bot._coalesce_slots(batch)
+check("a slot's superseded stages are dropped from one batch",
+      [i["text"] for i in kept] == ["2 of 2.", "A backup started.", "Cluster stopped."],
+      [i["text"] for i in kept])
+check("the stage that ends the slot is never dropped - it is what the channel is left "
+      "showing", kept[-1]["slot_end"] is True, kept[-1])
+check("an announcement with no slot is a moment and is always kept",
+      any(i["event"] == "backup.start" for i in kept), [i["event"] for i in kept])
+check("and every stage is still in the feed, superseded or not",
+      len([i for i in announce.recent(limit=50) if i.get("slot") == "s1"]) == 5,
+      [i["text"] for i in announce.recent(limit=50) if i.get("slot") == "s1"])
+
+
+class _Msg:
+    def __init__(self): self.content, self.edits = "", 0
+
+    async def edit(self, content=""):
+        self.content, self.edits = content, self.edits + 1
+
+
+class _Chan:
+    """Stands in for the admin channel: send returns the message, as discord.py does."""
+
+    def __init__(self, break_edit=False):
+        self.posted, self.break_edit = [], break_edit
+
+    async def send(self, text):
+        m = _Msg()
+        m.content = text
+        if self.break_edit:
+            async def boom(content=""):
+                raise RuntimeError("message was deleted")
+            m.edit = boom
+        self.posted.append(m)
+        return m
+
+
+def _drive(chan, items):
+    relay = _bot.Relay()
+    async def go():
+        for it in _bot._coalesce_slots(items):
+            await relay._post_or_edit(chan.send, announce, it)
+    _aio.run(go())
+    return relay
+
+
+def _ascii(x):
+    """Failure details go to a Windows console; the formatter adds emoji."""
+    return str(x).encode("ascii", "replace").decode("ascii")
+
+
+ch = _Chan()
+r = _drive(ch, batch)
+# One message for the whole stop. The backup line is a moment with no slot, so it is
+# correctly its own post and is not part of the story.
+stop_msgs = [m for m in ch.posted if "backup" not in m.content.lower()]
+check("a whole stop is ONE message in the channel, not one per stage",
+      len(stop_msgs) == 1, _ascii([m.content for m in ch.posted]))
+check("and that message is edited as the stop progresses",
+      stop_msgs[0].edits >= 1, stop_msgs[0].edits)
+check("it is left showing the finished state",
+      "Cluster stopped." in stop_msgs[0].content, _ascii(stop_msgs[0].content))
+check("the slot is released at the end, so the next stop starts a new message",
+      "s1" not in r._slot_messages, list(r._slot_messages))
+
+# Editing can fail - the message deleted by hand, a rate limit, a bot restarted since.
+# Ending in a posted message matters more than ending in a tidy one.
+ch2 = _Chan(break_edit=True)
+_drive(ch2, batch)
+check("a stop whose message cannot be edited still ends in a posted 'stopped'",
+      any("Cluster stopped." in m.content for m in ch2.posted),
+      _ascii([m.content for m in ch2.posted]))
+
 announce.log.removeHandler(cap)
 print("\nFAILURES: %s" % fails if fails else "\nall announce tests passed")
 sys.exit(1 if fails else 0)
