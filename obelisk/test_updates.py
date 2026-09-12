@@ -772,11 +772,19 @@ check("and the cluster is still stopped and started exactly once",
 check("the skipped warning is announced, not silently dropped",
       any("skipp" in (i["text"] or "").lower() for i in ev_e),
       [i["text"] for i in ev_e])
+# And the channel does not contradict itself one line later. It used to open with
+# "Players are being warned" and then announce that nobody was being warned.
+_start_e = [i["text"] for i in ev_e if i["event"] == "ark.apply_start"]
+check("the opening line does not promise a warning that is not coming",
+      _start_e and "being warned" not in _start_e[0], _start_e)
 
 # 2. players online, forced - the one case a warning is actually owed
 log_p, _ev_p = warned((3, {"The Island": 3}, []), force=True)
 check("a forced apply with players online still warns them",
       "warn:30" in log_p, log_p)
+_start_p = [i["text"] for i in _ev_p if i["event"] == "ark.apply_start"]
+check("and there the opening line does say players are being warned",
+      _start_p and "being warned" in _start_p[0], _start_p)
 # The whole order, not just "warn is in there somewhere". (This helper's save is the
 # real save_and_settle, so it leaves no mark on the fake's log - the warn/save pairing
 # is pinned separately, beside the apply_update ordering test.)

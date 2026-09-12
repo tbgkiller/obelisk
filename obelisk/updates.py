@@ -476,19 +476,27 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
         what.append("ARK build %s" % build)
     if waiting:
         what.append("%d setting change(s)" % waiting)
-    announce.say("ark.apply_start",
-                 "Applying %s in one restart. Players are being warned, worlds saved, "
-                 "then the cluster comes back." % " and ".join(what),
-                 build=build if swap_files else "",
-                 detail=pending.summary(store) if waiting else "")
-
     minutes = int(store.get("restart_notice_minutes") or 0)
     # Somebody to warn, or no way of knowing there isn't. "We could not ask" is not
     # "nobody is home" - the same rule the refusal above states out loud - so an
     # unreadable count buys the countdown rather than skipping it. Only a cluster
     # measured empty skips.
     nobody = players is not None and total == 0 and not silent
-    if warn and minutes and not nobody:
+    counting_down = bool(warn and minutes and not nobody)
+
+    # Decided before this is said, because it used to promise a countdown and then the
+    # next line announced there would not be one. A channel that contradicts itself one
+    # message later is worse than a channel that says less.
+    announce.say("ark.apply_start",
+                 "Applying %s in one restart. %s" %
+                 (" and ".join(what),
+                  "Players are being warned, worlds saved, then the cluster comes back."
+                  if counting_down else
+                  "Worlds are saved first, then the cluster comes back."),
+                 build=build if swap_files else "",
+                 detail=pending.summary(store) if waiting else "")
+
+    if counting_down:
         step("warning players (%d minutes)" % minutes)
         warn(minutes, build)
     elif warn and minutes:
@@ -496,8 +504,9 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
         # should be able to see a reason for rather than wonder about.
         step("nobody is on, so the %d-minute warning is skipped" % minutes)
         announce.say("ark.apply_note",
-                     "Nobody is on any map, so the %d-minute restart warning is being "
-                     "skipped and the update starts now." % minutes)
+                     "Nobody is on any map, so the %d-minute restart warning would be "
+                     "a countdown to an empty cluster. Skipping it and starting the "
+                     "update now - this is deliberate, not a missed step." % minutes)
 
     if save:
         step("saving every world")

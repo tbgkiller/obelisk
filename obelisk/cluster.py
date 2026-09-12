@@ -173,6 +173,15 @@ EXIT_BUDGET = 900             # seconds to let every map finish DoExit before mo
 EXIT_INTERVAL = 5
 
 
+def _and(names):
+    """"Ragnarok", or "Ragnarok and Valguero", or "A, B and C" - for a sentence a
+    person reads rather than a list they parse."""
+    names = list(names)
+    if len(names) <= 1:
+        return names[0] if names else ""
+    return "%s and %s" % (", ".join(names[:-1]), names[-1])
+
+
 def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
                 interval=EXIT_INTERVAL, running=None, on_exited=None):
     """Ask every running map to save and close itself. {label: {"exited", "why"}}.
@@ -278,27 +287,41 @@ def stop(store, close_worlds=True, say=None, **kw):
         # concluded nothing was happening - so every stage says so now.
         kw.setdefault("on_exited", lambda label, done, total: say(
             "cluster.world_closed",
-            "%s closed its world (%d of %d)." % (label, done, total)))
+            "%s saved its world and closed (%d of %d)." % (label, done, total)))
         say("cluster.closing",
-            "Stopping the cluster. Every map is being asked to close its own world "
-            "first - nothing is signalled until each one has written it and exited.")
+            "Stopping the cluster. Each map is being asked to save and close its own "
+            "world first, which takes a few minutes on a big map - nothing is shut "
+            "down until its world is written.")
         try:
             closed = exit_worlds(store, **kw)
         except Exception as e:                      # noqa: BLE001 - never blocks a stop
             log.warning("could not close the worlds before stopping: %s", e)
             say("cluster.closing_failed",
-                "The worlds could not be closed first, so the ordinary shutdown is "
-                "being used instead: %s" % e, level="warning")
+                "The maps could not be asked to close their worlds, so every one of "
+                "them is being stopped the ordinary way instead - their last saves are "
+                "whatever each server wrote on its way out. Reason: %s" % e,
+                level="warning")
 
     late = sorted(l for l, c in closed.items() if not c.get("exited"))
     if closed:
         shut = [l for l, c in closed.items() if c.get("exited")]
-        say("cluster.closed" if not late else "cluster.closed_partly",
-            "%d of %d world(s) closed cleanly. Stopping the containers now."
-            % (len(shut), len(closed)),
+        worlds = "world" if len(closed) == 1 else "worlds"
+        if late:
+            text = ("%d of %d %s saved and closed. %s would not close and %s being "
+                    "stopped the ordinary way instead - worth checking %s once the "
+                    "cluster is back up. Stopping the servers now."
+                    % (len(shut), len(closed), worlds, _and(late),
+                       "is" if len(late) == 1 else "are",
+                       "it" if len(late) == 1 else "them"))
+        else:
+            text = ("%d of %d %s saved and closed. Stopping the servers now - nothing "
+                    "is left writing." % (len(shut), len(closed), worlds))
+        say("cluster.closed" if not late else "cluster.closed_partly", text,
             level="info" if not late else "warning",
-            detail="\n".join("%-14s %s" % (l, closed[l].get("why") or "")
-                             for l in sorted(closed)))
+            detail="\n".join(
+                "%-14s %s" % (l, "Saved and closed" if closed[l].get("exited")
+                              else "DID NOT CLOSE - %s" % (closed[l].get("why") or ""))
+                for l in sorted(closed)))
 
     rc, out = _compose(store, "down")
     if rc != 0:
@@ -306,8 +329,10 @@ def stop(store, close_worlds=True, say=None, **kw):
 
     note = ""
     if late:
-        note = (" %s had to be stopped without closing first."
-                % ", ".join(late))
+        note = (" %s had to be stopped without closing %s world first, so %s worth a "
+                "look when the cluster is back."
+                % (_and(late), "its" if len(late) == 1 else "their",
+                   "it is" if len(late) == 1 else "they are"))
     return True, ("Cluster stopped. Saves and settings are untouched; Launch brings it "
                   "back.%s" % note)
 
