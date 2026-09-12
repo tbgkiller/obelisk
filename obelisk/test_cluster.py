@@ -436,6 +436,89 @@ check("stop closes every world before it signals anything",
       order_x and order_x[-1] == "down"
       and {"exit:island", "exit:ragnarok"} <= set(order_x[:-1]), order_x)
 check("and the stop still succeeds", ok_z, msg_z)
+
+# ---- a stop that says what it is doing
+#
+# Closing ten worlds takes minutes, and the whole of it was silent: the owner pressed
+# Stop, watched nothing happen, and reasonably concluded nothing was. Silence and
+# failure have to look different.
+said = []
+alive_s = {"island": True, "ragnarok": True}
+
+
+def rcon_s(host, port, cmd):
+    key = "island" if "island" in host else "ragnarok"
+    if cmd == "DoExit":
+        alive_s[key] = False
+        return "Exiting..."
+    if not alive_s[key]:
+        raise OSError("connection refused")
+    return "No Players Connected"
+
+
+def say_s(event, text, level="info", detail=None, **fields):
+    said.append({"event": event, "text": text, "level": level, "detail": detail or ""})
+
+
+clusterctl.dockerctl = FakeDocker()
+ok_s, msg_s = clusterctl.stop(st, running=lambda s: TARGETS_X, rcon=rcon_s,
+                              now=ClockX().now, wait=lambda s: None, say=say_s)
+events_s = [e["event"] for e in said]
+check("a stop announces before it starts closing anything",
+      events_s and events_s[0] == "cluster.closing", events_s)
+check("every world that closes is announced as it closes",
+      len([e for e in said if e["event"] == "cluster.world_closed"]) == 2, events_s)
+check("and each one names the map and the count, not just a number",
+      all(("The Island" in e["text"] or "Ragnarok" in e["text"]) and "of 2" in e["text"]
+          for e in said if e["event"] == "cluster.world_closed"),
+      [e["text"] for e in said if e["event"] == "cluster.world_closed"])
+check("a summary says how many closed cleanly, before the containers are stopped",
+      any(e["event"] == "cluster.closed" and "2 of 2" in e["text"] for e in said),
+      [e["text"] for e in said])
+check("with the per-map breakdown in the detail, not in the chat line",
+      all("The Island" in e["detail"] and "Ragnarok" in e["detail"]
+          for e in said if e["event"] == "cluster.closed"),
+      [e["detail"] for e in said if e["event"] == "cluster.closed"])
+check("and the stop itself still works", ok_s, msg_s)
+
+# A map that will not close is the case the owner most needs told about, so it is a
+# warning and it is named - not folded into a cheerful summary.
+said_l = []
+alive_l = {"island": True, "ragnarok": True}
+
+
+def rcon_l(host, port, cmd):
+    key = "island" if "island" in host else "ragnarok"
+    if cmd == "DoExit" and key == "island":
+        alive_l[key] = False
+        return "Exiting..."
+    if not alive_l[key]:
+        raise OSError("connection refused")
+    return "No Players Connected"          # ragnarok never closes
+
+
+clusterctl.dockerctl = FakeDocker()
+ok_l, msg_l = clusterctl.stop(
+    st, running=lambda s: TARGETS_X, rcon=rcon_l, now=ClockX().now,
+    wait=lambda s: None, say=lambda e, t, level="info", detail=None, **f:
+        said_l.append({"event": e, "text": t, "level": level, "detail": detail or ""}),
+    budget=30)
+check("a map that would not close is reported as a warning, not as success",
+      any(e["event"] == "cluster.closed_partly" and e["level"] == "warning"
+          for e in said_l), [(e["event"], e["level"]) for e in said_l])
+check("the summary counts only the ones that actually closed",
+      any("1 of 2" in e["text"] for e in said_l), [e["text"] for e in said_l])
+check("and the returned message still names it for the operator",
+      "Ragnarok" in msg_l, msg_l)
+
+# Announcing is reporting, and reporting must never be what stops a cluster stopping.
+clusterctl.dockerctl = FakeDocker()
+ok_b, msg_b = clusterctl.stop(
+    st, running=lambda s: TARGETS_X, rcon=rcon_s, now=ClockX().now,
+    wait=lambda s: None,
+    say=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("discord is down")))
+check("a stop still completes when announcing it raises", ok_b, msg_b)
+
 clusterctl.dockerctl = fake
 
 s = clusterctl.status(st)

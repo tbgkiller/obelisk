@@ -209,6 +209,11 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
                            "at": None}
 
     started = now()
+    # Counted, so the reporter can say "3 of 10" rather than just naming maps into the
+    # dark. Same shape as worlds_settled's on_settled, deliberately - two waits that
+    # report the same way are two waits somebody only has to learn once.
+    closing = sum(1 for o in seen.values() if not o["exited"])
+    shut = 0
     for _turn in range(max(1, int(budget / max(1, interval)) + 1)):
         for label, one in seen.items():
             if one["exited"]:
@@ -219,9 +224,10 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
             except Exception:
                 # Silence is the signal. The world is written and the process is gone.
                 one["exited"], one["why"] = True, "closed its world and exited"
+                shut += 1
                 if on_exited:
                     try:
-                        on_exited(label)
+                        on_exited(label, shut, closing)
                     except Exception as e:          # noqa: BLE001 - reporting only
                         log.warning("could not report %s exiting: %s", label, e)
         if all(one["exited"] for one in seen.values()):
@@ -237,13 +243,28 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
     return {l: {"exited": o["exited"], "why": o["why"]} for l, o in seen.items()}
 
 
-def stop(store, close_worlds=True, **kw):
+def stop(store, close_worlds=True, say=None, **kw):
     """Stop the cluster's containers. Saves and the data root are untouched.
 
     Every map is asked to close its own world first. `close_worlds=False` skips that for
     a caller that has already done it, or that is stopping a cluster whose worlds are
     not worth waiting on.
+
+    `say` is the announcer, defaulting to the real one. A stop is minutes long and was
+    silent for all of them, which is not a thing a person can tell apart from nothing
+    happening.
     """
+    from . import announce
+    _say = announce.say if say is None else say
+
+    def say(*a, **kw):
+        """Telling somebody must never be what stops a cluster stopping. The channel
+        being down is not a reason to leave ten servers running."""
+        try:
+            _say(*a, **kw)
+        except Exception as e:                      # noqa: BLE001 - reporting only
+            log.warning("could not announce a stop stage: %s", e)
+
     ok, why = dockerctl.available()
     if not ok:
         return False, "Docker isn't reachable. %s" % why
@@ -252,16 +273,37 @@ def stop(store, close_worlds=True, **kw):
 
     closed = {}
     if close_worlds:
+        # The stop takes minutes and used to say nothing for all of them. Whoever
+        # pressed the button watched ten worlds close in total silence and reasonably
+        # concluded nothing was happening - so every stage says so now.
+        kw.setdefault("on_exited", lambda label, done, total: say(
+            "cluster.world_closed",
+            "%s closed its world (%d of %d)." % (label, done, total)))
+        say("cluster.closing",
+            "Stopping the cluster. Every map is being asked to close its own world "
+            "first - nothing is signalled until each one has written it and exited.")
         try:
             closed = exit_worlds(store, **kw)
         except Exception as e:                      # noqa: BLE001 - never blocks a stop
             log.warning("could not close the worlds before stopping: %s", e)
+            say("cluster.closing_failed",
+                "The worlds could not be closed first, so the ordinary shutdown is "
+                "being used instead: %s" % e, level="warning")
+
+    late = sorted(l for l, c in closed.items() if not c.get("exited"))
+    if closed:
+        shut = [l for l, c in closed.items() if c.get("exited")]
+        say("cluster.closed" if not late else "cluster.closed_partly",
+            "%d of %d world(s) closed cleanly. Stopping the containers now."
+            % (len(shut), len(closed)),
+            level="info" if not late else "warning",
+            detail="\n".join("%-14s %s" % (l, closed[l].get("why") or "")
+                             for l in sorted(closed)))
 
     rc, out = _compose(store, "down")
     if rc != 0:
         return False, "docker compose down failed:\n%s" % out[-1500:]
 
-    late = sorted(l for l, c in closed.items() if not c.get("exited"))
     note = ""
     if late:
         note = (" %s had to be stopped without closing first."
