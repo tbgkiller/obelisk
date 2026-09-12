@@ -4,7 +4,8 @@ Generates the compose file for a cluster from the settings store.
 Nobody hand-maintains ten near-identical service blocks. Pick your maps in the
 UI, and this writes them - ports assigned in order from a base, one shared copy
 of the server files, one shared config folder, and the first map acting as the
-update master the others wait on.
+update master. The others wait on it only until the server files exist; after
+that they all start together.
 
 The output is deliberately plain YAML with no anchors: it is meant to be read
 and, if Obelisk is ever broken or stopped, run by hand with `docker compose up`.
@@ -28,7 +29,41 @@ def _q(v):
     return '"%s"' % s.replace('\\', '\\\\').replace('"', '\\"')
 
 
-def generate_compose(store, project="ark", in_use_ports=None):
+def install_present(store, installed_build=None):
+    """Are the shared game files already on disk, as this container sees them?
+
+    This is the whole question behind the master-first chain. Ten containers fetching
+    the same 30 GB into the same folder at once is a real race, and that is what the
+    chain was added for - but it can only happen while the folder is empty. Once
+    steamcmd has written the appmanifest the download is behind us, and from then on the
+    chain buys nothing and costs a serialised world load on every restart: the master
+    loads its world alone, and only when it reports healthy do the other nine begin
+    loading theirs. Two waves where the hardware can do one.
+
+    Read through the container's own view of the Ark folder (/ark), not the host path in
+    the store - the host string is for writing volume lines, and stat()ing it from in
+    here would report a missing install on every cluster.
+
+    Note what this deliberately does *not* gate on: whether POK applies updates itself.
+    A running cluster that finds its build outdated coordinates through
+    UPDATE_COORDINATION_ROLE and the priority order below, which is the mechanism built
+    for exactly that and works with every map already up. depends_on only ever orders
+    the first boot, so it was never what protected that case.
+    """
+    from . import arkupdate
+    read = installed_build or arkupdate.installed_build
+    build, _why = read(layout.ark_paths(layout.ark_root_of(store))["serverfiles"])
+    return bool(build)
+
+
+def generate_compose(store, project="ark", in_use_ports=None, wait_for_master=None):
+    """Write the cluster's compose file.
+
+    `wait_for_master` forces the first-start ordering on or off; left alone it is
+    decided by whether the game files are already installed.
+    """
+    if wait_for_master is None:
+        wait_for_master = not install_present(store)
     keys = store.get("maps")
     keys = [k.strip() for k in str(keys).split(",") if k.strip()] if isinstance(keys, str) else list(keys)
     chosen = mapcat.resolve(keys)
@@ -73,9 +108,9 @@ def generate_compose(store, project="ark", in_use_ports=None):
             "    ulimits:",
             "      nofile: {soft: 1000000, hard: 1000000}",
         ]
-        if instance != master:
-            # The master downloads ~30 GB of server files once; the rest wait for
-            # it rather than nine containers fetching the same thing at once.
+        if instance != master and wait_for_master:
+            # Only until the game files exist. See install_present() for why this is a
+            # first-start measure rather than a permanent ordering.
             L += ["    depends_on:", "      %s: {condition: service_healthy}" % master]
         L += [
             "    environment:",

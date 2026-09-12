@@ -21,7 +21,7 @@ import logging, os, re, time
 
 from . import dockerctl, layout, stack
 from . import naming
-from .compose import generate_compose
+from .compose import generate_compose, install_present
 from .plan import build_plan
 
 log = logging.getLogger("obelisk.cluster")
@@ -142,9 +142,13 @@ def launch(store, in_use_ports=None):
 
     _join_network(store)
     n = len(plan["maps"])
-    return True, ("Cluster up: %d map%s. First start downloads the game files once on "
-                  "%s and the others wait for it, so give it a while."
-                  % (n, "" if n == 1 else "s", plan["maps"][0]["name"]))
+    if not install_present(store):
+        return True, ("Cluster up: %d map%s. First start downloads the game files once "
+                      "on %s and the others wait for it, so give it a while."
+                      % (n, "" if n == 1 else "s", plan["maps"][0]["name"]))
+    return True, ("Cluster up: %d map%s, all starting together. Each one still has a "
+                  "world to load, so give them a few minutes."
+                  % (n, "" if n == 1 else "s"))
 
 
 def stop(store):

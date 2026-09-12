@@ -14,6 +14,7 @@ import io, os, sys, tempfile, yaml
 
 from . import cluster as clusterctl
 from . import layout
+from . import compose as compose_mod
 from .compose import generate_compose
 from .plan import build_plan
 from .settings import Store
@@ -153,6 +154,82 @@ check("the first map is the update master",
       doc2["services"]["island"]["environment"]["UPDATE_COORDINATION_ROLE"] == "MASTER")
 check("the others follow",
       doc2["services"]["ragnarok"]["environment"]["UPDATE_COORDINATION_ROLE"] == "FOLLOWER")
+
+# ------------------------------------------------- starting together, once installed
+#
+# The master-first chain costs a whole extra world load on every restart: nine maps sit
+# Created while the island loads, and only then do they start loading. It is worth that
+# exactly once - while the server files do not exist yet and ten containers would
+# otherwise fetch the same 30 GB into the same folder. After that it is pure downtime.
+st3, _d3 = fresh(maps="island,ragnarok,scorched")
+
+cold = yaml.safe_load(generate_compose(st3, project="testcluster", wait_for_master=True))
+check("with no game files yet, the followers wait for the master",
+      all("depends_on" in cold["services"][m] for m in ("ragnarok", "scorched")),
+      [cold["services"][m].get("depends_on") for m in ("ragnarok", "scorched")])
+check("and they wait for it to be *healthy*, not merely started",
+      cold["services"]["ragnarok"]["depends_on"]["island"]["condition"]
+      == "service_healthy", cold["services"]["ragnarok"]["depends_on"])
+check("the master never waits on anything",
+      "depends_on" not in cold["services"]["island"],
+      cold["services"]["island"].get("depends_on"))
+
+warm = yaml.safe_load(generate_compose(st3, project="testcluster", wait_for_master=False))
+check("once the game files are installed, nothing waits on anything",
+      not any("depends_on" in s for s in warm["services"].values()),
+      {k: v.get("depends_on") for k, v in warm["services"].items()})
+check("every map is still there - parallel start drops the ordering, not a map",
+      set(warm["services"]) == {"island", "ragnarok", "scorched"}, list(warm["services"]))
+check("the update master/follower roles survive the change",
+      (warm["services"]["island"]["environment"]["UPDATE_COORDINATION_ROLE"] == "MASTER"
+       and warm["services"]["scorched"]["environment"]["UPDATE_COORDINATION_ROLE"]
+       == "FOLLOWER"),
+      "roles are how a running cluster coordinates; depends_on only ordered the boot")
+
+# What decides it, when nobody passes the flag: the appmanifest steamcmd writes at the
+# end of a successful install - and read through /ark, the container's own view. Reading
+# the host path from in here reports "not installed" on every cluster there is.
+asked = []
+
+
+def _fake_build(path, answer=("25200000", "")):
+    asked.append(path)
+    return answer
+
+
+check("an installed cluster is detected from the appmanifest",
+      compose_mod.install_present(st3, installed_build=_fake_build) is True)
+check("and it is looked for through the container's view of the ark folder",
+      asked and asked[0].startswith(layout.ark_root_of(st3)), asked)
+check("and it is the ServerFiles tree that is checked",
+      asked and asked[0].endswith("ServerFiles"), asked)
+check("an empty tree reads as not installed, so the first start still serialises",
+      compose_mod.install_present(
+          st3, installed_build=lambda p: (None, "no appmanifest")) is False)
+check("an install with no buildid is not an install either",
+      compose_mod.install_present(
+          st3, installed_build=lambda p: (None, "incomplete")) is False)
+
+# The two halves the owner's design keeps apart: one game/mod tree for everybody, and
+# saves that stay each map's own. Parallel start must not have blurred that.
+iv = warm["services"]["island"]["volumes"]
+rv = warm["services"]["ragnarok"]["volumes"]
+
+
+def _src(vols, dest):
+    return [v.split(":")[0] for v in vols if v.split(":")[1] == dest]
+
+
+check("every map mounts the same game install - one download, one tree",
+      _src(iv, "/home/pok/arkserver") == _src(rv, "/home/pok/arkserver")
+      and _src(iv, "/home/pok/arkserver") != [], _src(iv, "/home/pok/arkserver"))
+check("but each map keeps its own Saved folder - saves are never shared",
+      _src(iv, "/home/pok/arkserver/ShooterGame/Saved")
+      != _src(rv, "/home/pok/arkserver/ShooterGame/Saved"),
+      [_src(iv, "/home/pok/arkserver/ShooterGame/Saved"),
+       _src(rv, "/home/pok/arkserver/ShooterGame/Saved")])
+check("the staged tree is never mounted into a live map - it is staging's alone",
+      not any("ServerFiles.staging" in v for v in iv + rv), iv + rv)
 
 # ---------------------------------------------------------------- launching
 calls = []
