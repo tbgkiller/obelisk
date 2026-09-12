@@ -481,7 +481,10 @@ def build_app(store, docker=None):
             return all(results.values()), results
 
         return updatesctl.apply_batch(
-            store, _ark_root(), warn=warn, save=lambda: clusterctl.save_world(store),
+            store, _ark_root(), warn=warn,
+            # save_and_settle rather than save_world: the apply is about to stop the
+            # cluster, so it needs the saves proved on disk rather than merely accepted.
+            save=lambda: clusterctl.save_and_settle(store, _ark_root()),
             stop_all=stop_all, start_all=lambda: clusterctl.launch(store),
             verify=verify_all,
             players=lambda: clusterctl.players_online(store), force=force,
@@ -1463,7 +1466,9 @@ def _scheduled_apply(store, force=False, recheck=True):
 
     return upd.apply_batch(
         store, layout.ark_root_of(store), warn=warn, force=force,
-        save=lambda: clusterctl.save_world(store), stop_all=stop_all,
+        # Proved on disk, not merely accepted - a stop is what follows this.
+        save=lambda: clusterctl.save_and_settle(store, layout.ark_root_of(store)),
+        stop_all=stop_all,
         start_all=lambda: clusterctl.launch(store), verify=verify_all,
         players=lambda: clusterctl.players_online(store),
         on_step=lambda text: log.info("update: %s", text))

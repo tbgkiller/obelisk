@@ -408,6 +408,9 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
     its own inverse; the settings are committed from a snapshot that can be put back. A
     failure after either leaves the previous build *and* the previous configuration,
     which is the only state a cluster can safely be restarted into.
+
+    The last refusal is the save gate: if `save` can report per-map results, a map that
+    has not finished writing its world stops the batch before the cluster is touched.
     """
     from . import pending
 
@@ -462,11 +465,44 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
 
     if save:
         step("saving every world")
-        ok, detail = save()
+        # (ok, detail) is the old contract and still works; a save that can also prove
+        # its work returns a third item, {label: {"settled", "why"}}, for every map that
+        # accepted SaveWorld. cluster.save_and_settle is the one that does.
+        result = save()
+        ok, detail = result[0], result[1]
+        worlds = (result[2] if len(result) > 2 else None) or {}
         if not ok:
             # Not fatal by itself - a map that is down cannot save and should not block
             # the update - but it is said out loud rather than swallowed.
             announce.say("ark.apply_note", "SaveWorld: %s" % detail, level="warning")
+
+        # Accepting SaveWorld is not finishing it. The RCON call returns as soon as the
+        # server takes the command, and a large world is still writing tens of seconds
+        # later; stopping into that is what left five worlds damaged on 2026-09-11.
+        #
+        # So this refuses, before anything moves, exactly the way the stop_all() failure
+        # below does. The two outcomes are not symmetric: a deferred update costs a
+        # postponement, and the window comes round again with `last_apply` untouched, so
+        # nothing thinks the disruption was spent. Stopping into an open transaction
+        # costs hot journals on live worlds and an owner-only recovery. force does not
+        # skip it either - force is a judgement about players being online, not about a
+        # half-written world, and a half-written world does not care who was in it.
+        unsettled = sorted(l for l, w in worlds.items() if not w.get("settled"))
+        if unsettled:
+            waiting = "; ".join("%s (%s)" % (l, worlds[l].get("why") or "still writing")
+                                for l in unsettled)
+            announce.say("ark.update_failed",
+                         "Not stopping the cluster: %s did not finish saving in time. "
+                         "The cluster is still up and still serving - nothing was "
+                         "stopped, nothing was swapped, and the update is still waiting "
+                         "for the next window. Waiting on: %s"
+                         % (", ".join(unsettled), waiting), level="error",
+                         build=build if swap_files else "",
+                         detail=_lines("%-14s %s" % (l, w.get("why") or "")
+                                       for l, w in sorted(worlds.items())))
+            step("refused: %s did not finish saving" % ", ".join(unsettled))
+            return False, ("did not stop the cluster: %s did not finish saving"
+                           % ", ".join(unsettled)), {"unsettled": unsettled}
 
     step("stopping the cluster and the staging server")
     ok, detail = stop_all()

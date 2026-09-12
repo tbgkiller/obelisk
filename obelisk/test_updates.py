@@ -598,6 +598,224 @@ check("the announcement says the settings were put back",
       any("put back" in (i.get("text") or "") for i in drain()))
 
 
+# ---- the cluster is not stopped until every world has finished saving
+#
+# save() returning means the servers *accepted* SaveWorld, not that they wrote anything.
+# On 2026-09-11 the stop landed in that gap: every world at or above 76 MB was damaged
+# (Astraeos 142 MB, TheCenter 96 MB, Valguero 81 MB, TheIsland 77 MB, Ragnarok 76 MB)
+# and every world at or below 41 MB survived - the small ones simply finished inside
+# however long ten sequential RCON round-trips happened to take.
+#
+# There is no delay here to lengthen, so these drive the real gate: cluster's own
+# settle check, over a scripted filesystem and a clock that only moves when something
+# waits on it. Nothing sleeps.
+from . import cluster as _cl
+from . import restore as _restore
+from . import savepoints as _sp
+
+
+class _AllRunning:
+    """Every map in this cluster is up, as far as Docker is concerned."""
+
+    def container_details(self, names, timeout=30):
+        return {n: {"state": "running"} for n in names}
+
+
+class _Disk:
+    """stat/exists over scripted readings - one reading per poll, per path."""
+
+    def __init__(self, readings, sidecars=()):
+        self.readings, self.sidecars, self.polls = dict(readings), set(sidecars), {}
+
+    def stat(self, path):
+        rows = self.readings.get(path)
+        if rows is None:
+            raise OSError("no such file: %s" % path)
+        i = self.polls.get(path, 0)
+        self.polls[path] = i + 1
+        size, mtime = rows(i) if callable(rows) else rows[min(i, len(rows) - 1)]
+        return type("Stat", (), {"st_size": size, "st_mtime": mtime})()
+
+    def exists(self, path):
+        return path in self.sidecars
+
+
+class _Clock:
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def now(self):
+        return self.t
+
+    def wait(self, seconds):
+        self.t += seconds
+
+
+_real_dockerctl = _cl.dockerctl
+_cl.dockerctl = _AllRunning()
+
+_ISLAND = _sp.live_world(real_store(), "island", ARK)
+_ASTRAEOS = _sp.live_world(real_store(), "astraeos", ARK)
+# 142 MB is what Astraeos actually was on the night this happened.
+_QUIET = {_ISLAND: [(77000000, 1001.0)], _ASTRAEOS: [(142000000, 1001.0)]}
+_WRITING = {_ISLAND: [(77000000, 1001.0)],
+            _ASTRAEOS: lambda i: (40000000 + i * 8000000, 1001.0 + i)}
+
+
+def gated(st_, disk, force=False, budget=60):
+    """An apply whose save is the real save-and-prove, over `disk`."""
+    clk = _Clock()
+    c_ = Cluster()
+    _, rename_ = moved_nothing()
+    ok_, msg_, detail_ = updates.apply_batch(
+        st_, ARK, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
+        save=lambda: _cl.save_and_settle(
+            st_, ARK, rcon=lambda h, p, cmd: None, now=clk.now, stat=disk.stat,
+            exists=disk.exists, wait=clk.wait, budget=budget),
+        players=lambda: (0, {}, []), force=force, rename=rename_,
+        exists=tree_exists(), now=lambda: 4242)
+    return ok_, msg_, detail_, c_
+
+
+# 1. every world settles inside its budget - the apply goes ahead, once
+drain()
+st = real_store()
+updates.remember(st, primed=ready)
+ok, msg, _d, c = gated(st, _Disk(_QUIET))
+check("an apply whose worlds all finish saving succeeds", ok, msg)
+check("and the cluster is stopped exactly once", c.log.count("stop") == 1, c.log)
+check("in the usual order, with the proving folded into the save",
+      c.log == ["warn:0", "stop", "start", "verify"] or
+      c.log == ["stop", "start", "verify"], c.log)
+
+# 2. one world never settles - nothing is stopped, and the refusal names it
+drain()
+st = real_store()
+updates.remember(st, primed=ready)
+_before = dict(updates.state(st))
+ok, msg, detail, c = gated(st, _Disk(_WRITING))
+check("a world still writing refuses the apply", not ok, msg)
+check("and the cluster was never stopped", "stop" not in c.log, c.log)
+check("the refusal names the map that did not finish", "Astraeos" in msg, msg)
+check("and does not blame the ones that did", "The Island" not in msg, msg)
+check("which map it was is in the detail too",
+      detail.get("unsettled") == ["Astraeos"], detail)
+_said = drain()
+_refusal = [i for i in _said if i["event"] == "ark.update_failed"]
+check("the refusal reaches the admin channel as a failure", len(_refusal) == 1, _said)
+check("named there as well", _refusal and "Astraeos" in _refusal[0]["text"],
+      _refusal)
+check("and it says the cluster is still up and still serving",
+      _refusal and "still up and still serving" in _refusal[0]["text"], _refusal)
+
+# 6. a refused apply has not spent the disruption, so last_apply must not move
+check("a refused apply does not record an apply",
+      updates.state(st).get("last_apply") == _before.get("last_apply"),
+      updates.state(st))
+check("and the staged build is still staged for the next window",
+      updates.primed(st) is not None)
+
+# 3. the ct-0009 shape: quiet on disk, transaction still open
+for _suffix in _restore.SIDECARS:
+    drain()
+    st = real_store()
+    updates.remember(st, primed=ready)
+    ok, msg, _d, c = gated(st, _Disk(_QUIET, sidecars=[_ASTRAEOS + _suffix]))
+    check("a %s beside a quiet world still refuses the stop" % _suffix, not ok, msg)
+    check("and stops nothing", "stop" not in c.log, c.log)
+    check("naming the map with the open transaction", "Astraeos" in msg, msg)
+
+# 4. quiet, but from before the save was even asked for
+drain()
+st = real_store()
+updates.remember(st, primed=ready)
+ok, msg, _d, c = gated(st, _Disk({_ISLAND: [(77000000, 1001.0)],
+                                  _ASTRAEOS: [(142000000, 999.0)]}))
+check("a world older than its own SaveWorld has not started saving, so the apply waits",
+      not ok and "Astraeos" in msg, msg)
+check("and the cluster stays up", "stop" not in c.log, c.log)
+
+# 5. a map that is down does not block the apply - the old tolerance, unchanged
+drain()
+st = real_store()
+updates.remember(st, primed=ready)
+clk = _Clock()
+c = Cluster()
+_, rename = moved_nothing()
+disk = _Disk({_ISLAND: [(77000000, 1001.0)]})
+
+
+def _astraeos_is_down(host, port, cmd):
+    if port == 27021:
+        raise OSError("connection refused")
+
+
+ok, msg, _d = updates.apply_batch(
+    st, ARK, warn=c.warn, stop_all=c.stop, start_all=c.start, verify=c.verify,
+    save=lambda: _cl.save_and_settle(
+        st, ARK, rcon=_astraeos_is_down, now=clk.now, stat=disk.stat,
+        exists=disk.exists, wait=clk.wait, budget=60),
+    players=lambda: (0, {}, []), rename=rename, exists=tree_exists(),
+    now=lambda: 4242)
+check("a map that is down cannot save and must not block the update", ok, msg)
+check("the cluster was still stopped exactly once", c.log.count("stop") == 1, c.log)
+_ev = [i["event"] for i in drain()]
+check("and nothing was refused over the map that could not be asked",
+      "ark.update_failed" not in _ev, _ev)
+
+# ...and the case that reaches the old warning: nobody took the command at all. Still
+# not fatal, still said out loud, still stopped - exactly as before this gate existed.
+drain()
+st = real_store()
+updates.remember(st, primed=ready)
+clk = _Clock()
+c = Cluster()
+_, rename = moved_nothing()
+
+
+def _nobody_home(host, port, cmd):
+    raise OSError("connection refused")
+
+
+ok, msg, _d = updates.apply_batch(
+    st, ARK, warn=c.warn, stop_all=c.stop, start_all=c.start, verify=c.verify,
+    save=lambda: _cl.save_and_settle(
+        st, ARK, rcon=_nobody_home, now=clk.now, stat=_Disk({}).stat,
+        exists=lambda p: False, wait=clk.wait, budget=60),
+    players=lambda: (0, {}, []), rename=rename, exists=tree_exists(),
+    now=lambda: 4242)
+check("a cluster where no map answered is still not blocked from updating", ok, msg)
+check("and it was stopped once", c.log.count("stop") == 1, c.log)
+_ev = [i["event"] for i in drain()]
+check("with the failed save said out loud rather than swallowed",
+      "ark.apply_note" in _ev and "ark.update_failed" not in _ev, _ev)
+
+# 8. force is about players, not about a half-written world
+drain()
+st = real_store()
+updates.remember(st, primed=ready)
+ok, msg, _d, c = gated(st, _Disk(_WRITING), force=True)
+check("force does not get past a world that has not finished saving", not ok, msg)
+check("and force stops nothing either", "stop" not in c.log, c.log)
+check("still naming the map", "Astraeos" in msg, msg)
+
+# The old two-value save contract still works, because backup's save has no worlds
+# to report and must not start being read as one that refused.
+drain()
+st = real_store()
+updates.remember(st, primed=ready)
+c = Cluster()
+_, rename = moved_nothing()
+ok, msg, _d = updates.apply_batch(
+    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    exists=tree_exists(), now=lambda: 4242)
+check("a save that reports nothing per map is still allowed through", ok, msg)
+check("and the cluster is stopped once", c.log.count("stop") == 1, c.log)
+
+_cl.dockerctl = _real_dockerctl
+
+
 # ---- two triggers cannot both restart the cluster
 #
 # This is the one that corrupted a world. The empty-cluster watcher began an apply at

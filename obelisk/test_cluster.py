@@ -581,6 +581,157 @@ check("a map that will not answer is reported, not hidden",
       not ok_b and "did not answer" in detail_b or "no map accepted" in detail_b, detail_b)
 
 
+# ---- accepting SaveWorld is not finishing it
+#
+# save_world() returns the moment the server *takes* the command; a large world is
+# still serialising tens of seconds later. On 2026-09-11 the cluster was stopped into
+# that gap: every world at or above 76 MB was damaged, every world at or below 41 MB
+# came through clean. So anything about to stop the cluster has to prove the write
+# landed - the file stopped changing, and nothing is open beside it.
+from . import restore as _restore
+from . import savepoints as _sp
+
+st_q, _dq = fresh(maps="island,ragnarok", cluster_id="settle")
+st_q.patch({"game_port_base": 7877, "rcon_port_base": 27920})
+clusterctl.dockerctl = RunningDocker()
+
+ISLAND_ARK = _sp.live_world(st_q, "island")
+RAG_ARK = _sp.live_world(st_q, "ragnarok")
+check("the file watched is the live world the game writes",
+      ISLAND_ARK.endswith("TheIsland_WP.ark") and "SavedArks" in ISLAND_ARK, ISLAND_ARK)
+
+
+class Disk:
+    """stat/exists over scripted readings - one reading per poll, per path.
+
+    A list is consumed a reading at a time and its last value then repeats; a callable
+    is asked for reading `i`, which is how a world that never stops growing is written.
+    """
+
+    def __init__(self, readings, sidecars=()):
+        self.readings = dict(readings)
+        self.sidecars = set(sidecars)
+        self.polls = {}
+
+    def stat(self, path):
+        rows = self.readings.get(path)
+        if rows is None:
+            raise OSError("no such file: %s" % path)
+        i = self.polls.get(path, 0)
+        self.polls[path] = i + 1
+        size, mtime = rows(i) if callable(rows) else rows[min(i, len(rows) - 1)]
+        return type("Stat", (), {"st_size": size, "st_mtime": mtime})()
+
+    def exists(self, path):
+        return path in self.sidecars
+
+
+class Clock:
+    """A clock that only moves when something waits on it, so nothing here sleeps."""
+
+    def __init__(self, t=1000.0):
+        self.t = t
+
+    def now(self):
+        return self.t
+
+    def wait(self, seconds):
+        self.t += seconds
+
+
+SENT = {"The Island": 1000.0, "Ragnarok": 1000.0}
+
+
+def settled(disk, budget=60, sent=None):
+    clk = Clock()
+    out = clusterctl.worlds_settled(st_q, sent or SENT, now=clk.now, stat=disk.stat,
+                                    exists=disk.exists, wait=clk.wait, budget=budget)
+    return out, clk
+
+
+res_q, clk_q = settled(Disk({ISLAND_ARK: [(120, 1001.0)], RAG_ARK: [(80, 1001.0)]}))
+check("a world that stops changing, with nothing open beside it, is settled",
+      all(r["settled"] for r in res_q.values()), res_q)
+check("and it stops waiting as soon as it knows, rather than burning the budget",
+      clk_q.t < 1060, clk_q.t)
+
+res_g, clk_g = settled(Disk({ISLAND_ARK: [(120, 1001.0)],
+                             RAG_ARK: lambda i: (80 + i * 4096, 1001.0 + i)}))
+check("a world that is still being written is not settled",
+      res_g["Ragnarok"]["settled"] is False and res_g["The Island"]["settled"] is True,
+      res_g)
+check("and the wait is bounded by the budget rather than endless",
+      clk_g.t <= 1060, clk_g.t)
+
+# The ct-0009 shape: quiet on disk, transaction still open. A hot sidecar is not a
+# timing hint - it says a transaction is open, and stopping into that is the failure.
+for _suffix in _restore.SIDECARS:
+    res_h, _ = settled(Disk({ISLAND_ARK: [(120, 1001.0)], RAG_ARK: [(80, 1001.0)]},
+                            sidecars=[RAG_ARK + _suffix]), budget=30)
+    check("a %s file beside a quiet world means not settled" % _suffix,
+          not res_h["Ragnarok"]["settled"] and res_h["The Island"]["settled"], res_h)
+    check("and it says which file it is waiting on",
+          _suffix in res_h["Ragnarok"]["why"], res_h["Ragnarok"])
+
+# The other way a quiet file lies: it is quiet because the save has not begun.
+res_s, _ = settled(Disk({ISLAND_ARK: [(120, 1001.0)], RAG_ARK: [(80, 999.0)]}), budget=30)
+check("a world older than its own SaveWorld has not started saving yet",
+      not res_s["Ragnarok"]["settled"], res_s)
+check("and that is reported as not-started, not as finished",
+      "not begun" in res_s["Ragnarok"]["why"], res_s["Ragnarok"])
+
+# A big world that starts late and takes its time is still a save that landed.
+res_l, _ = settled(Disk({ISLAND_ARK: [(120, 1001.0)],
+                         RAG_ARK: [(80, 999.0), (80, 999.0), (90000000, 1002.0),
+                                   (142000000, 1003.0), (142000000, 1003.0),
+                                   (142000000, 1003.0)]}))
+check("a slow world still settles once it has actually finished",
+      all(r["settled"] for r in res_l.values()), res_l)
+
+# And a world file that cannot be read at all is an unknown, never a pass.
+res_m, _ = settled(Disk({ISLAND_ARK: [(120, 1001.0)]}), budget=30)
+check("a world that cannot be read is not treated as saved",
+      not res_m["Ragnarok"]["settled"] and res_m["The Island"]["settled"], res_m)
+
+
+# ---- save_and_settle: one call that sends the command and proves the write
+asked_q = []
+clk_sw = Clock()
+disk_sw = Disk({ISLAND_ARK: [(120, 1001.0)], RAG_ARK: [(80, 1001.0)]})
+ok_q, detail_q, worlds_q = clusterctl.save_and_settle(
+    st_q, rcon=lambda h, p, c: asked_q.append((h, p, c)), now=clk_sw.now,
+    stat=disk_sw.stat, exists=disk_sw.exists, wait=clk_sw.wait, budget=60)
+check("save_and_settle sends SaveWorld to every running map",
+      [c for _h, _p, c in asked_q] == ["SaveWorld", "SaveWorld"], asked_q)
+check("and reports both worlds proved on disk",
+      ok_q and all(w["settled"] for w in worlds_q.values()), (detail_q, worlds_q))
+check("while still saying what save_world says", "saved 2 map(s)" in detail_q, detail_q)
+
+
+def _one_boom(h, p, c):
+    if p == 27921:
+        raise OSError("connection refused")
+
+
+clk_hb = Clock()
+disk_hb = Disk({ISLAND_ARK: [(120, 1001.0)]})
+ok_hb, detail_hb, worlds_hb = clusterctl.save_and_settle(
+    st_q, rcon=_one_boom, now=clk_hb.now, stat=disk_hb.stat, exists=disk_hb.exists,
+    wait=clk_hb.wait, budget=30)
+check("a map that never took the command is not waited for",
+      set(worlds_hb) == {"The Island"}, worlds_hb)
+check("the map that did take it is still proved",
+      ok_hb and worlds_hb["The Island"]["settled"], worlds_hb)
+check("and the one that did not answer is still reported",
+      "did not answer" in detail_hb, detail_hb)
+
+clusterctl.dockerctl = StoppedDocker()
+ok_ns, detail_ns, worlds_ns = clusterctl.save_and_settle(st_q, rcon=lambda h, p, c: None)
+check("a stopped cluster has nothing to wait for and says the same as before",
+      not ok_ns and "no running maps" in detail_ns and worlds_ns == {}, detail_ns)
+clusterctl.dockerctl = RunningDocker()
+
+
 # ---- the game port is published on both protocols, per instance
 # Gameplay is UDP, but the hand-built cluster that is actually listed in the server
 # browser publishes TCP as well. Matching something proven beats reasoning about what

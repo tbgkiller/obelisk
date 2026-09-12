@@ -17,7 +17,7 @@ root alone - the containers are the disposable part. Removing worlds is not some
 a button here does by accident.
 """
 
-import logging, os, re
+import logging, os, re, time
 
 from . import dockerctl, layout, stack
 from . import naming
@@ -271,14 +271,22 @@ def run_coroutine(coro):
         return pool.submit(asyncio.run, coro).result()
 
 
-def save_world(store, rcon=None):
+def save_world(store, rcon=None, accepted=None, now=None):
     """Ask every running map to write its world to disk. Returns (ok, detail).
 
     A copy taken mid-session captures the last autosave, which can be fifteen minutes of
     lost progress. This closes that window. Best-effort on purpose: a map that is down or
     slow must not stop a backup happening at all - a slightly older archive beats none.
+
+    `accepted` is an optional dict, filled with {label: the instant that map took the
+    command}. The RCON call returning means the server *accepted* SaveWorld, not that the
+    world was written, so a caller that has to be sure - anything about to stop the
+    cluster - needs both halves: which maps answered, and when. The instant matters on
+    its own, because a world file older than its own SaveWorld has not started writing
+    yet, and on disk that looks exactly like one that finished long ago.
     """
     from . import bot
+    now = now or time.time
     targets = running_instances(store)
     if not targets:
         return False, "no running maps to save"
@@ -293,6 +301,8 @@ def save_world(store, rcon=None):
         try:
             rcon(host, port, "SaveWorld")
             done.append(label)
+            if accepted is not None:
+                accepted[label] = now()
         except Exception as e:
             failed.append("%s (%s)" % (label, e))
     if not done:
@@ -301,6 +311,138 @@ def save_world(store, rcon=None):
         return True, "saved %d of %d maps; %s did not answer" % (
             len(done), len(targets), ", ".join(failed))
     return True, "saved %d map(s)" % len(done)
+
+
+# ------------------------------------------------- proving a save actually landed
+#
+# On 2026-09-11 the cluster was stopped while the larger worlds were still serialising.
+# Every world at or above 76 MB was damaged and every world at or below 41 MB came
+# through clean, which is the signature of a race rather than of a broken save: the
+# small maps finished inside the time ten sequential RCON round-trips happened to take,
+# and the big ones did not.
+#
+# There is no delay here to lengthen. A longer one would move the cliff and hide it
+# better - a bigger world, a busier host or an eleventh map puts it straight back. What
+# the stop needs is proof, per map, and the proof is two facts that have to hold
+# together because either alone will lie:
+#
+#   the world file stopped changing   - size and mtime steady across consecutive polls
+#   and nothing is open beside it     - no SQLite sidecar next to it
+#
+# The sidecar half is the one that matters most. A hot journal is not a timing hint, it
+# is a statement that a transaction is open, and stopping into that is the exact failure
+# being prevented.
+SETTLE_BUDGET = 300           # seconds a map gets to finish writing before we refuse
+SETTLE_INTERVAL = 5           # seconds between polls
+SETTLE_QUIET = 2              # identical consecutive readings that count as "stopped"
+
+
+def _poll_world(seen, sent_at, sidecars, stat, exists, quiet):
+    """One reading of one map's world file. Mutates and returns `seen`."""
+    path = seen["path"]
+    hot = [s for s in sidecars if exists(path + s)]
+    if hot:
+        seen["reading"], seen["still"] = None, 0
+        seen["why"] = ("a %s file is still open beside its world"
+                       % ", ".join(sorted(hot)))
+        return seen
+    try:
+        info = stat(path)
+        reading = (info.st_size, info.st_mtime)
+    except OSError as e:
+        seen["reading"], seen["still"] = None, 0
+        seen["why"] = "its world file could not be read: %s" % e
+        return seen
+    if reading[1] < sent_at:
+        # Quiet, but quiet from *before* it was asked to save. This is the save that has
+        # not started rather than the save that has finished, and the two are identical
+        # to anything that only watches for the file to stop moving.
+        seen["reading"], seen["still"] = None, 0
+        seen["why"] = "it has not begun writing yet - its world is older than the save"
+        return seen
+    if reading == seen["reading"]:
+        seen["still"] += 1
+    else:
+        seen["reading"], seen["still"] = reading, 1
+    if seen["still"] >= quiet:
+        seen["settled"], seen["why"] = True, "saved"
+    else:
+        seen["why"] = "still writing"
+    return seen
+
+
+def worlds_settled(store, sent, ark_root=None, now=None, stat=None, exists=None,
+                   wait=None, budget=SETTLE_BUDGET, interval=SETTLE_INTERVAL,
+                   quiet=SETTLE_QUIET):
+    """Wait for every map in `sent` to finish writing its world.
+
+    `sent` is {label: the instant that map accepted SaveWorld} - exactly what
+    save_world() fills in. Returns {label: {"settled": bool, "why": str}}.
+
+    Only maps that answered are in here. A map that is down cannot be waited for, and
+    making the caller wait on it would turn "one map is off" into "no update ever
+    applies again".
+    """
+    from . import restore, savepoints
+    now = now or time.time
+    stat = stat or os.stat
+    exists = exists or os.path.exists
+    wait = wait or time.sleep
+
+    keys = {r["name"]: r["map"] for r in build_plan(store)["maps"]}
+    seen = {}
+    for label in sent:
+        try:
+            path = savepoints.live_world(store, keys[label], ark_root)
+        except KeyError:
+            # Never read "we could not check" as "it is fine". A map that answered and
+            # whose world we cannot find is an unknown, and an unknown is not a proof.
+            path = None
+        seen[label] = {"path": path, "reading": None, "still": 0, "settled": False,
+                       "why": ("nothing read yet" if path else
+                               "could not work out where its world file is")}
+
+    started = now()
+    # Counted as well as clocked, the same way the staging wait is. A loop whose only
+    # exit is the wall clock passing a deadline spins forever the moment anything hands
+    # it a clock that does not move - and the first thing to do that is always a test.
+    for _turn in range(max(1, int(budget / max(1, interval)) + 1)):
+        for label, one in seen.items():
+            if one["settled"] or not one["path"]:
+                continue
+            _poll_world(one, sent[label], restore.SIDECARS, stat, exists, quiet)
+        if all(one["settled"] for one in seen.values()):
+            break
+        if now() - started >= budget:
+            break
+        wait(interval)
+
+    for label, one in seen.items():
+        if not one["settled"]:
+            log.warning("%s had not finished saving after %ds: %s",
+                        label, budget, one["why"])
+    return {label: {"settled": one["settled"], "why": one["why"]}
+            for label, one in seen.items()}
+
+
+def save_and_settle(store, ark_root=None, rcon=None, now=None, **kw):
+    """Save every running map, then prove each save landed. (ok, detail, worlds).
+
+    The (ok, detail) half is save_world()'s, unchanged, because the tolerance it
+    describes is still right: a map that is down must not stop an update. `worlds` is
+    the new half - {label: {"settled", "why"}} for every map that accepted SaveWorld -
+    and it is what the apply path refuses on.
+    """
+    now = now or time.time
+    sent = {}
+    ok, detail = save_world(store, rcon=rcon, accepted=sent, now=now)
+    if not sent:
+        return ok, detail, {}
+    worlds = worlds_settled(store, sent, ark_root=ark_root, now=now, **kw)
+    late = sorted(l for l, w in worlds.items() if not w["settled"])
+    if late:
+        detail = "%s; %s did not finish writing" % (detail, ", ".join(late))
+    return ok, detail, worlds
 
 
 def _join_network(store, environ=None):
