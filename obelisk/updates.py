@@ -451,6 +451,14 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
             total, counts, silent = None, {}, []
 
     if not force:
+        if total is None:
+            # Asking used to be allowed to raise, and raising is what stopped the
+            # apply. Catching it above to keep the warning decision safe quietly made
+            # an unreadable count look like zero to the refusals below, which is the
+            # one reading this file exists to reject.
+            return False, ("the player count could not be read, so it is not known "
+                           "whether anyone is on. Apply with force if you mean to "
+                           "restart anyway."), {}
         if silent:
             return False, ("%d map(s) did not answer, so it is not known whether "
                            "anyone is on them: %s. Apply with force if you mean to "

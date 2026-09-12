@@ -363,6 +363,23 @@ check("the live tree ends up holding the staged build",
 events = [i["event"] for i in drain()]
 check("each phase reached the admin channel",
       "ark.apply_start" in events and "ark.update_applied" in events, events)
+
+
+# The same apply with somebody on it, which is the only way to see warn's own place in
+# the sequence. Together with the check above, every step's position is still pinned -
+# the warn step moved from unconditional to conditional, not from guarded to unguarded.
+drain()
+s_w = FakeStore()
+updates.remember(s_w, primed=ready)
+c_w = Cluster()
+_renamed_w, rename_w = moved_nothing()
+updates.apply_update(
+    s_w, ARK, warn=c_w.warn, save=c_w.save, stop_all=c_w.stop, start_all=c_w.start,
+    verify=c_w.verify, players=lambda: (2, {"The Island": 2}, []), force=True,
+    rename=rename_w, exists=tree_exists(), now=lambda: 1000)
+check("and with players on, warn still comes first - before the save, not just the stop",
+      c_w.log == ["warn:30", "save", "stop", "start", "verify"], c_w.log)
+drain()
 check("the staged update is cleared once applied", updates.primed(s) is None, s.data)
 check("and what was applied is remembered, so the window does not redo it",
       (s.data["ark_update"]["applied"] or {}).get("build") == "25200000", s.data)
@@ -718,8 +735,17 @@ check("and it is one line per map",
 # nobody for thirty minutes. The count was already in hand; the countdown just never
 # looked at it. These pin the four cases, because the expensive mistake is skipping a
 # warning somebody was owed, not running one nobody needed.
-def warned(players_answer, force=False, minutes=30):
-    """(what the flow did, the events it raised) for one player-count answer."""
+def warned(players_answer, force=False, minutes=30, raises=False):
+    """(what the flow did, the events it raised) for one player-count answer.
+
+    `raises=True` stands in for the count being unreadable - a map that throws rather
+    than answering, which is not the same as answering zero.
+    """
+    def ask():
+        if raises:
+            raise OSError("rcon unreachable")
+        return players_answer
+
     drain()
     st_ = real_store(restart_notice_minutes=minutes)
     updates.remember(st_, primed=ready)
@@ -732,7 +758,7 @@ def warned(players_answer, force=False, minutes=30):
         save=lambda: _cl.save_and_settle(
             st_, ARK, rcon=lambda h, p, cmd: None, now=clk_.now, stat=disk_.stat,
             exists=disk_.exists, wait=clk_.wait, budget=60),
-        players=lambda: players_answer, force=force, rename=rn_,
+        players=ask, force=force, rename=rn_,
         exists=tree_exists(), now=lambda: 4242)
     return c_.log, drain()
 
@@ -751,8 +777,20 @@ check("the skipped warning is announced, not silently dropped",
 log_p, _ev_p = warned((3, {"The Island": 3}, []), force=True)
 check("a forced apply with players online still warns them",
       "warn:30" in log_p, log_p)
-check("and the warning comes before the stop",
-      log_p.index("warn:30") < log_p.index("stop"), log_p)
+# The whole order, not just "warn is in there somewhere". (This helper's save is the
+# real save_and_settle, so it leaves no mark on the fake's log - the warn/save pairing
+# is pinned separately, beside the apply_update ordering test.)
+check("and the warning comes first, before anything is stopped",
+      log_p == ["warn:30", "stop", "start", "verify"], log_p)
+
+# An unreadable count is not an empty cluster. Catching the error so the warning
+# decision could be made safely must not quietly hand the refusals a zero.
+log_u, _ev_u = warned(None, raises=True)
+check("a player count that cannot be read refuses the apply outright",
+      log_u == [], log_u)
+log_uf, _ev_uf = warned(None, raises=True, force=True)
+check("but force still gets through it, and warns because it cannot rule anyone out",
+      "warn:30" in log_uf, log_uf)
 
 # 3. a map that did not answer is not an empty map. Forced, so the refusal is skipped -
 #    which is exactly when this has to decide for itself.
