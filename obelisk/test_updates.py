@@ -688,6 +688,26 @@ check("in the usual order, with the proving folded into the save",
       c.log == ["warn:0", "stop", "start", "verify"] or
       c.log == ["stop", "start", "verify"], c.log)
 
+# The save that worked used to say nothing per map - only the refusal did, so the only
+# way to learn what had been proved was for it to fail. One sentence, and the whole list
+# in the detail: say() sends the text to the channel and keeps the detail for the feed.
+_saved = [i for i in drain() if i["event"] == "ark.saved"]
+check("a save that lands is announced, not only one that fails", len(_saved) == 1,
+      _saved)
+check("as a single line rather than one per map",
+      _saved and _saved[0]["text"].count("\n") == 0, _saved and _saved[0]["text"])
+check("the sentence says how many were proved",
+      _saved and "2 of 2" in _saved[0]["text"], _saved and _saved[0]["text"])
+check("and every map that answered is named in the detail",
+      _saved and all(m in _saved[0]["detail"] for m in ("The Island", "Astraeos")),
+      _saved and _saved[0]["detail"])
+check("each one said to be verified on disk, not merely acknowledged",
+      _saved and _saved[0]["detail"].count("Saved (verified on disk)") == 2,
+      _saved and _saved[0]["detail"])
+check("and it is one line per map",
+      _saved and len([l for l in _saved[0]["detail"].splitlines() if l.strip()]) == 2,
+      _saved and _saved[0]["detail"])
+
 # 2. one world never settles - nothing is stopped, and the refusal names it
 drain()
 st = real_store()

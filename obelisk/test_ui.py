@@ -506,6 +506,20 @@ _apply_emitted = ["warning players (30 minutes)", "saving every world",
 _unmatched = [t for t in _apply_emitted if ui.phase_index(t, ui.APPLY_PHASES) < 0]
 check("and every phase the apply flow emits does too", not _unmatched, _unmatched)
 
+# The per-map save ticks are the same step text with a map on the end, precisely so the
+# stepper keeps finding the phase. A tick that dropped the marker would score -1, which
+# renders as no phase lit at all - a bar that appears to go backwards halfway through an
+# update is worse than one that only ever said "saving every world".
+_ticks = ["saving every world - The Island saved (1/10)",
+          "saving every world - Lost Colony saved (7/10)",
+          "saving every world - Genesis saved (10/10)"]
+_saving = ui.phase_index("saving every world", ui.APPLY_PHASES)
+check("a per-map save tick still lands on the Saving phase",
+      all(ui.phase_index(t, ui.APPLY_PHASES) == _saving for t in _ticks),
+      [(t, ui.phase_index(t, ui.APPLY_PHASES)) for t in _ticks])
+check("and it does not drift onto the phase after it",
+      _saving < ui.phase_index("stopping the cluster", ui.APPLY_PHASES))
+
 check("the phases move forward as the flow does",
       ui.phase_index("Downloading server files", ui.PRIME_PHASES) <
       ui.phase_index("Generating the world", ui.PRIME_PHASES) <

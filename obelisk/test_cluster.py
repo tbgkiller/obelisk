@@ -771,6 +771,79 @@ check("a world that cannot be read is not treated as saved",
       not res_m["Ragnarok"]["settled"] and res_m["The Island"]["settled"], res_m)
 
 
+# ---- telling somebody, as each world lands
+#
+# The wait already knew which map had finished and when; it threw that away and showed
+# one aggregate line, so a save that was working looked exactly like a save that was
+# stuck. These assert the report, not the proof - the proof is everything above.
+def watched(disk, budget=60, sent=None, hook=None):
+    clk = Clock()
+    seen_calls = []
+
+    def note(label, done, total):
+        seen_calls.append((label, done, total))
+        if hook:
+            hook(label)
+
+    out = clusterctl.worlds_settled(st_q, sent or SENT, now=clk.now, stat=disk.stat,
+                                    exists=disk.exists, wait=clk.wait, budget=budget,
+                                    on_settled=note)
+    return out, seen_calls
+
+
+# The island is quiet from the first reading; ragnarok writes for two more polls. So the
+# order is not the dict's, it is the order they actually finish - which is the only
+# order worth reporting.
+res_w, calls_w = watched(Disk({ISLAND_ARK: [(120, 1001.0)],
+                               RAG_ARK: [(80, 1001.0), (90, 1002.0), (90, 1002.0),
+                                         (90, 1002.0)]}))
+check("every settled map is reported", len(calls_w) == 2, calls_w)
+check("once each, never twice - a settled map is skipped before it is polled again",
+      len({c[0] for c in calls_w}) == 2, calls_w)
+check("in the order they finished, not the order they were asked",
+      [c[0] for c in calls_w] == ["The Island", "Ragnarok"], calls_w)
+check("counting up as they land, against a fixed total",
+      [(c[1], c[2]) for c in calls_w] == [(1, 2), (2, 2)], calls_w)
+check("and the proof itself is unchanged by being watched",
+      all(r["settled"] for r in res_w.values()), res_w)
+
+# A map that never settles is never announced as settled. The whole point is that this
+# line means the world is on disk.
+res_x, calls_x = watched(Disk({ISLAND_ARK: [(120, 1001.0)],
+                               RAG_ARK: lambda i: (80 + i * 4096, 1001.0 + i)}),
+                         budget=30)
+check("a world still writing is never reported saved",
+      [c[0] for c in calls_x] == ["The Island"], calls_x)
+check("and the count never claims more than landed",
+      calls_x[0][1] == 1 and calls_x[0][2] == 2, calls_x)
+
+# A world with a hot journal beside it is not settled, so it is not reported either.
+res_y, calls_y = watched(Disk({ISLAND_ARK: [(120, 1001.0)], RAG_ARK: [(80, 1001.0)]},
+                              sidecars=[RAG_ARK + "-wal"]), budget=30)
+check("a map holding an open transaction is not reported saved",
+      [c[0] for c in calls_y] == ["The Island"], calls_y)
+
+# Reporting runs with the cluster still up and a stop waiting behind it. A UI callback
+# that throws must cost the message, never the save.
+res_z, calls_z = watched(Disk({ISLAND_ARK: [(120, 1001.0)], RAG_ARK: [(80, 1001.0)]}),
+                         hook=lambda label: (_ for _ in ()).throw(RuntimeError("ui")))
+check("a reporting callback that raises does not break the save",
+      all(r["settled"] for r in res_z.values()), res_z)
+check("and the other maps are still proved after it",
+      len(res_z) == 2, res_z)
+
+# The seam the app actually uses: save_and_settle hands keywords straight through.
+calls_kw = []
+clk_kw = Clock()
+disk_kw = Disk({ISLAND_ARK: [(120, 1001.0)], RAG_ARK: [(80, 1001.0)]})
+clusterctl.save_and_settle(
+    st_q, rcon=lambda h, p, c: None, now=clk_kw.now, stat=disk_kw.stat,
+    exists=disk_kw.exists, wait=clk_kw.wait, budget=60,
+    on_settled=lambda label, done, total: calls_kw.append(label))
+check("save_and_settle passes the reporter through to the wait",
+      sorted(calls_kw) == ["Ragnarok", "The Island"], calls_kw)
+
+
 # ---- save_and_settle: one call that sends the command and proves the write
 asked_q = []
 clk_sw = Clock()

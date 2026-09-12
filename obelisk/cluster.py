@@ -377,7 +377,7 @@ def _poll_world(seen, sent_at, sidecars, stat, exists, quiet):
 
 def worlds_settled(store, sent, ark_root=None, now=None, stat=None, exists=None,
                    wait=None, budget=SETTLE_BUDGET, interval=SETTLE_INTERVAL,
-                   quiet=SETTLE_QUIET):
+                   quiet=SETTLE_QUIET, on_settled=None):
     """Wait for every map in `sent` to finish writing its world.
 
     `sent` is {label: the instant that map accepted SaveWorld} - exactly what
@@ -386,6 +386,12 @@ def worlds_settled(store, sent, ark_root=None, now=None, stat=None, exists=None,
     Only maps that answered are in here. A map that is down cannot be waited for, and
     making the caller wait on it would turn "one map is off" into "no update ever
     applies again".
+
+    `on_settled(label, done, total)` is called once per map, at the moment that map's
+    world is proved written - which this already knows and used to throw away. The whole
+    wait was one aggregate line to anybody watching, so a save that was working looked
+    identical to a save that was stuck. Called on the transition only: a map already
+    settled is skipped before the poll, so it cannot fire twice.
     """
     from . import restore, savepoints
     now = now or time.time
@@ -410,11 +416,21 @@ def worlds_settled(store, sent, ark_root=None, now=None, stat=None, exists=None,
     # Counted as well as clocked, the same way the staging wait is. A loop whose only
     # exit is the wall clock passing a deadline spins forever the moment anything hands
     # it a clock that does not move - and the first thing to do that is always a test.
+    total, done = len(seen), 0
     for _turn in range(max(1, int(budget / max(1, interval)) + 1)):
         for label, one in seen.items():
             if one["settled"] or not one["path"]:
                 continue
             _poll_world(one, sent[label], restore.SIDECARS, stat, exists, quiet)
+            if one["settled"]:
+                done += 1
+                if on_settled:
+                    # Never let telling somebody about the save break the save. This
+                    # runs with the cluster still up and a stop waiting on it.
+                    try:
+                        on_settled(label, done, total)
+                    except Exception as e:          # noqa: BLE001 - reporting only
+                        log.warning("could not report %s settling: %s", label, e)
         if all(one["settled"] for one in seen.values()):
             break
         if now() - started >= budget:
@@ -436,6 +452,9 @@ def save_and_settle(store, ark_root=None, rcon=None, now=None, **kw):
     describes is still right: a map that is down must not stop an update. `worlds` is
     the new half - {label: {"settled", "why"}} for every map that accepted SaveWorld -
     and it is what the apply path refuses on.
+
+    Keyword arguments are handed to worlds_settled, so `on_settled` is passed the same
+    way the test seams are: save_and_settle(store, root, on_settled=...).
     """
     now = now or time.time
     sent = {}

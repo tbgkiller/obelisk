@@ -420,6 +420,12 @@ def build_app(store, docker=None):
         ujob["step"] = text
         announce.say("ark.phase", text)
 
+    def _note_step(text):
+        """The page only. Ten maps settling is ten useful lines on a progress bar and
+        ten pings in a chat channel, and the channel already gets one sentence with the
+        whole list in its detail when the save completes."""
+        ujob["step"] = text
+
     async def _prime_task():
         try:
             async with cluster_busy:
@@ -484,7 +490,14 @@ def build_app(store, docker=None):
             store, _ark_root(), warn=warn,
             # save_and_settle rather than save_world: the apply is about to stop the
             # cluster, so it needs the saves proved on disk rather than merely accepted.
-            save=lambda: clusterctl.save_and_settle(store, _ark_root()),
+            # The phrase "saving every world" has to survive into every one of these:
+            # the stepper finds the phase by looking for it in the step text, so a tick
+            # that drops it lands on no phase at all and the bar reads as if the apply
+            # went backwards.
+            save=lambda: clusterctl.save_and_settle(
+                store, _ark_root(),
+                on_settled=lambda label, done, total: _note_step(
+                    "saving every world - %s saved (%d/%d)" % (label, done, total))),
             stop_all=stop_all, start_all=lambda: clusterctl.launch(store),
             verify=verify_all,
             players=lambda: clusterctl.players_online(store), force=force,

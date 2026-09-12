@@ -504,6 +504,20 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
             return False, ("did not stop the cluster: %s did not finish saving"
                            % ", ".join(unsettled)), {"unsettled": unsettled}
 
+        # The refusal above has always said which map and why, per map. Getting it
+        # right said nothing at all - the save that worked was one aggregate line, so
+        # the only way to find out what was proved was for it to fail. One sentence to
+        # the channel, the full list in the feed: say() sends the text to Discord and
+        # keeps `detail` for the UI, which is exactly this shape of message.
+        if worlds:
+            announce.say("ark.saved",
+                         "Every world saved and verified on disk before the cluster "
+                         "stopped: %d of %d." % (len(worlds) - len(unsettled),
+                                                 len(worlds)),
+                         build=build if swap_files else "",
+                         detail=_lines("%-14s Saved (verified on disk)" % l
+                                       for l in sorted(worlds)))
+
     step("stopping the cluster and the staging server")
     ok, detail = stop_all()
     if not ok:
