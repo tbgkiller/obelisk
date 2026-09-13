@@ -1175,17 +1175,25 @@ def render_held_down(maps):
     exact world that was just refused - one click, no warning, and the protection is
     undone. Nothing here is disabled: the operator may well have restored it already and
     be doing precisely the right thing. They are told, and they decide.
+
+    The plural case is the one that has actually happened - three worlds were damaged in
+    a single shutdown on 2026-09-12 - so every verb, noun and pronoun agrees with the
+    count rather than being written for one map and left to fend for itself.
     """
+    from .cluster import _and
     one = len(maps) == 1
     return ('<div class=problem><b>%s %s still stopped after a refused update.</b> '
-            'The world %s could not be read, so %s was not started - the files are '
+            'The %s %s %s could not be read, so %s not started - the files are '
             'being left exactly as they are for a restore.'
             '<div class=help style="margin-top:6px">Launch and Apply and restart will '
-            'start %s again on that same world. Restore %s from a save point first, '
-            'unless you already have.</div></div>'
-            % (_e(", ".join(maps)), "is" if one else "are",
-               "it holds" if one else "they hold", "it" if one else "they",
-               "it" if one else "them", "it" if one else "them"))
+            'start %s again on %s same %s. Restore %s from a save point first, unless '
+            'you already have.</div></div>'
+            % (_e(_and(maps)), "is" if one else "are",
+               "world" if one else "worlds", "it" if one else "they",
+               "holds" if one else "hold",
+               "it was" if one else "they were",
+               "it" if one else "them", "that" if one else "those",
+               "world" if one else "worlds", "it" if one else "them"))
 
 
 def render_cluster(store, plan, status=None):

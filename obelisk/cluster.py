@@ -673,7 +673,7 @@ def save_and_settle(store, ark_root=None, rcon=None, now=None, **kw):
 # happened yet; any later and a rename has already been made on the strength of an
 # answer nobody asked for.
 def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
-                  deep=True):
+                  deep=True, lexists=None, isdir=None):
     """Every selected map's world, checked on disk. {label: {ok, why, key}}.
 
     The check itself is restore.verify_world - the one that already exists, reused
@@ -685,6 +685,8 @@ def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
     from . import restore, savepoints
     verify = verify or restore.verify_world
     exists = exists or os.path.exists
+    lexists = lexists or os.path.lexists
+    isdir = isdir or os.path.isdir
 
     rows = keys if keys is not None else [(r["name"], r["map"])
                                           for r in build_plan(store)["maps"]]
@@ -708,14 +710,31 @@ def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
                                   % ", ".join(sorted(hot)))}
             continue
 
-        if not exists(path):
-            # A map that has never booted has no world, and a world that does not exist
-            # cannot be corrupt. Blocking on it would be a trap with no way out: the
-            # apply refuses, the map is held down, and a map that is down can never
-            # create the world whose absence caused the refusal - so every apply after
-            # it refuses for the same reason until somebody launches by hand. Starting
-            # it is how it gets one, which is the same reasoning the save gate uses to
-            # tolerate a map that is down.
+        # "Absent" has to mean nothing is there at all, and os.path.exists is the wrong
+        # question for that: it follows links, so a dangling one reads as missing, and
+        # it swallows every stat error, so an entry it cannot resolve reads as missing
+        # too. Both were being waved through as "never booted" and started empty -
+        # which is the precise failure verify_world puts its symlink check first for,
+        # and skipping to this branch made that check unreachable for the live world.
+        #
+        # lexists answers about the directory entry rather than what it points at, so a
+        # broken link is present, and present means verify_world decides.
+        if not lexists(path):
+            folder = os.path.dirname(path)
+            if lexists(folder) and not isdir(folder):
+                # Something is in the way that is not a folder. Nothing can be concluded
+                # about a world underneath it, and an unknown is never a pass.
+                out[label] = {"ok": False, "state": "unknown", "key": key,
+                              "why": ("%s is in the way and is not a folder, so its "
+                                      "world cannot be read" % folder)}
+                continue
+            # Genuinely nothing there. A map that has never booted has no world, and a
+            # world that does not exist cannot be corrupt. Blocking would be a trap with
+            # no way out: the apply refuses, the map is held down, and a map that is
+            # down can never create the world whose absence caused the refusal - so
+            # every apply after it refuses the same way until somebody launches by hand.
+            # Starting it is how it gets one, which is the reasoning the save gate
+            # already uses to tolerate a map that is down.
             out[label] = {"ok": True, "state": "absent", "key": key,
                           "why": "it has no world yet - it has not booted before"}
             continue

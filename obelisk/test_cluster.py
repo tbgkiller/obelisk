@@ -1094,6 +1094,10 @@ def intact(answers, sidecars=(), deep=True, world_missing=False):
         exists=lambda p: (any(p.endswith(s) for s in sidecars)
                           or (not world_missing
                               and not p.endswith(tuple(restore_mod.SIDECARS)))),
+        # lexists is what decides "absent" now, so the fake has to answer it too:
+        # the world entry is there unless the case under test says it is not.
+        lexists=lambda p: not world_missing,
+        isdir=lambda p: True,
         deep=deep)
     return out, seen_deep
 
@@ -1151,6 +1155,99 @@ check("and a caller can ask for the cheap one instead",
 import inspect as _inspect
 check("worlds_intact calls restore.verify_world rather than reimplementing it",
       "verify_world" in _inspect.getsource(clusterctl.worlds_intact))
+
+
+# ---- "absent" must mean nothing is there, not "something I could not resolve"
+#
+# The first version asked os.path.exists, which follows links and swallows stat errors.
+# A dangling link where a world should be therefore read as "never booted", skipped the
+# gate, and the map was started empty - which is the exact failure verify_world puts its
+# symlink check first to catch, made unreachable by branching before it.
+#
+# Deliberately run against the real filesystem, with the real defaults. The bug lived in
+# the default, so injecting a seam here would test the wrong thing.
+import os as _os_i
+import tempfile as _tf_i
+
+_ark = _tf_i.mkdtemp()
+st_i, _d_i = fresh(maps="island")
+_sa = _os_i.path.join(_ark, "shared", "SavedArks", "TheIsland_WP")
+
+
+def _real_intact():
+    return clusterctl.worlds_intact(st_i, ark_root=_ark, keys=[("The Island", "island")])
+
+
+# 1. nothing there at all - the SavedArks/<Map> folder does not exist, which is what a
+#    map that has never booted looks like. Still skips, still non-blocking.
+res_a = _real_intact()
+check("a map that has genuinely never booted is absent and does not block",
+      res_a["The Island"]["state"] == "absent" and res_a["The Island"]["ok"], res_a)
+
+# 2. the folder exists but holds no world yet - also a real never-booted state.
+_os_i.makedirs(_sa, exist_ok=True)
+res_e = _real_intact()
+check("an empty world folder is absent too, and still does not block",
+      res_e["The Island"]["state"] == "absent" and res_e["The Island"]["ok"], res_e)
+
+# 3. a DANGLING LINK where the world should be. Something is there; it just cannot be
+#    followed. This must never read as "never booted".
+_world = _os_i.path.join(_sa, "TheIsland_WP.ark")
+_linked = True
+try:
+    _os_i.symlink(_os_i.path.join(_ark, "nowhere", "gone.ark"), _world)
+except (OSError, NotImplementedError, AttributeError):
+    _linked = False                      # Windows without developer mode
+if _linked:
+    res_l = _real_intact()
+    check("a dangling link where the world should be BLOCKS - it is not 'never booted'",
+          res_l["The Island"]["ok"] is False, res_l)
+    check("and it is never called absent",
+          res_l["The Island"]["state"] != "absent", res_l)
+    check("the symlink is named as the problem, not a missing file",
+          "symlink" in res_l["The Island"]["why"].lower(), res_l)
+    _os_i.remove(_world)
+else:
+    # Prove the rule itself without needing symlink privileges: lexists is what decides,
+    # and it answers True for an entry that exists but cannot be followed.
+    res_l = clusterctl.worlds_intact(
+        st_i, ark_root=_ark, keys=[("The Island", "island")],
+        lexists=lambda p: p.endswith(".ark"),
+        verify=lambda path, deep=True: (False, "the restored world is a symlink"))
+    check("a dangling link where the world should be BLOCKS - it is not 'never booted'",
+          res_l["The Island"]["ok"] is False, res_l)
+    check("and it is never called absent",
+          res_l["The Island"]["state"] != "absent", res_l)
+    check("the symlink is named as the problem, not a missing file",
+          "symlink" in res_l["The Island"]["why"].lower(), res_l)
+
+# 4. a WRONG-TYPE entry: a plain file where the world folder should be. Nothing can be
+#    concluded about a world underneath it, and an unknown is never a pass.
+import shutil as _sh_i
+_sh_i.rmtree(_sa, ignore_errors=True)
+with open(_sa, "w", encoding="utf-8") as _fh_i:
+    _fh_i.write("not a folder")
+res_w = _real_intact()
+check("a file where the world folder should be BLOCKS", res_w["The Island"]["ok"] is False,
+      res_w)
+check("and it is reported as an unknown, not as absent",
+      res_w["The Island"]["state"] == "unknown", res_w)
+check("saying what is in the way", "not a folder" in res_w["The Island"]["why"], res_w)
+_os_i.remove(_sa)
+
+# 5. and a real, readable world still passes the whole way through.
+_os_i.makedirs(_sa, exist_ok=True)
+import sqlite3 as _sq_i
+_con = _sq_i.connect(_world)
+_con.execute("CREATE TABLE game (k TEXT)")
+_con.execute("INSERT INTO game VALUES ('x')")
+_con.commit()
+_con.close()
+with open(_world, "ab") as _fh2:
+    _fh2.write(b"\0" * 4096)             # past the 1024-byte floor
+res_g = _real_intact()
+check("a real SQLite world with rows passes on the production path",
+      res_g["The Island"]["ok"] and res_g["The Island"]["state"] == "ok", res_g)
 
 
 # ---- save_and_settle: one call that sends the command and proves the write

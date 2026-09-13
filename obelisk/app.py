@@ -311,11 +311,15 @@ def build_app(store, docker=None):
         # down - onto the world it just refused. Only warned about while the map is
         # actually still down, so it clears itself once somebody has dealt with it.
         held = updatesctl.held_down(store)
-        if held:
+        # Only while Docker is actually answering. With no `compose ps` the running set
+        # is empty, and an empty set would make this reappear over maps that are up.
+        if held and st.get("docker_ok"):
             running = {s.get("service") for s in (st.get("services") or [])
                        if s.get("state") == "running"}
             keys = {r["name"]: r["instance"] for r in plan.get("maps") or []}
-            still = [l for l in held if keys.get(l) not in running]
+            # A map that has since been deselected is not part of this cluster any more,
+            # so there is nothing to warn about and nothing that would ever clear it.
+            still = [l for l in held if l in keys and keys[l] not in running]
             if still:
                 banner += ui.render_held_down(still)
         return (banner + _pending_panel() + _update_panel() +

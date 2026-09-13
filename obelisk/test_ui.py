@@ -539,10 +539,37 @@ check("and it allows that the owner may already have fixed it",
       "unless you already have" in _held1, _held1)
 check("one map reads singular", " is still stopped" in _held1, _held1[:160])
 
+# The plural case is the one that has actually happened - three worlds damaged in a
+# single shutdown - and it was the one written for a single map and left to fend for
+# itself: "Astraeos, The Island are still stopped ... so they was not started".
 _held2 = ui.render_held_down(["Astraeos", "The Island"])
 check("two maps read plural", " are still stopped" in _held2, _held2[:200])
-check("and the pronouns follow", "start them again" in _held2, _held2)
+check("the list is joined with 'and', not a bare comma dump",
+      "Astraeos and The Island" in _held2 and "Astraeos, The Island" not in _held2,
+      _held2[:200])
+check("the verb agrees - 'they were not started', never 'they was'",
+      "they were not started" in _held2 and "was not started" not in _held2, _held2)
+check("the noun agrees - plural worlds",
+      "The worlds they hold" in _held2 and "The world they" not in _held2, _held2)
+check("and so does the one in the help line",
+      "those same worlds" in _held2 and "that same world" not in _held2, _held2)
+check("and the pronouns follow", "start them again" in _held2
+      and "Restore them" in _held2, _held2)
 check("no (s) anywhere", "(s)" not in _held2, _held2)
+
+# Three, because _and() has a different shape again at three or more.
+_held3 = ui.render_held_down(["Aberration", "Astraeos", "The Island"])
+check("three maps read 'A, B and C'",
+      "Aberration, Astraeos and The Island" in _held3, _held3[:220])
+check("and everything still agrees at three",
+      "are still stopped" in _held3 and "they were not started" in _held3
+      and "worlds" in _held3, _held3)
+
+# And the singular is not collateral damage from fixing the plural.
+check("one map still says 'was not started', not 'were'",
+      "it was not started" in _held1 and "were" not in _held1, _held1)
+check("and keeps its singular nouns",
+      "The world it holds" in _held1 and "that same world" in _held1, _held1)
 
 
 # The integrity gate is minutes long and can end the apply. Every line it emits has to
