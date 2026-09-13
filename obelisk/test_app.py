@@ -709,6 +709,38 @@ check("boot and the loop describe coverage through the same helper, so the count
 # There was no summary and no exit, so every check here printed PASS or FAIL and the
 # process returned 0 either way. A test that cannot fail the build is a test that is
 # not being run, however many lines of it there are.
+# ---- the arguments that caused the 8 September double-apply are gone
+#
+# Making APPLY_LOCK module-level fixed the incident. The parameter that let a caller
+# hand the watcher a different lock - or None - stayed on the signature, defaulting to
+# None, waiting for the next person who passed something. Same for the switch that
+# turned off the final player re-count, which its own docstring called "not optional in
+# practice". A door that has been bolted is not a door that has been removed.
+import inspect as _insp_dead                                     # noqa: E402
+from . import app as _appmod                                     # noqa: E402
+
+_ew = set(_insp_dead.signature(_appmod.empty_watch).parameters)
+check("the empty watcher cannot be handed a different lock",
+      "busy" not in _ew, sorted(_ew))
+check("nor a different thing to run when the cluster is idle",
+      "apply_now" not in _ew, sorted(_ew))
+check("and it still takes what main() actually passes",
+      {"store", "interval", "needed"} <= _ew, sorted(_ew))
+
+_sa = set(_insp_dead.signature(_appmod._scheduled_apply).parameters)
+check("the final player re-count cannot be switched off",
+      "recheck" not in _sa, sorted(_sa))
+check("while force - which callers do mean - is still there",
+      "force" in _sa, sorted(_sa))
+
+_ew_src = _insp_dead.getsource(_appmod.empty_watch)
+check("the watcher takes the module-level lock, not one handed to it",
+      "APPLY_LOCK.locked()" in _ew_src and "busy" not in _ew_src, _ew_src[:400])
+_sa_src = _insp_dead.getsource(_appmod._scheduled_apply)
+check("and the re-count runs whenever the apply is not forced",
+      "if not force:" in _sa_src, _sa_src[:400])
+
+
 # ---- the periodic world sweep: it looks, and that is all it may do
 #
 # A background loop that can touch a cluster is a background loop that will, at four in

@@ -56,13 +56,20 @@ RELAY_INFO = {}
 # the two loops that fire on their own.
 #
 # It used to be created inside build_app, so it guarded the web routes and nothing else.
-# The empty-cluster watcher took a `busy` argument that main() never passed, and the
-# scheduled window took no lock at all. On 8 September the empty watcher began an apply
+# The empty-cluster watcher took a `busy` argument that main() never passed - so the
+# lock it used was whatever the default said, which was none - and the scheduled window
+# took no lock at all. On 8 September the empty watcher began an apply
 # at 03:58 and the window started a second one at 04:28 while the first was still
 # stopping and starting ten servers. Aberration's world was half-written when the second
 # stop reached it, and the map spent the next five hours refusing to load a corrupt
 # database. Guarding the buttons and not the unattended paths is the worst possible half
 # of this to have done.
+#
+# The argument that caused it is gone too. Making the lock module-level fixed the
+# incident, but the parameter that let a caller supply a different one - or none - was
+# left on the signature, still defaulting to None, still there for the next person who
+# passed something. A door that has been bolted is not the same as a door that has been
+# removed.
 APPLY_LOCK = asyncio.Lock()
 
 COOKIE = "obelisk_session"
@@ -1272,7 +1279,7 @@ async def version_watch():
         await asyncio.sleep(6 * 3600)
 
 
-async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
+async def empty_watch(store, interval=60, needed=3):
     """Apply what is waiting the moment nobody is playing.
 
     A restart costs whoever is on. An empty cluster costs nobody, so that is when the
@@ -1305,8 +1312,7 @@ async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
                 streak = 0
                 continue
 
-            lock = APPLY_LOCK if busy is None else busy
-            if lock.locked():
+            if APPLY_LOCK.locked():
                 # Something is already stopping and starting the cluster. Not a moment
                 # to start a second one, and not a moment to count as "idle" either.
                 streak = 0
@@ -1334,7 +1340,7 @@ async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
                          % (streak * interval // 60, why_worth))
             streak = 0
             async with lock:
-                await asyncio.to_thread(apply_now or (lambda: _scheduled_apply(store)))
+                await asyncio.to_thread(_scheduled_apply, store)
         except Exception as e:                          # a bad minute must not kill it
             log.error("empty-cluster check failed: %s", e)
             streak = 0
@@ -1537,16 +1543,18 @@ async def ark_update_watch(store, interval=1800, panel=None):
         await asyncio.sleep(interval)
 
 
-def _scheduled_apply(store, force=False, recheck=True):
+def _scheduled_apply(store, force=False):
     """The unattended apply. Same verbs as the button, assembled in one place.
 
-    `recheck` is not optional in practice: whatever decided to call this did so from a
-    player count taken up to a minute ago, and a minute is long enough for somebody to
-    log in. The count is taken again here, immediately before anything stops.
+    The player count is taken again here, always. Whatever decided to call this did so
+    from a count up to a minute old, and a minute is long enough for somebody to log in.
+    It used to be a parameter defaulting to on, described in this docstring as "not
+    optional in practice" - which is a switch for turning off the check that stops an
+    update kicking the person who just arrived.
     """
     from . import bot, pending as pnd, staging as stg, updates as upd
 
-    if recheck and not force:
+    if not force:
         total, counts, silent = clusterctl.players_online(store)
         if silent or total:
             who = (", ".join("%s (%d)" % (m, c) for m, c in sorted(counts.items()) if c)
