@@ -15,6 +15,7 @@ import io, os, sys, tempfile, yaml
 from . import cluster as clusterctl
 from . import layout
 from . import compose as compose_mod
+from . import restore as restore_mod
 from .compose import generate_compose
 from .plan import build_plan
 from .settings import Store
@@ -1053,7 +1054,7 @@ ok_h, why_h = clusterctl.wait_healthy(
 check("a map with no container at all gives up quickly, not in 25 minutes",
       not ok_h and len(slept_h) <= clusterctl.ABSENT_POLLS, len(slept_h))
 check("and says it was never started rather than blaming the health check",
-      "not started" in why_h, why_h)
+      "never started" in why_h, why_h)
 
 # But a container that is merely slow to appear must still be waited for - that is the
 # ordinary case on a launch, and giving up on the first empty look would break it.
@@ -1080,7 +1081,7 @@ check("a container that takes a moment to appear is still waited for", ok_l, why
 ROWS_I = [("The Island", "island"), ("Ragnarok", "ragnarok")]
 
 
-def intact(answers, sidecars=(), deep=True):
+def intact(answers, sidecars=(), deep=True, world_missing=False):
     seen_deep = []
 
     def fake_verify(path, deep=True):
@@ -1090,7 +1091,10 @@ def intact(answers, sidecars=(), deep=True):
 
     out = clusterctl.worlds_intact(
         st_q, keys=ROWS_I, verify=fake_verify,
-        exists=lambda p: any(p.endswith(s) for s in sidecars), deep=deep)
+        exists=lambda p: (any(p.endswith(s) for s in sidecars)
+                          or (not world_missing
+                              and not p.endswith(tuple(restore_mod.SIDECARS)))),
+        deep=deep)
     return out, seen_deep
 
 
@@ -1116,7 +1120,21 @@ res_s, _d = intact(good, sidecars=("-wal",))
 check("a world with a -wal beside it fails even though SQLite says it is fine",
       not any(v["ok"] for v in res_s.values()), res_s)
 check("and it says that is why, rather than calling it damage",
-      "still being written" in res_s["The Island"]["why"], res_s)
+      "had not finished being written" in res_s["The Island"]["why"], res_s)
+check("and it is a state of its own, not lumped in with damage",
+      res_s["The Island"]["state"] == "writing", res_s)
+
+# A world that has never existed is not corrupt and must not block: a map held down can
+# never create the world whose absence caused the refusal, which is a trap with no way
+# out. Starting it is how it gets one - the same reasoning the save gate uses.
+res_n, _d = intact({"island": (True, "ok"), "ragnarok": (True, "ok")},
+                   world_missing=True)
+check("a map that has never booted has no world, and that does NOT block the apply",
+      all(v["ok"] for v in res_n.values()), res_n)
+check("and it is reported as its own state rather than as damage",
+      res_n["The Island"]["state"] == "absent", res_n)
+check("and it is never told to restore something that does not exist",
+      "restore" not in res_n["The Island"]["why"].lower(), res_n)
 for side in ("-shm", "-journal"):
     r_x, _d = intact(good, sidecars=(side,))
     check("a %s beside a world fails it too" % side,

@@ -78,6 +78,18 @@ def owns_updates(store):
     return str(store.get("ark_update_mode") or "automatic") == "obelisk"
 
 
+def held_down(store):
+    """Maps the integrity gate refused and deliberately left stopped.
+
+    Read by the pages, because the buttons beside them do not know about it: Launch and
+    "Apply and restart" both call launch(), which brings every map up - including one
+    being held down on purpose, onto the exact world that was just refused. Nothing is
+    disabled over this; the operator is told, and decides.
+    """
+    got = state(store).get("held_down")
+    return list((got or {}).get("maps") or []) if isinstance(got, dict) else []
+
+
 # ---------------------------------------------------------------- what to stage
 
 # How many times to rehearse the same thing before leaving it alone, and how long to
@@ -587,6 +599,8 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
             # exactly as they were and the staged build is still staged for next time.
             # Nothing is deleted, nothing is moved, and the damaged world is left
             # untouched for whoever restores it.
+            from .cluster import _and
+
             good = [(l, w.get("key")) for l, w in sorted(health.items())
                     if w.get("ok") and w.get("key")]
             started = []
@@ -595,25 +609,70 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                 # down on purpose: the swap was refused, so the files under them are the
                 # same files that just failed, and starting one only reproduces the
                 # crash loop while writing more over the evidence.
-                step("starting the %d map(s) that are fine" % len(good))
+                step("starting the %d map%s that %s fine"
+                     % (len(good), "" if len(good) == 1 else "s",
+                        "is" if len(good) == 1 else "are"))
                 started = start_some([k for _l, k in good]) or []
+
+            # Two reasons a world is not promotable, and they need opposite advice.
+            # Damage is permanent and wants a restore. A world that had not finished
+            # settling is intact - it passed the SQLite check - and wants the apply run
+            # again; telling somebody to restore over it would trade a readable world
+            # for an older one for no reason at all.
+            damaged = [l for l in broken if health[l].get("state") == "damaged"]
+            writing = [l for l in broken if health[l].get("state") == "writing"]
+            other = [l for l in broken if l not in damaged and l not in writing]
+
+            said = []
+            if damaged:
+                said.append("%s did not come through the shutdown with a readable "
+                            "world. Restore %s from a save point before starting %s "
+                            "again." % (_and(damaged),
+                                        "it" if len(damaged) == 1 else "them",
+                                        "it" if len(damaged) == 1 else "them"))
+            if writing:
+                said.append("%s had not finished writing %s world when everything "
+                            "stopped - %s readable, so there is nothing to restore. "
+                            "Run the apply again."
+                            % (_and(writing), "its" if len(writing) == 1 else "their",
+                               "it is" if len(writing) == 1 else "they are"))
+            if other:
+                said.append("%s could not be checked at all: %s."
+                            % (_and(other),
+                               "; ".join(health[l].get("why") or "" for l in other)))
+
+            # The count that matters is what actually came up, not what was attempted.
+            # A start that fails while a world is corrupt is exactly when a cheerful
+            # "the others are starting again" would be a lie.
+            if started:
+                back = ("The other %d map%s %s starting again."
+                        % (len(started), "" if len(started) == 1 else "s",
+                           "is" if len(started) == 1 else "are"))
+            elif good:
+                back = ("The other %d map%s could not be started either - the cluster "
+                        "is down." % (len(good), "" if len(good) == 1 else "s"))
+            else:
+                back = "No other map was fit to start, so the cluster is down."
+
             announce.say(
                 "ark.world_damaged",
-                "Stopped before swapping: %s did not come through the shutdown with a "
-                "readable world. The build was NOT applied and nothing was moved or "
-                "deleted - the previous build is still in place and the staged one is "
-                "still staged. %s %s"
-                % (", ".join(broken),
-                   ("The other %d map(s) are starting again." % len(good)) if good
-                    else "No other map was fit to start.",
-                   "Restore the affected world from a save point before starting it."),
+                "Stopped before swapping. The build was NOT applied and nothing was "
+                "moved or deleted - the previous build is still in place and the staged "
+                "one is still staged. %s %s" % (" ".join(said), back),
                 level="error",
-                detail=_lines("%-14s %s" % (l, health[l].get("why") or "")
+                detail=_lines("%-14s %-9s %s" % (l, health[l].get("state") or "",
+                                                 health[l].get("why") or "")
                               for l in sorted(health)))
-            step("refused: %s has no readable world" % ", ".join(broken))
+            # Remembered so the pages can warn about it. Launch and "Apply and restart"
+            # both call launch(), which brings every map up including this one - one
+            # click, onto the exact world that was just refused, undoing the protection
+            # without saying a word about it.
+            remember(store, held_down={"maps": broken, "when": int(now())})
+            step("refused: %s has no usable world" % _and(broken))
             return False, ("did not swap: %s did not come through the shutdown with a "
-                           "readable world" % ", ".join(broken)), {
-                "corrupt": broken, "started": started, "swapped": False}
+                           "usable world" % _and(broken)), {
+                "corrupt": broken, "damaged": damaged, "writing": writing,
+                "started": started, "swapped": False}
 
     done = []
     if swap_files:

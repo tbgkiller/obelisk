@@ -307,6 +307,17 @@ def build_app(store, docker=None):
             banner = '<div class=problem>%s</div>' % ui._e(problem)
         elif message:
             banner = '<div class=note>%s</div>' % ui._e(message)
+        # Both buttons on this page start every map, including one the gate is holding
+        # down - onto the world it just refused. Only warned about while the map is
+        # actually still down, so it clears itself once somebody has dealt with it.
+        held = updatesctl.held_down(store)
+        if held:
+            running = {s.get("service") for s in (st.get("services") or [])
+                       if s.get("state") == "running"}
+            keys = {r["name"]: r["instance"] for r in plan.get("maps") or []}
+            still = [l for l in held if keys.get(l) not in running]
+            if still:
+                banner += ui.render_held_down(still)
         return (banner + _pending_panel() + _update_panel() +
                 ui.render_cluster(store, plan, status=st))
 

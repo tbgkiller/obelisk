@@ -693,19 +693,36 @@ def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
         try:
             path = savepoints.live_world(store, key, ark_root)
         except KeyError:
-            out[label] = {"ok": False, "key": key,
+            out[label] = {"ok": False, "state": "unknown", "key": key,
                           "why": "could not work out where its world file is"}
             continue
+
         hot = [s for s in restore.SIDECARS if exists(path + s)]
         if hot:
-            # Never read as damage - it is a world that was still being written when
-            # everything stopped, which is its own kind of not-safe-to-promote.
-            out[label] = {"ok": False, "key": key,
-                          "why": ("a %s file is still open beside it, so it was still "
-                                  "being written" % ", ".join(sorted(hot)))}
+            # Not damage. The file may well read perfectly - immutable=1 ignores the
+            # journal - but a transaction was open when everything stopped, so this
+            # world has not finished settling and is not safe to promote over.
+            out[label] = {"ok": False, "state": "writing", "key": key,
+                          "why": ("a %s file is still open beside it, so it had not "
+                                  "finished being written"
+                                  % ", ".join(sorted(hot)))}
             continue
+
+        if not exists(path):
+            # A map that has never booted has no world, and a world that does not exist
+            # cannot be corrupt. Blocking on it would be a trap with no way out: the
+            # apply refuses, the map is held down, and a map that is down can never
+            # create the world whose absence caused the refusal - so every apply after
+            # it refuses for the same reason until somebody launches by hand. Starting
+            # it is how it gets one, which is the same reasoning the save gate uses to
+            # tolerate a map that is down.
+            out[label] = {"ok": True, "state": "absent", "key": key,
+                          "why": "it has no world yet - it has not booted before"}
+            continue
+
         ok, why = verify(path, deep=deep)
-        out[label] = {"ok": bool(ok), "key": key, "why": why}
+        out[label] = {"ok": bool(ok), "state": "ok" if ok else "damaged",
+                      "key": key, "why": why}
     return out
 
 
@@ -838,8 +855,8 @@ def wait_healthy(store, map_key, minutes=25, sleep=None, details=None):
             return False, "the container exited while starting"
         missing = missing + 1 if not got else 0
         if missing >= ABSENT_POLLS:
-            return False, ("there is no container for it - it was not started, so "
-                           "there is nothing to wait for")
+            return False, ("there is no container for it - it was never started, or "
+                           "Docker did not answer")
         sleep(10)
     return False, "it did not report healthy within %d minutes" % minutes
 

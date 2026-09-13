@@ -1389,11 +1389,17 @@ def with_gate(health, force=False, primed_=None):
     return ok_, msg_, detail_, c_, renamed_, started_, st_, drain()
 
 
-ALL_GOOD = {"The Island": {"ok": True, "key": "island", "why": "ok"},
-            "Astraeos": {"ok": True, "key": "astraeos", "why": "ok"}}
-ONE_BAD = {"The Island": {"ok": False, "key": "island",
+ALL_GOOD = {"The Island": {"ok": True, "state": "ok", "key": "island", "why": "ok"},
+            "Astraeos": {"ok": True, "state": "ok", "key": "astraeos", "why": "ok"}}
+ONE_BAD = {"The Island": {"ok": False, "state": "damaged", "key": "island",
                           "why": "SQLite reports it damaged: page 4 is never used"},
-           "Astraeos": {"ok": True, "key": "astraeos", "why": "ok"}}
+           "Astraeos": {"ok": True, "state": "ok", "key": "astraeos", "why": "ok"}}
+ONE_WRITING = {"The Island": {"ok": False, "state": "writing", "key": "island",
+                              "why": "a -wal file is still open beside it"},
+               "Astraeos": {"ok": True, "state": "ok", "key": "astraeos", "why": "ok"}}
+ONE_ABSENT = {"The Island": {"ok": True, "state": "absent", "key": "island",
+                             "why": "it has no world yet - it has not booted before"},
+              "Astraeos": {"ok": True, "state": "ok", "key": "astraeos", "why": "ok"}}
 
 # 1/8. every world readable - the sequence is exactly what it was before the gate
 ok, msg, _d, c, renamed, started, st_g, _ev = with_gate(ALL_GOOD)
@@ -1451,6 +1457,91 @@ check("and force renames nothing either", renamed_f == [], renamed_f)
 ok_n, _m, _d, _c, renamed_n, _s, _st, _e = with_gate(None)
 check("an apply with no world check still works, exactly as before",
       ok_n and len(renamed_n) >= 3, renamed_n)
+
+# ---- the three states need three different sentences
+#
+# worlds_intact already tells damage apart from a world that had not finished settling
+# apart from one that never existed. Collapsing them into one message gave all three the
+# same advice - and for two of them that advice was wrong, in one case pointing at a
+# destructive remedy for a world that was perfectly readable.
+
+# DAMAGED: a restore is the right answer.
+_ok, _m, _d, _c, _r, _s, _st, ev_d = with_gate(ONE_BAD)
+_msg_d = [i for i in ev_d if i["event"] == "ark.world_damaged"][0]["text"]
+check("a damaged world is told to restore from a save point",
+      "Restore" in _msg_d and "save point" in _msg_d, _msg_d)
+
+# MID-WRITE: the world is intact. Restoring over it would trade a readable world for an
+# older one for nothing.
+ok_w, msg_w, det_w, _c, ren_w, started_w, _st, ev_w = with_gate(ONE_WRITING)
+_msg_w = [i for i in ev_w if i["event"] == "ark.world_damaged"][0]["text"]
+check("a world that had not finished writing still refuses the apply", not ok_w, msg_w)
+check("and nothing was renamed for it either", ren_w == [], ren_w)
+check("it is told to run the apply again", "Run the apply again" in _msg_w, _msg_w)
+# Not "the word restore never appears" - it appears as "nothing to restore", which is
+# the opposite of advising one. What must never appear is the instruction.
+check("and is NEVER instructed to restore - the world is readable",
+      "Restore " not in _msg_w and "save point" not in _msg_w, _msg_w)
+check("it says the world is readable, so there is nothing to restore",
+      "nothing to restore" in _msg_w, _msg_w)
+check("and it is still held down - the files under it are the ones that just failed",
+      "island" not in started_w, started_w)
+check("the detail separates the two kinds",
+      det_w.get("writing") == ["The Island"] and det_w.get("damaged") == [], det_w)
+
+# NEVER EXISTED: not corrupt, not blocking, and above all not a trap. A held-down map
+# can never create the world whose absence caused the refusal.
+ok_n, msg_n, _d, c_n, ren_n, started_n, _st, ev_n = with_gate(ONE_ABSENT)
+check("a map that has never booted does not block the apply", ok_n, msg_n)
+check("the swap goes ahead", len(ren_n) >= 3, ren_n)
+check("nothing is held down, so it cannot soft-deadlock",
+      started_n == [] and "start" in c_n.log, (started_n, c_n.log))
+check("and no refusal is announced for it",
+      not [i for i in ev_n if i["event"] == "ark.world_damaged"],
+      [i["event"] for i in ev_n])
+
+# ---- the count has to be true
+#
+# It used to report the maps it ATTEMPTED to start. A start that fails while a world is
+# corrupt is exactly the moment a cheerful "the others are starting again" is a lie.
+drain()
+st_z = real_store()
+updates.remember(st_z, primed=ready)
+clk_z = _Clock()
+c_z = Cluster()
+_ren_z, rename_z = moved_nothing()
+disk_z = _Disk(_QUIET)
+updates.apply_batch(
+    st_z, ARK, warn=c_z.warn, stop_all=c_z.stop, start_all=c_z.start, verify=c_z.verify,
+    save=lambda: _cl.save_and_settle(
+        st_z, ARK, rcon=lambda h, p, cmd: None, now=clk_z.now, stat=disk_z.stat,
+        exists=disk_z.exists, wait=clk_z.wait, budget=60),
+    check_worlds=lambda: ONE_BAD,
+    start_some=lambda keys: [],            # every start fails
+    players=lambda: (0, {}, []), rename=rename_z, exists=tree_exists(),
+    now=lambda: 4242)
+_msg_z = [i for i in drain() if i["event"] == "ark.world_damaged"][0]["text"]
+check("when no map actually came up it does not claim any are starting",
+      "starting again" not in _msg_z, _msg_z)
+check("it says the cluster is down instead", "cluster is down" in _msg_z, _msg_z)
+
+# ---- sentence mechanics
+check("one map reads as '1 map', not '1 map(s)'",
+      "map(s)" not in _msg_d and "1 map is" in _msg_d, _msg_d)
+check("no (s) survives anywhere in the sentence", "(s)" not in _msg_w, _msg_w)
+
+TWO_BAD = {"The Island": {"ok": False, "state": "damaged", "key": "island",
+                          "why": "damaged"},
+           "Astraeos": {"ok": False, "state": "damaged", "key": "astraeos",
+                        "why": "damaged"}}
+_ok, _m, _d, _c, _r, _s, _st, ev_t = with_gate(TWO_BAD)
+_msg_t = [i for i in ev_t if i["event"] == "ark.world_damaged"][0]["text"]
+check("two maps are joined with 'and', not a bare comma list",
+      "Astraeos and The Island" in _msg_t, _msg_t)
+check("and the pronouns agree - them, not it", "Restore them" in _msg_t, _msg_t)
+check("with no other map to start, it says so plainly",
+      "No other map was fit to start" in _msg_t, _msg_t)
+
 
 print("\nFAILURES: %s" % fails if fails else "\nall updates tests passed")
 sys.exit(1 if fails else 0)

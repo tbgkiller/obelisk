@@ -695,6 +695,13 @@ APPLY_PHASES = [
     ("Warning players", ("warning players",)),
     ("Saving", ("saving every world",)),
     ("Stopping", ("stopping the cluster",)),
+    # Its own phase because it is minutes long and can end the apply. Without it the
+    # three step lines the gate emits matched no marker, phase_index returned -1, and
+    # the whole bar went grey - every finished phase reading as undone - during the most
+    # alarming thing this product does. "refused:" is in here so a corruption refusal
+    # stops the bar here rather than looking like an ordinary failure somewhere else.
+    ("Checking worlds", ("checking every world is readable", "refused:",
+                         "that is fine", "that are fine")),
     ("Swapping files", ("swapping the staged files",)),
     ("Starting", ("starting the cluster",)),
     ("Verifying", ("checking every map",)),
@@ -1159,6 +1166,26 @@ def render_status(status):
             'of game files and then generates the world, so it is normally slow. The '
             'phase and elapsed time above are how you tell it is still moving.</div>'
             '</fieldset>' % rows)
+
+
+def render_held_down(maps):
+    """The gate refused these and is holding them down. Say so where the buttons are.
+
+    Launch and "Apply and restart" both bring every map up, this one included, onto the
+    exact world that was just refused - one click, no warning, and the protection is
+    undone. Nothing here is disabled: the operator may well have restored it already and
+    be doing precisely the right thing. They are told, and they decide.
+    """
+    one = len(maps) == 1
+    return ('<div class=problem><b>%s %s still stopped after a refused update.</b> '
+            'The world %s could not be read, so %s was not started - the files are '
+            'being left exactly as they are for a restore.'
+            '<div class=help style="margin-top:6px">Launch and Apply and restart will '
+            'start %s again on that same world. Restore %s from a save point first, '
+            'unless you already have.</div></div>'
+            % (_e(", ".join(maps)), "is" if one else "are",
+               "it holds" if one else "they hold", "it" if one else "they",
+               "it" if one else "them", "it" if one else "them"))
 
 
 def render_cluster(store, plan, status=None):

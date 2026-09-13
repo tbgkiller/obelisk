@@ -520,6 +520,49 @@ check("a per-map save tick still lands on the Saving phase",
 check("and it does not drift onto the phase after it",
       _saving < ui.phase_index("stopping the cluster", ui.APPLY_PHASES))
 
+# ---- the held-down warning, where the buttons that would undo it live
+#
+# Launch and "Apply and restart" both bring every map up, including one the gate is
+# holding down, onto the exact world it just refused. One click, no warning, protection
+# gone. Nothing is disabled - the owner may have restored it already - but they are told.
+_held1 = ui.render_held_down(["The Island"])
+check("the held-down warning is a problem, not a note",
+      "class=problem" in _held1 and "class=note" not in _held1, _held1[:120])
+check("it names the map", "The Island" in _held1, _held1[:160])
+check("it says why it is down rather than looking like a fault",
+      "could not be read" in _held1, _held1)
+check("it warns that the buttons on this page would start it again",
+      "Launch" in _held1 and "Apply and restart" in _held1, _held1)
+check("it says the files are being kept for a restore",
+      "left exactly as they are" in _held1, _held1)
+check("and it allows that the owner may already have fixed it",
+      "unless you already have" in _held1, _held1)
+check("one map reads singular", " is still stopped" in _held1, _held1[:160])
+
+_held2 = ui.render_held_down(["Astraeos", "The Island"])
+check("two maps read plural", " are still stopped" in _held2, _held2[:200])
+check("and the pronouns follow", "start them again" in _held2, _held2)
+check("no (s) anywhere", "(s)" not in _held2, _held2)
+
+
+# The integrity gate is minutes long and can end the apply. Every line it emits has to
+# land on a phase: one that matches nothing scores -1, and render_stepper then draws the
+# whole bar grey - every finished phase reading as undone - during the most alarming
+# thing this product does.
+_gate_steps = ["checking every world is readable",
+               "starting the 1 map that is fine",
+               "starting the 3 maps that are fine",
+               "refused: The Island has no usable world"]
+_gate_at = [ui.phase_index(s, ui.APPLY_PHASES) for s in _gate_steps]
+check("every line the world gate emits lands on a phase, none score -1",
+      all(i >= 0 for i in _gate_at), list(zip(_gate_steps, _gate_at)))
+check("and they all land on the same one - it is one stage, not four",
+      len(set(_gate_at)) == 1, list(zip(_gate_steps, _gate_at)))
+check("which sits between stopping and swapping, where it actually happens",
+      ui.phase_index("stopping the cluster", ui.APPLY_PHASES) < _gate_at[0]
+      < ui.phase_index("swapping the staged files in", ui.APPLY_PHASES),
+      _gate_at[0])
+
 check("the phases move forward as the flow does",
       ui.phase_index("Downloading server files", ui.PRIME_PHASES) <
       ui.phase_index("Generating the world", ui.PRIME_PHASES) <
