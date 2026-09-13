@@ -237,6 +237,7 @@ ICONS = {
     # Warnings
     "warning": "⚠", "degraded": "⚠", "closed_partly": "⚠",
     "world_unreachable": "⚠", "deferred": "⚠",
+    "offsite_unconfigured": "⚠", "push_unconfigured": "⚠",
     # In progress
     "start": "▶", "prime_start": "▶", "apply_start": "▶",
     "point_start": "▶",

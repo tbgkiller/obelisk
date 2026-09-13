@@ -246,9 +246,11 @@ check("a scheduled run with no cloud connected still backs up locally", ok, msg)
 # text happens to contain the word "failed" is how a failure gets announced with a
 # tick beside it.
 check("and the upload is reported apart from it, not folded into it",
-      offsite is not None and offsite[0] is False, offsite)
+      offsite is not None and offsite[0] is False, list(offsite or []))
+check("as the unconfigured state rather than a failed upload",
+      offsite[1] is False, list(offsite))
 check("saying plainly that no cloud is connected",
-      "no cloud is connected" in offsite[1], offsite)
+      "no cloud is connected" in offsite[2], list(offsite))
 check("while the local backup's own message stays about the local backup",
       "no cloud is connected" not in msg, msg)
 
@@ -325,11 +327,11 @@ check("a cloud connects for this test", ok5, msg5)
 ok_b5, msg_b5, path5 = backupctl.create(st5)
 check("and there is something to upload", ok_b5, msg_b5)
 
-up_ok, up_msg = backupctl.push_offsite(st5, path5)
+up_ok, up_conf, up_msg = backupctl.push_offsite(st5, path5)
 check("a successful upload answers True", up_ok is True, [up_ok, up_msg])
 
 install(FakeRclone(rc=1, out="Failed to copy: network is unreachable"))
-bad_ok, bad_msg = backupctl.push_offsite(st5, path5)
+bad_ok, bad_conf, bad_msg = backupctl.push_offsite(st5, path5)
 check("a failed upload answers False", bad_ok is False, [bad_ok, bad_msg])
 check("and says the off-site copy did NOT happen",
       "did NOT" in bad_msg, bad_msg)
@@ -339,13 +341,29 @@ check("while saying the local backup is still fine",
       "local backup is fine" in bad_msg, bad_msg)
 
 # Off-site turned on with nothing connected is a thing somebody has not finished
-# setting up. It is not a completed upload, and it is not a broken one either.
+# setting up. It is not a completed upload, and it is not a broken one either - and
+# one boolean could not say that, so a misconfiguration and a lost off-site copy came
+# back identical and were announced identically.
 st6, _root6 = fresh(cloud_enabled=True)
-none_ok, none_msg = backupctl.push_offsite(st6, path5)
+none_ok, none_conf, none_msg = backupctl.push_offsite(st6, path5)
 check("off-site on with no cloud connected does not claim an upload",
       none_ok is False, [none_ok, none_msg])
 check("and says what to do about it",
       "no cloud is connected" in none_msg and "Connect one" in none_msg, none_msg)
+
+# The three states, told apart at the call site without reading the sentence.
+check("an upload that worked is (True, True)", [up_ok, up_conf] == [True, True],
+      [up_ok, up_conf])
+check("an upload that failed is (False, True) - there was something to try",
+      [bad_ok, bad_conf] == [False, True], [bad_ok, bad_conf])
+check("a cloud nobody connected is (False, False) - there was not",
+      [none_ok, none_conf] == [False, False], [none_ok, none_conf])
+check("so a misconfiguration and a lost off-site copy are distinguishable",
+      [bad_ok, bad_conf] != [none_ok, none_conf],
+      [[bad_ok, bad_conf], [none_ok, none_conf]])
+check("without parsing the message to find out which",
+      up_conf is not None and bad_conf is not None and none_conf is not None,
+      [up_conf, bad_conf, none_conf])
 install(FakeRclone())
 
 print("\nFAILURES: %s" % fails if fails else "\nall cloud tests passed")

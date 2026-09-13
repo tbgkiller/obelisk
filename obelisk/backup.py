@@ -347,8 +347,8 @@ def prune(store, keep=None):
 def run_scheduled(store, flush=None, when=None, push=True):
     """One scheduled run: create, verify, prune, and send off-site.
 
-    Returns (ok, message, offsite), where `offsite` is push_offsite's own (ok, message)
-    or None when no upload was attempted.
+    Returns (ok, message, offsite), where `offsite` is push_offsite's own
+    (ok, configured, message) or None when no upload was attempted at all.
 
     The docstring always said the upload is reported separately. It was not: the
     sentence was appended to this message and handed back under one `ok`, so a caller
@@ -374,35 +374,43 @@ def run_scheduled(store, flush=None, when=None, push=True):
 
 
 def push_offsite(store, path):
-    """Upload one archive and prune the remote. (ok, message).
+    """Upload one archive and prune the remote. (ok, configured, message).
 
-    It used to return the sentence alone, and every caller put that sentence in the
-    slot it uses for good news - so "the upload failed" arrived in the same grey box,
-    in the same voice, as "the upload worked". A backup feature whose failures look
-    like successes is worse than one that does not run: the operator stops checking.
+    Three outcomes, because the domain has three. It used to return the sentence alone,
+    and every caller put it in the slot it uses for good news - so "the upload failed"
+    arrived in the same grey box, in the same voice, as "the upload worked". Answering
+    with a single boolean fixed that and introduced the next one: a cloud nobody has
+    connected yet and a cloud that went down mid-upload both came back False, so the
+    nightly run announced a misconfiguration with the same red glyph it uses for
+    "your only off-site copy did not happen".
 
-    `ok` is about the off-site copy and nothing else. A failed upload does not make a
-    local backup a failed backup - a copy on this disk is worth having on a night the
-    network is out - and callers are expected to say both things rather than pick one.
+    Those are not the same fact and they do not want the same answer from the operator.
+    One is finish setting this up, at your convenience. The other is your cluster is
+    not backed up anywhere but this machine, tonight.
+
+    `ok` is "an off-site copy of this archive now exists" and nothing else - a failed
+    upload does not make a local backup a failed backup. `configured` is "there was
+    something to try", which is what separates the two Falses. ok=True with
+    configured=False cannot happen; the other three are the three states.
     """
     from . import cloud
     if not cloud.configured(store):
-        # Not a failure: nothing was attempted, because nothing was set up. Said as a
-        # warning so it does not read as a completed upload, and not as an error so it
-        # does not read as one that broke.
-        return False, ("Off-site is on but no cloud is connected, so nothing was "
-                       "uploaded. Connect one on the Cloud page, or turn off-site off.")
+        # Nothing was attempted, because nothing was set up. Not an upload that worked,
+        # and not one that broke.
+        return False, False, ("Off-site is on but no cloud is connected, so nothing was "
+                              "uploaded. Connect one on the Cloud page, or turn "
+                              "off-site off.")
     ok, detail = cloud.push(store, path)
     if not ok:
-        return False, ("The off-site copy did NOT happen: %s. The local backup is fine "
-                       "and is on this disk; there is no copy off this machine."
-                       % detail)
+        return False, True, ("The off-site copy did NOT happen: %s. The local backup is "
+                             "fine and is on this disk; there is no copy off this "
+                             "machine." % detail)
     out = detail
     gone = cloud.prune(store, store.get("cloud_keep"))
     if gone:
         out += (" Removed %d older copy from the cloud." % len(gone) if len(gone) == 1
                 else " Removed %d older copies from the cloud." % len(gone))
-    return True, out
+    return True, True, out
 
 
 def due(store, now=None, last=None):

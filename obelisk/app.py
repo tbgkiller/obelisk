@@ -1082,13 +1082,14 @@ def build_app(store, docker=None):
             rows = res if ok and isinstance(res, list) else []
         return chrome(ui.render_cloud(store, st, rows), "Cloud", "/admin/cloud")
 
-    def _cloud_chrome(msg="", problem=""):
+    def _cloud_chrome(msg="", problem="", warning=""):
         st = cloudctl.status(store)
         rows = []
         if st.get("connected"):
             ok, res = cloudctl.listing(store)
             rows = res if ok and isinstance(res, list) else []
-        return chrome(ui.render_cloud(store, st, rows, message=msg, problem=problem),
+        return chrome(ui.render_cloud(store, st, rows, message=msg, problem=problem,
+                                      warning=warning),
                       "Cloud", "/admin/cloud")
 
     async def cloud_connect(request):
@@ -1129,10 +1130,18 @@ def build_app(store, docker=None):
         # upload failed" arrived in the same grey box, in the same voice, as "the
         # upload worked" - on the page whose entire job is telling you whether there
         # is a copy of your cluster somewhere other than this machine.
-        ok_up, text = backupctl.push_offsite(store, rows[0]["path"])
-        announce.say("cloud.push_done" if ok_up else "cloud.push_failed", text,
-                     level="info" if ok_up else "error")
-        return _cloud_chrome(text, "") if ok_up else _cloud_chrome("", text)
+        ok_up, configured, text = backupctl.push_offsite(store, rows[0]["path"])
+        if ok_up:
+            announce.say("cloud.push_done", text)
+            return _cloud_chrome(text, "")
+        # A cloud nobody has connected yet is not an outage. Red here would be the
+        # same lie as grey was, pointed the other way: it says something broke when
+        # what actually happened is that a step was never taken.
+        if not configured:
+            announce.say("cloud.push_unconfigured", text, level="warning")
+            return _cloud_chrome("", "", warning=text)
+        announce.say("cloud.push_failed", text, level="error")
+        return _cloud_chrome("", text)
 
     async def cloud_pull(request):
         if not authed(request):
@@ -1262,12 +1271,21 @@ async def backup_scheduler(store, interval=60):
                              "Scheduled backup: %s" % msg,
                              level="info" if ok else "error")
                 if offsite is not None:
-                    ok_up, text = offsite
+                    ok_up, configured, text = offsite
                     # Separately, and in its own colour. A failed upload does not make
                     # a good local backup a failed one, and folding it into that line
                     # is how a failure ends up announced with a tick beside it.
+                    #
+                    # Three states rather than two. "Off-site is on but no cloud is
+                    # connected" is a setup step nobody has finished; "the upload did
+                    # not happen" is the night your cluster exists in one place only.
+                    # Announced identically, the first teaches the operator to ignore
+                    # the second.
                     if ok_up:
                         announce.say("backup.offsite_done", text)
+                    elif not configured:
+                        announce.say("backup.offsite_unconfigured", text,
+                                     level="warning")
                     else:
                         announce.say("backup.offsite_failed", text, level="error")
         except Exception as e:                    # a bad night must not kill the loop

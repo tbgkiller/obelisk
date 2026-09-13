@@ -1229,6 +1229,8 @@ _cstore.patch({"maps": "island", "admin_password": "pw", "cluster_id": "pushtest
 _FAIL_TEXT = ("The off-site copy did NOT happen: the network is unreachable. The local "
               "backup is fine and is on this disk; there is no copy off this machine.")
 _OK_TEXT = "Uploaded obelisk-backup-x.tar.gz."
+_UNCONF_TEXT = ("Off-site is on but no cloud is connected, so nothing was uploaded. "
+                "Connect one on the Cloud page, or turn off-site off.")
 
 _real_listing, _real_push = _appmod.backupctl.listing, _appmod.backupctl.push_offsite
 _pushed = []
@@ -1238,7 +1240,7 @@ async def _push_once(result):
     _appmod.backupctl.listing = lambda store: [
         {"name": "obelisk-backup-x.tar.gz", "path": "/tmp/obelisk-backup-x.tar.gz",
          "bytes": 10, "mtime": 1, "when": "now"}]
-    _appmod.backupctl.push_offsite = lambda store, path: (_pushed.append(path) or result)
+    _appmod.backupctl.push_offsite = lambda store, path: (_pushed.append(path) or result)  # noqa: E501
     client = TestClient(TestServer(build_app(_cstore, docker=DOCKER_UP)))
     await client.start_server()
     client.session.cookie_jar.update_cookies({COOKIE: str(_cstore.get("admin_token"))})
@@ -1250,10 +1252,12 @@ async def _push_once(result):
 _t4 = _aio2.get_event_loop_policy().new_event_loop()
 try:
     _drain2()
-    _bad_body = _t4.run_until_complete(_push_once((False, _FAIL_TEXT)))
+    _bad_body = _t4.run_until_complete(_push_once((False, True, _FAIL_TEXT)))
     _bad_events = _drain2()
-    _ok_body = _t4.run_until_complete(_push_once((True, _OK_TEXT)))
+    _ok_body = _t4.run_until_complete(_push_once((True, True, _OK_TEXT)))
     _ok_events = _drain2()
+    _unc_body = _t4.run_until_complete(_push_once((False, False, _UNCONF_TEXT)))
+    _unc_events = _drain2()
 finally:
     _t4.close()
     _appmod.backupctl.listing = _real_listing
@@ -1270,7 +1274,19 @@ check("a successful upload renders in the note slot",
       ('<div class=note>' + ui._e(_OK_TEXT)) in _ok_body, _ok_body[:300])
 check("and is not dressed as a problem",
       ('<div class=problem>' + ui._e(_OK_TEXT)) not in _ok_body)
-check("the upload was actually attempted in both cases", len(_pushed) == 2, _pushed)
+check("the upload was actually attempted every time", len(_pushed) == 3, _pushed)
+
+# A cloud nobody has connected yet is not an outage. Red here would be the same lie
+# grey was, pointed the other way - it says something broke when what happened is
+# that a step was never taken.
+check("an unconfigured cloud renders as a warning, not a problem",
+      ('<div class=warn>' + ui._e(_UNCONF_TEXT)) in _unc_body, _unc_body[:300])
+check("and is not dressed in red",
+      ('<div class=problem>' + ui._e(_UNCONF_TEXT)) not in _unc_body)
+check("nor dressed as a note, which would read as an upload that happened",
+      ('<div class=note>' + ui._e(_UNCONF_TEXT)) not in _unc_body)
+check("it never claims an upload happened",
+      "did NOT" not in _unc_body and "Uploaded" not in _unc_body)
 
 # and the channel hears about it either way, at the right level.
 _bad_names = [(i["event"], i["level"]) for i in _bad_events]
@@ -1279,6 +1295,11 @@ check("a failed upload reaches Discord and the log as an error",
       ("cloud.push_failed", "error") in _bad_names, _bad_names)
 check("a successful one is reported too, as information",
       ("cloud.push_done", "info") in _ok_names, _ok_names)
+_unc_names = [(i["event"], i["level"]) for i in _unc_events]
+check("an unconfigured cloud is announced at warning, not error",
+      ("cloud.push_unconfigured", "warning") in _unc_names, _unc_names)
+check("under its own event, not the one a real failure uses",
+      not any(e == "cloud.push_failed" for e, _l in _unc_names), _unc_names)
 
 
 # ---- the nightly backup was silent, pass or fail
@@ -1306,8 +1327,11 @@ _t5 = _aio2.get_event_loop_policy().new_event_loop()
 try:
     _drain2()
     _t5.run_until_complete(_one_night((True, "Wrote obelisk-backup-x.tar.gz.",
-                                       (False, _FAIL_TEXT))))
+                                       (False, True, _FAIL_TEXT))))
     _night = _drain2()
+    _t5.run_until_complete(_one_night((True, "Wrote obelisk-backup-x.tar.gz.",
+                                       (False, False, _UNCONF_TEXT))))
+    _night_unc = _drain2()
 finally:
     _t5.close()
     _appmod.backupctl.run_scheduled, _appmod.backupctl.due = _real_run, _real_due
@@ -1331,10 +1355,35 @@ check("carrying the consequence",
       "did NOT" in (_by_event.get("backup.offsite_failed", {}).get("text") or ""),
       _by_event.get("backup.offsite_failed", {}).get("text"))
 
+# ...and a cloud nobody connected is a different fact, told differently. Announced the
+# same way, the one that happens every night on a half-set-up install teaches the
+# operator to scroll past the one that means their cluster exists in one place only.
+_unc_by = {}
+for _i in _night_unc:
+    _unc_by.setdefault(_i["event"], _i)
+check("an unconfigured cloud gets its own nightly event",
+      "backup.offsite_unconfigured" in _unc_by, sorted(_unc_by))
+check("at warning, not error",
+      _unc_by.get("backup.offsite_unconfigured", {}).get("level") == "warning",
+      _unc_by.get("backup.offsite_unconfigured"))
+check("and is never announced as the event a real failure uses",
+      "backup.offsite_failed" not in _unc_by, sorted(_unc_by))
+check("it says what to do rather than claiming an upload",
+      "no cloud is connected"
+      in (_unc_by.get("backup.offsite_unconfigured", {}).get("text") or "")
+      and "did NOT"
+      not in (_unc_by.get("backup.offsite_unconfigured", {}).get("text") or ""),
+      _unc_by.get("backup.offsite_unconfigured", {}).get("text"))
+check("the local backup is still good on a night nothing was set up",
+      _unc_by.get("backup.done", {}).get("level") == "info",
+      _unc_by.get("backup.done"))
+
 # every new event needs a glyph of its own, keyed on the tail the lookup actually
 # takes - "backup.offsite_failed" resolves as "offsite_failed", not "failed".
 for _tail, _want in (("offsite_failed", "\u274c"), ("offsite_done", "\u2705"),
-                     ("push_failed", "\u274c"), ("push_done", "\u2705")):
+                     ("push_failed", "\u274c"), ("push_done", "\u2705"),
+                     ("offsite_unconfigured", "\u26a0"),
+                     ("push_unconfigured", "\u26a0")):
     check("%s has an icon of its own, not a bullet" % _tail,
           _ann2.ICONS.get(_tail) == _want, _ann2.ICONS.get(_tail))
 check("and they resolve through the real Discord formatter",

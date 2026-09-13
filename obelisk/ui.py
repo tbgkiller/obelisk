@@ -59,8 +59,13 @@ tr:last-child td{border-bottom:none}
 .maps label{display:flex;gap:9px;align-items:center;background:#12151a;border:1px solid #303845;
   border-radius:8px;padding:9px 11px;font-weight:500;cursor:pointer;margin:0}
 .presets{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:6px}
-.note,.problem{border-radius:8px;padding:10px 13px;margin:10px 0;font-size:13px}
+.note,.problem,.warn{border-radius:8px;padding:10px 13px;margin:10px 0;font-size:13px}
 .note{background:#1d2530;color:#a9b4c4;border:1px solid #2b3542}
+/* Three states, three colours - the same rule the version panel keeps. Amber is
+   "this is not set up", which is neither the grey of a thing that worked nor the
+   red of a thing that broke. Collapsing it into either one is how a cloud nobody
+   ever connected reads as an outage, or as a completed upload. */
+.warn{background:#2a2519;color:#e8c37a;border:1px solid #4a3f22}
 /* Three states, three colours. "Could not check" is deliberately not green and not
    quiet - the failure this panel answers was a checker that said "up to date" about a
    question it never asked, and an unknown that looks like a pass repeats it. */
@@ -1810,7 +1815,7 @@ def render_backups(store, rows, message="", problem=""):
             '<table><tr><th>Archive</th><th class=num>Size</th><th>When</th></tr>%s</table>'
             '</fieldset></form>' % (when, "".join(body)))
 
-def render_cloud(store, state, remote=None, message="", problem=""):
+def render_cloud(store, state, remote=None, message="", problem="", warning=""):
     """Connect a provider, see what is off-site, restore from it.
 
     The connect step is written for the one fact that shapes it: signing in to Google is
@@ -1821,6 +1826,8 @@ def render_cloud(store, state, remote=None, message="", problem=""):
     banner = ""
     if problem:
         banner = '<div class=problem>%s</div>' % _e(problem)
+    elif warning:
+        banner = '<div class=warn>%s</div>' % _e(warning)
     elif message:
         banner = '<div class=note>%s</div>' % _e(message)
 
