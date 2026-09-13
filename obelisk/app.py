@@ -1403,6 +1403,55 @@ async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
             log.info("world sweep skipped: %s", e)
 
 
+async def loop_watch(store, interval=120, status=None, sleep_first=True):
+    """A map that keeps restarting, said once, where somebody will see it.
+
+    The restart loop is already detected - progress.looks_like_a_loop runs inside every
+    status() call and the Cluster page colours the map red for it. But status() only
+    runs when a page is being rendered, so a map that went into a loop at three in the
+    morning with nobody looking left no record anywhere: not in the channel, not in the
+    log, not in the event feed. The detection was fine; nothing was listening to it.
+
+    Said once per loop, not once per poll. A container that is failing every forty
+    seconds is failing for hours, and a line every two minutes for hours is how a
+    channel gets muted - which costs the next alert too. The recovery is announced the
+    same way, so the channel is not left on red after the map came back.
+
+    A map that disappears between passes is not a recovery. Stopping the cluster removes
+    every container, and reporting ten maps as settled because the operator pressed Stop
+    would be a lie told at exactly the wrong moment - so a name that is simply gone is
+    forgotten silently, and only a map that is still there and no longer looping counts.
+
+    **It never acts.** Like the world sweep, it reports and that is the end of its
+    authority.
+    """
+    looping = set()
+    while True:
+        if sleep_first:
+            await asyncio.sleep(interval)
+        sleep_first = True
+        try:
+            st = (status or clusterctl.status)(store)
+            services = st.get("services") or []
+            present = {s.get("name") for s in services if s.get("name")}
+            now = {s.get("name") for s in services
+                   if s.get("name") and s.get("looping")}
+            for name in sorted(now - looping):
+                svc = next(s for s in services if s.get("name") == name)
+                why = svc.get("failure") or "See the map's log on the Cluster page."
+                announce.say(
+                    "cluster.map_looping",
+                    "%s keeps restarting instead of staying up: %s Nothing has been "
+                    "changed - this is a report, not an action." % (name, why),
+                    level="error", detail=svc.get("log_tail") or "")
+            for name in sorted((looping - now) & present):
+                announce.say("cluster.map_settled",
+                             "%s has stopped restarting and is staying up." % name)
+            looping = now
+        except Exception as e:                    # noqa: BLE001 - never fatal
+            log.info("restart-loop watch skipped: %s", e)
+
+
 async def relay_watch(store, bot, interval=120):
     """Keep the relay pointed at every player map, as they come and go.
 
@@ -1697,6 +1746,7 @@ async def main():
     tasks.append(asyncio.create_task(events_persist(store)))
     tasks.append(asyncio.create_task(empty_watch(store)))
     tasks.append(asyncio.create_task(world_watch(store)))
+    tasks.append(asyncio.create_task(loop_watch(store)))
 
     from . import bot
     # The relay used to learn its maps from a SERVERS environment variable, which only

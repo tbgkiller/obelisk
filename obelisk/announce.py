@@ -223,11 +223,13 @@ ICONS = {
     "done": "✅", "applied": "✅", "update_applied": "✅",
     "primed": "✅", "update_primed": "✅", "saved": "✅",
     "closed": "✅", "world_closed": "✅", "readable_again": "✅",
+    "map_settled": "✅",
     "up": "✅",
     # Failures
     "failed": "❌", "update_failed": "❌", "prime_failed": "❌",
     "batch_failed": "❌", "closing_failed": "❌",
     "unsafe": "❌", "update_unsafe": "❌", "world_damaged": "❌",
+    "map_looping": "❌",
     # world.damaged is the periodic sweep's; ark.world_damaged is the apply gate's.
     "damaged": "❌",
     # Warnings

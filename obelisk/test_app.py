@@ -864,6 +864,101 @@ finally:
     _t.close()
 
 
+
+# ---- the restart-loop watch: said once, to the channel, without a page being open
+#
+# looks_like_a_loop already ran on every status() call and the page already coloured the
+# map red. But status() only runs when somebody is looking at it, so a map that started
+# flapping at three in the morning produced no record at all. This pins the three things
+# that made it worth wiring: it reports, it reports once, and it never acts.
+
+def _loop_status(frames):
+    """A status() that hands back one prepared frame per call, then holds the last."""
+    frames = list(frames)
+
+    def status(_store):
+        return frames.pop(0) if len(frames) > 1 else frames[0]
+    return status
+
+
+def _svc(name, looping, failure="", tail=""):
+    return {"name": name, "looping": looping, "failure": failure, "log_tail": tail,
+            "state": "running"}
+
+
+async def _loop_once(frames):
+    tripped = _Tripwire()
+    real_stop, real_start, real_one = _cl2.stop, _cl2.launch, _cl2.start_one
+    _cl2.stop, _cl2.launch, _cl2.start_one = tripped.stop, tripped.launch, tripped.start_one
+    try:
+        task = _aio2.create_task(_appmod.loop_watch(
+            _sw_store, interval=0.01, status=_loop_status(frames), sleep_first=False))
+        await _aio2.sleep(0.08)
+        task.cancel()
+        try:
+            await task
+        except _aio2.CancelledError:
+            pass
+    finally:
+        _cl2.stop, _cl2.launch, _cl2.start_one = real_stop, real_start, real_one
+    return tripped
+
+
+_flap = {"services": [_svc("ark-island", True, "Data folder is not writable.", "boom")]}
+_calm = {"services": [_svc("ark-island", False)]}
+_gone = {"services": []}
+
+_t2 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _trip2 = _t2.run_until_complete(_loop_once([_flap]))
+    _lv = _drain2()
+    _loops = [i for i in _lv if i["event"] == "cluster.map_looping"]
+    check("a map that keeps restarting is announced", len(_loops) >= 1,
+          [i["event"] for i in _lv])
+    check("as an error", _loops and _loops[0]["level"] == "error", _loops[:1])
+    check("naming the map and what the log said",
+          _loops and "ark-island" in _loops[0]["text"]
+          and "not writable" in _loops[0]["text"], _loops[:1])
+    check("and saying plainly that it changed nothing",
+          _loops and "not an action" in _loops[0]["text"], _loops[:1])
+    check("once per loop, not once per poll", len(_loops) == 1, len(_loops))
+    check("the watch never stopped, started or relaunched anything",
+          _trip2.calls == [], _trip2.calls)
+
+    # and the channel is not left on red once the map is staying up again.
+    _drain2()
+    _t2.run_until_complete(_loop_once([_flap, _flap, _calm]))
+    _lv2 = _drain2()
+    _names4 = [i["event"] for i in _lv2]
+    check("a map that stops restarting is reported as settled",
+          "cluster.map_settled" in _names4, _names4)
+    check("and only after it was reported looping, in that order",
+          "cluster.map_looping" in _names4
+          and _names4.index("cluster.map_looping") < _names4.index("cluster.map_settled"),
+          _names4)
+
+    # stopping the cluster removes every container. That is not ten maps recovering.
+    _drain2()
+    _t2.run_until_complete(_loop_once([_flap, _flap, _gone]))
+    _names5 = [i["event"] for i in _drain2()]
+    check("a map that disappears is not announced as settled",
+          "cluster.map_settled" not in _names5, _names5)
+
+    # both events have to render as something, or they arrive in Discord as bullets.
+    check("both new events have an icon of their own",
+          _ann2.ICONS.get("map_looping") == "\u274c"
+          and _ann2.ICONS.get("map_settled") == "\u2705",
+          (_ann2.ICONS.get("map_looping"), _ann2.ICONS.get("map_settled")))
+finally:
+    _t2.close()
+
+# it has to actually be running, or none of the above ever happens on a real manager.
+_ba_src = _insp_dead.getsource(_appmod.main)
+check("the restart-loop watch is started with the other background watches",
+      "loop_watch(store)" in _ba_src, "loop_watch" in _ba_src)
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 
