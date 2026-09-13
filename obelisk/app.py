@@ -354,21 +354,46 @@ def build_app(store, docker=None):
         by_map, total, age = snap
         return {"by_map": by_map, "total": total, "age": age}
 
-    # What the last one-shot action on this page said, shown once on the way back.
+    # What a one-shot action said, waiting for the render that follows its redirect.
     # The slower actions redirect and leave their result in a job dict; this is the
     # same idea for a command that finishes inside the request - without it the action
     # would have to answer with a rendered page, and a refresh would run it again.
-    _said = {"message": "", "problem": "", "refusal": ""}
+    #
+    # Keyed by a token that travels in the redirect, not by the admin. There is no
+    # "the admin" to key on: authed() compares one shared admin_token, so two people
+    # logged in present the same cookie and are indistinguishable here. A single slot
+    # was worse than indistinguishable - whichever browser rendered the page first took
+    # the banner, so the person who pressed the button saw nothing and somebody who
+    # pressed nothing was told a message had been sent. Harmless for a line of chat;
+    # not harmless for "banned on 8 of 10 maps", and every action slice after this one
+    # uses the same mechanism.
+    #
+    # The token belongs to the request that caused it rather than to a person, which
+    # also means two tabs belonging to the same admin do not steal from each other.
+    _said = {}
+    SAID_TTL = 120.0
+    SAID_MAX = 64
 
     def _say_next(**kw):
-        _said.update(message="", problem="", refusal="")
-        _said.update(kw)
+        """Park a result and return the token that collects it, exactly once."""
+        import secrets
+        now = time.time()
+        for tok in [t for t, v in _said.items() if now - v["at"] > SAID_TTL]:
+            _said.pop(tok, None)
+        while len(_said) >= SAID_MAX:                # a redirect nobody followed
+            _said.pop(min(_said, key=lambda t: _said[t]["at"]), None)
+        token = secrets.token_urlsafe(9)
+        _said[token] = dict({"message": "", "problem": "", "refusal": ""}, at=now, **kw)
+        return token
 
     def _cluster_body(request, message="", problem="", refusal=""):
         if not (message or problem or refusal):
-            message, problem, refusal = (_said["message"], _said["problem"],
-                                         _said["refusal"])
-            _said.update(message="", problem="", refusal="")
+            token = str((getattr(request, "query", None) or {}).get("said") or "")
+            said = _said.pop(token, None) if token else None
+            if said:
+                message = said["message"]
+                problem = said["problem"]
+                refusal = said["refusal"]
         try:
             in_use = clusterctl.other_ports_in_use(store)
         except Exception:
@@ -844,8 +869,9 @@ def build_app(store, docker=None):
         # Redirect, like every other action on this page. Answering a POST with a page
         # means a refresh re-posts it - and a re-sent message is a second line of chat
         # the player sees, from somebody who pressed F5.
-        _say_next(message="Message sent to %s on %s." % (name, label))
-        raise web.HTTPFound("/admin/cluster")
+        raise web.HTTPFound(
+            "/admin/cluster?said=%s"
+            % _say_next(message="Message sent to %s on %s." % (name, label)))
 
     async def cluster_launch(request):
         if not authed(request):

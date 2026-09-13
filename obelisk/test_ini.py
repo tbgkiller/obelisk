@@ -22,6 +22,29 @@ from . import ini
 fails = []
 
 
+
+def _in_order(body, *needles):
+    """True when every needle is present in `body`, in this order.
+
+    str.index raises when a needle is missing, so an assertion built on it reports a
+    crash instead of a failure - and a crash names no check and stops the suite. This
+    asks the ordering question in a way that can answer "no".
+    """
+    at = [body.index(n) if n in body else -1 for n in needles]
+    return all(i >= 0 for i in at) and at == sorted(at)
+
+
+def _from(body, anchor):
+    """`body` from `anchor` onwards, or "" when it is not there.
+
+    Scoping a check to a section is right; slicing with .index to do it turns a missing
+    section into a crash. An empty string fails every check made against it, which is
+    what a missing section should do.
+    """
+    i = body.find(anchor)
+    return body[i:] if i >= 0 else ""
+
+
 def check(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else " :: %s" % (detail,)))
     if not cond:
@@ -134,7 +157,7 @@ d2.set("ServerSettings", "XPMultiplier", "3.0")
 lines2 = d2.text().splitlines()
 check("a new key is added", "XPMultiplier=3.0" in lines2)
 check("inside its own section, not appended to the file",
-      lines2.index("XPMultiplier=3.0") < lines2.index("[/Script/Engine.GameSession]"),
+      _in_order(lines2, "XPMultiplier=3.0", "[/Script/Engine.GameSession]"),
       lines2)
 check("and the trailing comment of that section is kept",
       "; MaxPlayers is injected via -WinLiveMaxPlayers by the container." in lines2)

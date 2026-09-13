@@ -444,8 +444,7 @@ check("three renames and nothing else - that is the whole file operation",
       renamed[:3])
 
 _src = open(updates.__file__, encoding="utf-8").read()
-_apply_body = _src[_src.index("def apply_batch("):_src.index("# ------", _src.index(
-    "def apply_batch("))]
+_apply_body = _src.split("def apply_batch(")[-1].split("# ------")[0]
 for _word in ("staging.up", "steamcmd", "app_update", "docker pull"):
     check("the apply path never mentions %s" % _word, _word not in _apply_body, _word)
 

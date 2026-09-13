@@ -343,9 +343,10 @@ ok_g, msg_g, det_g = restore.restore_map(
     on_step=lambda t: seen.append("step:%s" % t))
 check("the restore with gates wired succeeds", ok_g, msg_g)
 check("the verify step is actually called", "island" in seen, seen)
+_swapped_at = [i for i, x in enumerate(seen) if x.startswith("step:swapped")]
 check("and it runs after the swap, not before",
-      seen.index("island") > max(i for i, x in enumerate(seen)
-                                 if x.startswith("step:swapped")), seen)
+      "island" in seen and _swapped_at
+      and seen.index("island") > max(_swapped_at), seen)
 check("progress is reported step by step",
       sum(1 for x in seen if x.startswith("step:")) >= 5, seen)
 

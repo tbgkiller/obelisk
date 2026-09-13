@@ -20,6 +20,29 @@ from .firstrun import bootstrap
 fails = []
 
 
+
+def _in_order(body, *needles):
+    """True when every needle is present in `body`, in this order.
+
+    str.index raises when a needle is missing, so an assertion built on it reports a
+    crash instead of a failure - and a crash names no check and stops the suite. This
+    asks the ordering question in a way that can answer "no".
+    """
+    at = [body.index(n) if n in body else -1 for n in needles]
+    return all(i >= 0 for i in at) and at == sorted(at)
+
+
+def _from(body, anchor):
+    """`body` from `anchor` onwards, or "" when it is not there.
+
+    Scoping a check to a section is right; slicing with .index to do it turns a missing
+    section into a crash. An empty string fails every check made against it, which is
+    what a missing section should do.
+    """
+    i = body.find(anchor)
+    return body[i:] if i >= 0 else ""
+
+
 def check(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else " :: %s" % (detail,)))
     if not cond:
@@ -311,8 +334,8 @@ async def run():
     # Severity has to run the right way round. The success banner used to be
     # `class=note` - the same grey "Connected to Google Drive" uses - on the one screen
     # in the product that cannot be undone.
-    _banner = body[body.index("no longer be decrypted") - 400:
-                   body.index("no longer be decrypted")]
+    _at_dis = body.find("no longer be decrypted")
+    _banner = body[max(0, _at_dis - 400):_at_dis] if _at_dis >= 0 else ""
     check("the result is rendered severe, not as a grey note",
           "class=problem" in _banner and "class=note" not in _banner, _banner[-200:])
     check("and it tells the operator the folder is now theirs to clear",
@@ -496,7 +519,7 @@ _appsrc_all = _appsrc          # the whole module, for things main() delegates
 check("secrets are registered before anything can announce",
       "guard_secrets" in _mainsrc, "not registered at boot")
 check("and before the relay that would carry them is started",
-      _mainsrc.index("guard_secrets") < _mainsrc.index("_wire_relay"),
+      _in_order(_mainsrc, "guard_secrets", "_wire_relay"),
       "registered too late")
 check("and they come from the backup module's own list of secrets",
       "SECRET_KEYS" in _appsrc)
@@ -533,7 +556,7 @@ check("it uses the admin channel, not the public one",
 check("the network join happens on start, not only inside launch()",
       "join_network_if_running" in _mainsrc, "not called at boot")
 check("and before the relay is wired to anything",
-      _mainsrc.index("join_network_if_running") < _mainsrc.index("_wire_relay"),
+      _in_order(_mainsrc, "join_network_if_running", "_wire_relay"),
       "joined too late to help")
 check("failing to join is not a reason to refuse to start",
       "could not join the cluster network" in _mainsrc)
@@ -869,7 +892,7 @@ try:
     check("a save point that reads again is reported as recovered",
           "world.readable_again" in _names3, _names3)
     check("and only after it was reported broken, in that order",
-          _names3.index("world.damaged") < _names3.index("world.readable_again"),
+          _in_order(_names3, "world.damaged", "world.readable_again"),
           _names3)
 finally:
     _t.close()
@@ -946,7 +969,7 @@ try:
           "cluster.map_settled" in _names4, _names4)
     check("and only after it was reported looping, in that order",
           "cluster.map_looping" in _names4
-          and _names4.index("cluster.map_looping") < _names4.index("cluster.map_settled"),
+          and _in_order(_names4, "cluster.map_looping", "cluster.map_settled"),
           _names4)
 
     # stopping the cluster removes every container. That is not ten maps recovering.
@@ -1108,7 +1131,7 @@ check("and gets an empty schedule rather than a crash",
 from . import bot as _botmod                                     # noqa: E402
 _ml_src = _insp_dead.getsource(_botmod.Relay.maintenance_loop)
 check("the scheduler re-reads the schedule inside its loop",
-      _ml_src.index("while True:") < _ml_src.index("for x in WIPE_TIMES"), _ml_src[:300])
+      _in_order(_ml_src, "while True:", "for x in WIPE_TIMES"), _ml_src[:300])
 _ml_stmts = [l.strip() for l in _ml_src.splitlines() if not l.strip().startswith("#")]
 check("and an empty schedule no longer ends the loop for good",
       "if not targets:" not in _ml_src
@@ -1961,8 +1984,9 @@ check("the poller only schedules another round while the job is running",
 check("a terminal state is not polled for ever",
       "if(j.state==='running')" in ui.STOP_JS, "no terminal check")
 check("and the result is swapped in before it gives up",
-      ui.STOP_JS.index("wrap.innerHTML=j.html")
-      < ui.STOP_JS.index("if(j.state==='running')"), "result swap comes too late")
+      _in_order(ui.STOP_JS, "wrap.innerHTML=j.html",
+                "if(j.state==='running')"),
+      "result swap comes too late")
 
 # ---- the refusal splits the count per map
 _split_block = ui.render_stop_warning({"Ragnarok": 3, "The Island": 1}, [])
@@ -2745,7 +2769,7 @@ check("a map counted at four lists four names",
       _cluster_r[-1600:])
 
 # ---- one header, not two
-_r_section = _cluster_r[_cluster_r.index("Who’s online"):]
+_r_section = _from(_cluster_r, "Who’s online")
 check("only the count section states the population",
       "players" not in _r_section.split("<div class=whoroster>")[0],
       _r_section[:300])
@@ -2757,11 +2781,10 @@ check("the page states the population exactly once",
 # ---- the map order is the status table's
 _tbl_order = [m for m in ("The Island", "Ragnarok")
               if ("<td>%s</td>" % m) in _cluster_r]
-_roster_part = _cluster_r[_cluster_r.index("Who\u2019s online"):]
+_roster_part = _from(_cluster_r, "Who\u2019s online")
 check("the section lists maps in the order the table above did",
-      [_roster_part.index(m) for m in _tbl_order]
-      == sorted(_roster_part.index(m) for m in _tbl_order),
-      [(m, _roster_part.index(m)) for m in _tbl_order])
+      _in_order(_roster_part, *_tbl_order),
+      [(m, _roster_part.find(m)) for m in _tbl_order])
 
 # a map that went quiet leaves both views at once, and says so in both
 check("a quiet map's people are gone from the roster",
@@ -2769,7 +2792,7 @@ check("a quiet map's people are gone from the roster",
 # Scoped to the section, and asserted on the element: the phrase "did not answer the
 # last poll" also lives in the dash tooltip above, so looking for it anywhere on the
 # page passes with this row deleted.
-_q2_section = _cluster_q2[_cluster_q2.index("Who’s online"):]
+_q2_section = _from(_cluster_q2, "Who’s online")
 check("but the map itself is still listed, as unknown rather than absent",
       '<div class="whorow quiet">' in _q2_section
       and "Ragnarok" in _q2_section, _q2_section[:600])
@@ -2997,7 +3020,7 @@ check("the route only ever sends a chat line",
       "whisper_command" in _msgsrc and "KickPlayer" not in _msgsrc
       and "BanPlayer" not in _msgsrc, _msgsrc[:400])
 check("and checks the roster before it sends",
-      _msgsrc.index("_roster_now()") < _msgsrc.index("whisper_command"), _msgsrc[:600])
+      _in_order(_msgsrc, "_roster_now()", "whisper_command"), _msgsrc[:600])
 for _what, _frag in sorted({
         "the apply gate": "def verify_every_map(store):",
         "the restore gate": "def verify_restored(store, key, note=None):",
@@ -3048,9 +3071,10 @@ try:
                                     "text": "once only"},
                               allow_redirects=False)
         after = len(_sent)
+        where = r.headers.get("Location", "/admin/cluster")
         # the refresh a person actually does: re-request the page they landed on
-        page1 = await (await client.get("/admin/cluster")).text()
-        page2 = await (await client.get("/admin/cluster")).text()
+        page1 = await (await client.get(where)).text()
+        page2 = await (await client.get(where)).text()
         await client.close()
         return r.status, after, len(_sent), page1, page2
 
@@ -3137,7 +3161,10 @@ finally:
     _bot_s1.LIVE = _real_live
     _appmod.clusterctl.status = _real_status_s1
 
-_q_banner = _q_body[:_q_body.find("Who’s online")]
+_q_at = _q_body.find("Who’s online")
+# Everything above the roster. A find() that misses returns -1 and [: -1] is
+# very nearly the whole page, which would scope this check to nothing at all.
+_q_banner = _q_body[:_q_at] if _q_at >= 0 else ""
 check("a player whose name has a quote is refused, not sent to",
       "cannot be messaged" in _q_banner, _q_banner[-400:])
 check("and the refusal is the banner, not merely the row's own marker",
@@ -3150,6 +3177,109 @@ check("and it was never announced as sent",
 check("the refusal says why, in amber",
       "quote or a line break" in _q_banner and "<div class=warn>" in _q_banner,
       _q_banner[-400:])
+
+# ---- the confirmation belongs to whoever pressed the button
+#
+# It used to be one slot for the whole manager, so on a cluster with two admins
+# whichever browser rendered /admin/cluster first took the banner: the person who sent
+# the message saw nothing, and somebody who sent nothing was told a message had been
+# sent. Harmless for a line of chat. Not harmless for "banned on 8 of 10 maps", and
+# every action slice after this one uses the same mechanism.
+#
+# There is nobody to key it on, either: authed() compares one shared admin_token, so
+# two admins present the same cookie and are indistinguishable. The result travels with
+# the redirect instead, which belongs to the request that caused it.
+_t17 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _two_admins():
+        _sent[:] = []
+        _bot_s1.LIVE = _msg_relay()
+        _bot_s1.rcon_with = _fake_rcon
+        _appmod.clusterctl.status = lambda store: dict(
+            _lstatus, services=[dict(x) for x in _lstatus["services"]])
+        app = build_app(_lstore, docker=DOCKER_UP)
+        server = TestServer(app)
+        sender = TestClient(server)
+        await sender.start_server()
+        other = TestClient(server)
+        await other.start_server()
+        for c in (sender, other):
+            c.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+
+        r = await sender.post("/admin/player/message",
+                              data={"map": "The Island", "name": "Bob",
+                                    "text": "for the sender only"},
+                              allow_redirects=False)
+        where = r.headers.get("Location", "/admin/cluster")
+        # the other admin happens to refresh first, as they would
+        other_first = await (await other.get("/admin/cluster")).text()
+        sender_sees = await (await sender.get(where)).text()
+        sender_again = await (await sender.get(where)).text()
+        other_after = await (await other.get("/admin/cluster")).text()
+        await sender.close()
+        await other.close()
+        return where, other_first, sender_sees, sender_again, other_after
+
+    _where, _other1, _mine, _mine2, _other2 = _t17.run_until_complete(_two_admins())
+finally:
+    _t17.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+_BANNER = "Message sent to Bob on The Island."
+check("the redirect carries a token rather than pointing at a bare page",
+      _where.startswith("/admin/cluster?said="), _where)
+check("another admin refreshing first does not take the banner",
+      _BANNER not in _other1, _other1[:400])
+check("the sender sees it on the page they were sent to",
+      _BANNER in _mine, _mine[_mine.find("Message sent") - 60:][:200])
+check("once, and not on a second look",
+      _BANNER not in _mine2, _mine2[:400])
+check("and the other admin never sees it at all",
+      _BANNER not in _other2, _other2[:400])
+
+# a token nobody parked, or one already spent, is simply nothing
+_t18 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _bogus():
+        _bot_s1.LIVE = _msg_relay()
+        _appmod.clusterctl.status = lambda store: dict(
+            _lstatus, services=[dict(x) for x in _lstatus["services"]])
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        made_up = await (await client.get("/admin/cluster?said=notatoken")).text()
+        empty = await (await client.get("/admin/cluster?said=")).text()
+        await client.close()
+        return made_up, empty
+
+    _madeup, _emptytok = _t18.run_until_complete(_bogus())
+finally:
+    _t18.close()
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+check("a token that was never issued shows nothing, and does not break the page",
+      "Running now" in _madeup and _BANNER not in _madeup, _madeup[:300])
+check("nor does an empty one",
+      "Running now" in _emptytok and _BANNER not in _emptytok, _emptytok[:300])
+
+# ---- and the slot cannot grow without bound from redirects nobody follows
+_appsrc_n11 = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
+                      encoding="utf-8").read()
+_saysrc = _appsrc_n11.split("def _say_next")[1].split(chr(10) + "    def ")[0]
+check("old results are dropped rather than kept for ever",
+      "SAID_TTL" in _saysrc, _saysrc[:400])
+check("and the slot is capped, for redirects nobody ever follows",
+      "SAID_MAX" in _saysrc, _saysrc[:400])
+check("the token is not guessable",
+      "secrets" in _saysrc, _saysrc[:200])
+check("the result is taken out when it is read, not copied",
+      "_said.pop(" in _appsrc_n11.split("def _cluster_body")[1][:600],
+      _appsrc_n11.split("def _cluster_body")[1][:600])
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

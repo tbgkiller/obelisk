@@ -27,6 +27,19 @@ from .settings import Store
 fails = []
 
 
+
+def _in_order(seq, *needles):
+    """True when every needle is in `seq`, in this order.
+
+    .index raises when a needle is missing, so an assertion built on it reports a crash
+    instead of a failure - and a crash names no check and stops the suite. This asks the
+    ordering question in a way that can answer "no".
+    """
+    seq = list(seq)
+    at = [seq.index(n) if n in seq else -1 for n in needles]
+    return all(i >= 0 for i in at) and at == sorted(at)
+
+
 def check(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else " :: %s" % (detail,)))
     if not cond:
@@ -377,8 +390,7 @@ ok, msg, detail = savepoints.restore_point(
     ark_root=root8, now=lambda: NOW)
 check("the map is asked to save before it is stopped", _saves == ["ragnarok"], _saves)
 check("and that happens before the stop",
-      detail["steps"].index("saved") < detail["steps"].index("stopped ragnarok"),
-      detail["steps"])
+      _in_order(detail["steps"], "saved", "stopped ragnarok"), detail["steps"])
 
 st9, root9, _f9 = fresh()
 c = Cluster()

@@ -18,6 +18,29 @@ from .settings import Store
 fails = []
 
 
+
+def _in_order(body, *needles):
+    """True when every needle is present in `body`, in this order.
+
+    str.index raises when a needle is missing, so an assertion built on it reports a
+    crash instead of a failure - and a crash names no check and stops the suite. This
+    asks the ordering question in a way that can answer "no".
+    """
+    at = [body.index(n) if n in body else -1 for n in needles]
+    return all(i >= 0 for i in at) and at == sorted(at)
+
+
+def _from(body, anchor):
+    """`body` from `anchor` onwards, or "" when it is not there.
+
+    Scoping a check to a section is right; slicing with .index to do it turns a missing
+    section into a crash. An empty string fails every check made against it, which is
+    what a missing section should do.
+    """
+    i = body.find(anchor)
+    return body[i:] if i >= 0 else ""
+
+
 def check(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else " :: %s" % (detail,)))
     if not cond:
@@ -182,7 +205,7 @@ _after5 = open(os.path.join(conf4, "GameUserSettings.ini"), encoding="utf-8").re
 check("a value that differs from the default is written, absent or not",
       "XPMultiplier=3.0" in _after5, _after5)
 check("and it lands inside its own section",
-      _after5.index("XPMultiplier=3.0") < _after5.index("[GaiaEssentials]"), _after5)
+      _in_order(_after5, "XPMultiplier=3.0", "[GaiaEssentials]"), _after5)
 
 # ---------------------------------------------------------------- unreadable values
 st3, conf3 = fresh()
@@ -359,11 +382,12 @@ _a9 = open(_g8, encoding="utf-8").read()
 check("adding a row adds exactly one line",
       len(_a9.splitlines()) == len(_a8.splitlines()) + 1)
 check("the new row is there", 'EngramEntry_NEW_C' in _a9)
+_a9_lines = _a9.splitlines()
+_at_new = [i for i, l in enumerate(_a9_lines) if "EngramEntry_NEW_C" in l]
+_at_d = [i for i, l in enumerate(_a9_lines) if "EngramEntry_D_C" in l]
 check("and it landed with the others, not at the end of the file",
-      _a9.splitlines().index(
-          [l for l in _a9.splitlines() if "EngramEntry_NEW_C" in l][0])
-      == _a9.splitlines().index(
-          [l for l in _a9.splitlines() if "EngramEntry_D_C" in l][0]) + 1, _a9)
+      bool(_at_new) and bool(_at_d) and _at_new[0] == _at_d[0] + 1,
+      [_at_new, _at_d])
 
 # ---- remove one row: one line, and only that one
 del st8.data["rows"]["OverrideNamedEngramEntries"][2]           # the C row

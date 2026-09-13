@@ -9,6 +9,36 @@ from .settings import Store
 from .ui import page, render_settings, render_cluster, render_setup
 
 fails = []
+def _from(body, anchor):
+    """`body` from `anchor` onwards, or "" when it is not there.
+
+    Scoping a check to a section is right; slicing with .index to do it turns a missing
+    section into a crash. An empty string fails every check made against it, which is
+    what a missing section should do.
+    """
+    i = body.find(anchor)
+    return body[i:] if i >= 0 else ""
+
+
+def _window(body, anchor, size):
+    """`size` characters of `body` from `anchor`, or "" when it is not there."""
+    i = body.find(anchor)
+    return body[i:i + size] if i >= 0 else ""
+
+
+def _in_order(body, *needles):
+    """True when every needle is present in `body`, in this order.
+
+    Works on a string or a list - the phase order checks below are lists.
+
+    str.index raises when a needle is missing, so an assertion built on it reports a
+    crash instead of a failure - and a crash names no check and stops the suite. This
+    is the ordering question asked in a way that can answer "no".
+    """
+    at = [body.index(n) if n in body else -1 for n in needles]
+    return all(i >= 0 for i in at) and at == sorted(at)
+
+
 def check(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + ((" :: " + str(detail)) if detail and not cond else ""))
     if not cond: fails.append(name)
@@ -34,11 +64,11 @@ check("every setting carries its help text", not no_help, no_help)
 # ---- the install/UI split is visible, not just enforced
 for k in INSTALL_KEYS:
     lbl = BY_KEY[k]["label"]
-    seg = html_settings[html_settings.index(lbl):html_settings.index(lbl) + 700]
+    seg = _window(html_settings, lbl, 700)
     check("%s is shown read-only" % k, "readonly" in seg or "disabled" in seg, seg[:160])
     check("%s says where to change it" % k, "container" in seg.lower(), seg[:160])
 editable = BY_KEY["max_players"]["label"]
-seg = html_settings[html_settings.index(editable):html_settings.index(editable) + 400]
+seg = _window(html_settings, editable, 400)
 check("a UI setting is editable", "readonly" not in seg, seg[:160])
 
 # ---- secrets are never echoed back into the page
@@ -110,15 +140,14 @@ for name, doc in (("settings", html_settings), ("cluster", h), ("setup", render_
 # ---- the setup page is a first-run instruction, not a password box
 setup = render_setup()
 check("the instruction comes before the input",
-      setup.index("First time?") < setup.index("name=code"))
+      _in_order(setup, "First time?", "name=code"))
 check("it points at Unraid's Logs, not a terminal",
       "left-click" in setup and "Logs" in setup and "docker logs" not in setup)
 check("it says where in the log to look", "Setup code:" in setup)
 check("it says the address is there too", "address of this page" in setup)
 check("it explains how to get the code back", "restarting the container" in setup)
 check("an error still renders above it",
-      render_setup(error="nope").index("nope") <
-      render_setup(error="nope").index("First time?"))
+      _in_order(render_setup(error="nope"), "nope", "First time?"))
 
 
 # ---- the status page answers "what do I type in"
@@ -606,8 +635,11 @@ _wrong = [(s, _names[ui.phase_index(s, ui.APPLY_PHASES)], w)
           for s, w in _APPLY_STEPS if _names[ui.phase_index(s, ui.APPLY_PHASES)] != w]
 check("and every one lands on the phase it belongs to", not _wrong, _wrong)
 
-_starting = _names.index("Starting")
-_back = _names.index("Putting it back")
+check("the phases this block names all exist",
+      all(p in _names for p in ("Starting", "Putting it back", "Saving",
+                                "Swapping files", "Applying settings")), _names)
+_starting = _names.index("Starting") if "Starting" in _names else -1
+_back = _names.index("Putting it back") if "Putting it back" in _names else -1
 check("undoing is its own phase, not the one that means success",
       ui.phase_index("starting the cluster back on the previous build",
                      ui.APPLY_PHASES) == _back, _back)
@@ -615,11 +647,11 @@ check("and it reads as later than Starting, so the bar cannot show it as progres
       _back > _starting, (_back, _starting))
 check("a save refusal belongs to Saving, not to a phase three steps later",
       ui.phase_index("refused: X did not finish saving", ui.APPLY_PHASES)
-      == _names.index("Saving"))
+      == (_names.index("Saving") if "Saving" in _names else -2))
 check("committing settings has a phase of its own",
       "Applying settings" in _names, _names)
 check("which sits between swapping and starting, where it runs",
-      _names.index("Swapping files") < _names.index("Applying settings") < _starting,
+      _in_order(_names, "Swapping files", "Applying settings", "Starting"),
       _names)
 
 
@@ -858,8 +890,7 @@ _shell = page("Obelisk", "<p>body</p>", nav_on="/admin")
 check("the title and tabs are in a sticky header",
       "<header class=top>" in _shell and "header.top{position:sticky" in _shell)
 check("the tabs are inside it, so switching pages never needs a scroll",
-      _shell.index("<nav>") > _shell.index("<header class=top>")
-      and _shell.index("</nav>") < _shell.index("</header>"))
+      _in_order(_shell, "<header class=top>", "<nav>", "</nav>", "</header>"))
 check("its height is measured rather than hardcoded - a title that wraps on a phone "
       "would otherwise tuck the toolbar underneath the tabs",
       "--topH" in _shell and "offsetHeight" in _shell)
@@ -868,7 +899,7 @@ _sett = render_settings(store())
 check("the search box is in the sticky toolbar", "id=q" in _sett)
 check("and so is Save, so it is reachable from anywhere on the page",
       _sett.count("Save changes") == 1
-      and _sett.index("Save changes") < _sett.index("<fieldset"), _sett.count("Save changes"))
+      and _in_order(_sett, "Save changes", "<fieldset"), _sett.count("Save changes"))
 check("the toolbar sticks below the header rather than over it",
       "top:var(--topH" in uimod.CSS)
 check("the form still opens and closes exactly once",
@@ -1144,17 +1175,6 @@ check("and it still shows the instance underneath",
 
 
 
-def _in_order(body, *needles):
-    """True when every needle is present in `body`, in this order.
-
-    str.index raises when a needle is missing, so an assertion built on it reports a
-    crash instead of a failure - and a crash names no check and stops the suite. This
-    is the ordering question asked in a way that can answer "no".
-    """
-    at = [body.find(n) for n in needles]
-    return all(i >= 0 for i in at) and at == sorted(at)
-
-
 # ---- who's online: one row per player, under the map they are on
 #
 # The names were always in the ListPlayers answer and were always discarded. Slice 2a
@@ -1387,12 +1407,12 @@ check("an unreadable row gets no message form",
       "/admin/player/message" not in _after_raw.split("</div>")[0], _after_raw[:300])
 check("it still says why there is nothing to press",
       "nothing to act on" in _after_raw[:300], _after_raw[:300])
-_quiet_part = _msg_who[_msg_who.index('<div class="whorow quiet">'):]
+_quiet_part = _from(_msg_who, '<div class="whorow quiet">')
 check("a map that did not answer gets no message form",
       "/admin/player/message" not in _quiet_part, _quiet_part[:300])
 check("and neither does the collapsed empty-maps line",
-      "/admin/player/message" not in _msg_who[_msg_who.index("Nobody on:"):],
-      _msg_who[_msg_who.index("Nobody on:"):])
+      "/admin/player/message" not in _from(_msg_who, "Nobody on:"),
+      _from(_msg_who, "Nobody on:"))
 check("no relay, no forms",
       "/admin/player/message" not in ui.render_whos_online(None, maps=["Ragnarok"]),
       ui.render_whos_online(None, maps=["Ragnarok"]))
