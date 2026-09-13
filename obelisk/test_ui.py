@@ -572,6 +572,56 @@ check("and keeps its singular nouns",
       "The world it holds" in _held1 and "that same world" in _held1, _held1)
 
 
+# ---- every step an apply can emit lands on a phase, and undoing is not progress
+#
+# Two lines matched nothing, so the bar went fully grey - finished phases reading as
+# undone - in the middle of the job. And all three rollback steps contain "starting the
+# cluster", so they landed on Starting: an apply putting everything back rendered
+# exactly like one that was succeeding.
+_APPLY_STEPS = [
+    ("warning players (30 minutes)", "Warning players"),
+    ("nobody is on, so the 30-minute warning is skipped", "Warning players"),
+    ("saving every world", "Saving"),
+    ("saving every world - The Island saved (3/10)", "Saving"),
+    ("refused: The Island did not finish saving", "Saving"),
+    ("stopping the cluster and the staging server", "Stopping"),
+    ("checking every world is readable", "Checking worlds"),
+    ("starting the 1 map that is fine", "Checking worlds"),
+    ("starting the 3 maps that are fine", "Checking worlds"),
+    ("refused: The Island has no usable world", "Checking worlds"),
+    ("swapping the staged files in", "Swapping files"),
+    ("applying 3 setting change(s)", "Applying settings"),
+    ("starting the cluster", "Starting"),
+    ("starting the cluster back on the previous build", "Putting it back"),
+    ("starting the cluster back on the previous settings", "Putting it back"),
+    ("starting the cluster back as it was", "Putting it back"),
+    ("checking every map is really serving", "Verifying"),
+    ("done", "Done"),
+]
+_names = [p[0] for p in ui.APPLY_PHASES]
+_blank = [s for s, _w in _APPLY_STEPS if ui.phase_index(s, ui.APPLY_PHASES) < 0]
+check("no step an apply emits leaves the bar blank", not _blank, _blank)
+_wrong = [(s, _names[ui.phase_index(s, ui.APPLY_PHASES)], w)
+          for s, w in _APPLY_STEPS if _names[ui.phase_index(s, ui.APPLY_PHASES)] != w]
+check("and every one lands on the phase it belongs to", not _wrong, _wrong)
+
+_starting = _names.index("Starting")
+_back = _names.index("Putting it back")
+check("undoing is its own phase, not the one that means success",
+      ui.phase_index("starting the cluster back on the previous build",
+                     ui.APPLY_PHASES) == _back, _back)
+check("and it reads as later than Starting, so the bar cannot show it as progress",
+      _back > _starting, (_back, _starting))
+check("a save refusal belongs to Saving, not to a phase three steps later",
+      ui.phase_index("refused: X did not finish saving", ui.APPLY_PHASES)
+      == _names.index("Saving"))
+check("committing settings has a phase of its own",
+      "Applying settings" in _names, _names)
+check("which sits between swapping and starting, where it runs",
+      _names.index("Swapping files") < _names.index("Applying settings") < _starting,
+      _names)
+
+
 # ---- the held-down banner has to agree with the event that put it there
 #
 # It said "Restore them from a save point" to every held map, including one held because

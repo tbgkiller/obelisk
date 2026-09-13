@@ -691,19 +691,30 @@ PRIME_PHASES = [
     ("Done", ("done", "stopping the staging server")),
 ]
 
+# phase_index takes the LAST phase whose marker appears in the step text, which is what
+# lets a rollback overrule the forward phase whose words it necessarily contains.
 APPLY_PHASES = [
-    ("Warning players", ("warning players",)),
-    ("Saving", ("saving every world",)),
+    # The skip line is here too: an empty cluster is not warned, and a step that matches
+    # nothing scores -1 and greys the whole bar.
+    ("Warning players", ("warning players", "warning is skipped")),
+    # A save refusal belongs to the save, not to whatever comes after it. It used to be
+    # caught by a bare "refused:" marker further down and reported three phases late.
+    ("Saving", ("saving every world", "did not finish saving")),
     ("Stopping", ("stopping the cluster",)),
-    # Its own phase because it is minutes long and can end the apply. Without it the
-    # three step lines the gate emits matched no marker, phase_index returned -1, and
-    # the whole bar went grey - every finished phase reading as undone - during the most
-    # alarming thing this product does. "refused:" is in here so a corruption refusal
-    # stops the bar here rather than looking like an ordinary failure somewhere else.
-    ("Checking worlds", ("checking every world is readable", "refused:",
+    # Its own phase because it is minutes long and can end the apply - and the piecemeal
+    # restart that follows a refusal belongs to it rather than to Starting.
+    ("Checking worlds", ("checking every world is readable", "has no usable world",
                          "that is fine", "that are fine")),
     ("Swapping files", ("swapping the staged files",)),
+    # Committing the queued settings is one of the two things an apply exists to do, and
+    # it matched nothing - so the bar went blank in the middle of the job.
+    ("Applying settings", ("setting change(s)",)),
     ("Starting", ("starting the cluster",)),
+    # Undoing is not progress. All three rollback steps contain "starting the cluster",
+    # so they used to land on Starting and an apply that was putting everything back
+    # rendered exactly like one that was succeeding. Being later in the list is what
+    # makes them win.
+    ("Putting it back", ("back on the previous", "back as it was")),
     ("Verifying", ("checking every map",)),
     ("Done", ("done",)),
 ]
