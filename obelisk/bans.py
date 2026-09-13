@@ -31,17 +31,25 @@ KEEP = 200
 def valid_netid(netid):
     """Is this something that can be written to a ban list and read back?
 
-    Deliberately a whitelist. The failure being guarded against is not an attacker -
-    the value comes from a page Obelisk rendered from its own poll - it is a line of
-    ListPlayers output that did not parse the way the parser assumed, arriving in a
-    file the game re-reads for ever.
+    A whitelist, and it has to be one. The first version of this listed the characters
+    it did not want - whitespace, quotes, a backslash - which reads like a guard and is
+    not one: it let through `;`, `|`, `&`, `$`, `<`, `>` and a comma, on the single path
+    in this program that writes a line into a file on ten servers. Listing what is
+    forbidden means being right about every character nobody has thought of yet.
+
+    Listing what is allowed costs nothing here, because every id this could ever hold is
+    alphanumeric: 17 digits for Steam, 19 for Epic, 32 hex characters for EOS. `-` and
+    `_` are permitted so a platform that adds a separator does not silently lose the
+    ability to be banned.
+
+    The failure being guarded against is not an attacker - the value comes from a page
+    Obelisk rendered from its own poll - it is a line of ListPlayers output that did not
+    parse the way the parser assumed, arriving in a file the game re-reads for ever.
     """
     netid = str(netid or "")
     if not netid or len(netid) > MAX_NETID:
         return False
-    if any(c.isspace() for c in netid):
-        return False
-    return not any(c in netid for c in '"\'\\`')
+    return all(c.isalnum() or c in "-_" for c in netid)
 
 
 def record(store, name, netid, results, kick=None, when=None):

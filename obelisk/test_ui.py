@@ -1674,12 +1674,27 @@ check("a wrong name comes back with the box still there and a reason",
       ui.render_ban_confirm("Ragnarok", "Dana", "9", "That is not their name."))
 
 # ---- what may be written to a ban list
+#
+# A list of what is allowed, not a list of what is not. The first version named the
+# characters it did not want and let through ";", "|", "&", "$", "<", ">" and a comma -
+# on the one path in this program that appends a line to a file on every server. Being
+# right about every character nobody has thought of is not a thing to rely on when the
+# allowed set is "the characters platform ids are made of".
 for _bad_id in ("", "   ", "has space", 'has"quote', "has'quote", "back\slash",
-                "x" * 65, "line\nbreak", "tab\there"):
+                "x" * 65, "line\nbreak", "tab\there",
+                ";DoExit", "765;DoExit", "<", ">", "|", "&", "$", ",", "765,611",
+                "a b", "..", "id/../x", "id.txt", "#comment", "%s", "(", "*"):
     check("%r is not something to write to a ban list" % _bad_id,
           not _bans.valid_netid(_bad_id), _bad_id)
-for _ok_id in ("76561198000000001", "19000000000000001", "0002a1b2c3d4e5f6", "x" * 64):
+for _ok_id in ("76561198000000001",                       # Steam, 17 digits
+               "1900000000000000123",                     # Epic, 19
+               "0002a1b2c3d4e5f60002a1b2c3d4e5f6",         # EOS, 32 hex
+               "0002a1b2c3d4e5f6", "ok-123", "ok_123", "x" * 64):
     check("%s... is a usable id" % _ok_id[:12], _bans.valid_netid(_ok_id), _ok_id)
+check("and the check is the whole id, not its first character",
+      not _bans.valid_netid("76561198000000001;DoExit")
+      and not _bans.valid_netid("76561198000000001 x"),
+      "a suffix slipped past")
 check("the bound is a real bound, not a coincidence",
       _bans.MAX_NETID >= 32 and not _bans.valid_netid("y" * (_bans.MAX_NETID + 1)),
       _bans.MAX_NETID)

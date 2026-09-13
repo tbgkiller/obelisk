@@ -3561,16 +3561,57 @@ check("it says reload rather than promising a refresh nothing performs",
 _bansent = []
 
 
-def _ban_rcon(fail=()):
+def _ban_rcon(fail=(), fail_kick=False):
     async def go(host, port, password, command, timeout=6.0):
         _bansent.append({"host": host, "command": command})
         if any(f in host for f in fail):
+            raise TimeoutError("timed out after 10s")
+        if fail_kick and command.startswith("KickPlayer"):
             raise TimeoutError("timed out after 10s")
         return "Server received, But no response!!"
     return go
 
 
-async def _post_ban(data, rcon=None, relay="default", follow=True):
+# Ten maps, for the outcomes whose wording depends on there being more of them than
+# anybody wants listed in a sentence.
+_TEN = ([("The Island", "asa-labeltest-island", 27020)]
+        + [("Map%d" % i, "asa-labeltest-m%d" % i, 27020 + i) for i in range(1, 10)])
+
+
+async def _post_ban(data, rcon=None, relay="default", follow=True, targets=None):
+    _bansent[:] = []
+    _bot_s1.LIVE = _kick_relay() if relay == "default" else relay
+    _bot_s1.rcon_with = rcon or _ban_rcon()
+    _appmod.clusterctl.status = lambda store: dict(
+        _lstatus, services=[dict(x) for x in _lstatus["services"]])
+    _real_targets = _appmod.clusterctl.rcon_targets
+    if targets is not None:
+        _appmod.clusterctl.rcon_targets = lambda store: list(targets)
+    try:
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        r = await client.post("/admin/player/ban", data=data, allow_redirects=False)
+        body = await r.text()
+        landed = ""
+        if follow and r.status == 302:
+            landed = await (await client.get(r.headers.get("Location",
+                                                           "/admin/cluster"))).text()
+        await client.close()
+    finally:
+        _appmod.clusterctl.rcon_targets = _real_targets
+    return r.status, body, landed
+
+
+async def _post_ban_and_refresh(data, rcon=None, relay="default"):
+    """Post, land, and then reload the landing the way a browser would.
+
+    The case this exists for: a result rendered straight onto a POST leaves that POST
+    in the history, so the reload re-runs the action. What comes back is the status,
+    where it sent the browser, the first landing, the reloaded landing, and what was
+    sent in total - so "the refresh did nothing" can be asked rather than assumed.
+    """
     _bansent[:] = []
     _bot_s1.LIVE = _kick_relay() if relay == "default" else relay
     _bot_s1.rcon_with = rcon or _ban_rcon()
@@ -3580,13 +3621,15 @@ async def _post_ban(data, rcon=None, relay="default", follow=True):
     await client.start_server()
     client.session.cookie_jar.update_cookies({COOKIE: str(_lstore.get("admin_token"))})
     r = await client.post("/admin/player/ban", data=data, allow_redirects=False)
-    body = await r.text()
-    landed = ""
-    if follow and r.status == 302:
-        landed = await (await client.get(r.headers.get("Location",
-                                                       "/admin/cluster"))).text()
+    where = r.headers.get("Location", "")
+    landed = again = ""
+    if r.status == 302:
+        landed = await (await client.get(where)).text()
+        again = await (await client.get(where)).text()
+    else:
+        landed = await r.text()
     await client.close()
-    return r.status, body, landed
+    return r.status, where, landed, again, list(_bansent)
 
 
 def _ledger():
@@ -3616,10 +3659,34 @@ try:
     _bgo_entry = (_ledger() or [None])[-1]
 
     _lstore.data["bans"] = []
-    _bpart_st, _bpart_body, _ = _t21.run_until_complete(
-        _post_ban(dict(_BOB, confirm="Bob"), rcon=_ban_rcon(fail=("ragnarok",))))
+    (_bpart_st, _bpart_where, _bpart_landed, _bpart_again,
+     _bpart_after_refresh) = _t21.run_until_complete(
+        _post_ban_and_refresh(dict(_BOB, confirm="Bob"),
+                              rcon=_ban_rcon(fail=("ragnarok",))))
     _bpart_sent, _bpart_ev = list(_bansent), _drain2()
     _bpart_entry = (_ledger() or [None])[-1]
+    _bpart_ledger = _ledger()
+
+    # their own map is the one that refused it: a different sentence from a kick that
+    # was sent and failed, because they are different facts
+    _lstore.data["bans"] = []
+    _bhere_st, _, _bhere_landed, _, _ = _t21.run_until_complete(
+        _post_ban_and_refresh(dict(_BOB, confirm="Bob"),
+                              rcon=_ban_rcon(fail=("island",))))
+    _drain2()
+
+    # ...and a kick that was sent and did not land, on a ban that reached everything
+    _lstore.data["bans"] = []
+    _bkick_st, _bkick_body, _bkick_landed = _t21.run_until_complete(
+        _post_ban(dict(_BOB, confirm="Bob"), rcon=_ban_rcon(fail_kick=True)))
+    _drain2()
+
+    # a ten-map cluster that answers on none of them
+    _lstore.data["bans"] = []
+    _bten_st, _bten_body, _ = _t21.run_until_complete(
+        _post_ban(dict(_BOB, confirm="Bob"), rcon=_ban_rcon(fail=("asa-",)),
+                  targets=_TEN))
+    _bten_ev = _drain2()
 
     _lstore.data["bans"] = []
     _bnone_st, _bnone_body, _ = _t21.run_until_complete(
@@ -3735,16 +3802,39 @@ check("and what each map did with it",
       (_bgo_entry or {}).get("maps"))
 
 # ---- one map short is not success
-check("a partial fan-out does not redirect as though it worked", _bpart_st == 200,
-      _bpart_st)
+#
+# And it still has to be a redirect. Answered with a page, the partial leaves a POST in
+# the browser's history: the reload re-runs ten BanPlayer calls and writes a SECOND
+# ledger row for one ban - in the only record that says what this manager banned, which
+# 2f is about to show and to hang Unban off.
+check("a partial redirects like any other finished action", _bpart_st == 302, _bpart_st)
+check("to the roster, carrying a one-shot result",
+      _bpart_where.endswith("#who") and "said=" in _bpart_where, _bpart_where)
 check("it names the map that did not take it",
-      "NOT on Ragnarok" in _bpart_body, _after(_bpart_body, "Ban sent for Bob")[:300])
+      "NOT on Ragnarok" in _from(_bpart_landed, "<fieldset id=who>"),
+      _window(_bpart_landed, "Ban sent for Bob", 400))
 check("and says they can still get in there",
-      "can still join those" in _bpart_body,
-      _after(_bpart_body, "Ban sent for Bob")[:300])
-check("in amber - something was done, and something was not",
-      "<div class=warn>" in _bpart_body and "<div class=problem>" not in _bpart_body,
-      _bpart_body[:400])
+      "can still join those" in _from(_bpart_landed, "<fieldset id=who>"),
+      _window(_bpart_landed, "Ban sent for Bob", 400))
+check("ending with something to do about it, like every other refusal here",
+      "Try those maps again, or check they are reachable." in
+      _from(_bpart_landed, "<fieldset id=who>"),
+      _window(_bpart_landed, "Ban sent for Bob", 400))
+check("in amber, in the section it is about - something was done, and something not",
+      _in_order(_bpart_landed, "<fieldset id=who>", "<div class=warn>",
+                "Ban sent for Bob")
+      and "<div class=problem>" not in _bpart_landed,
+      _window(_from(_bpart_landed, "<fieldset id=who>"), "<div class=warn>", 300))
+check("said once, to whoever pressed the button",
+      "Ban sent for Bob" not in _bpart_again,
+      _window(_bpart_again, "<fieldset id=who>", 300))
+check("and reloading that page bans nobody a second time",
+      [x for x in _bpart_after_refresh
+       if x["command"].startswith("BanPlayer")] ==
+      [x for x in _bpart_sent if x["command"].startswith("BanPlayer")],
+      [x["command"] for x in _bpart_after_refresh])
+check("nor writes a second row for the one ban", len(_bpart_ledger) == 1,
+      _bpart_ledger)
 check("announced as a partial, at warning",
       ("player.ban_partial", "warning") in
       [(i["event"], i["level"]) for i in _bpart_ev],
@@ -3781,6 +3871,47 @@ check("nobody is kicked off a server that never took the ban",
       "KickPlayer" not in _verbs(_bnone_sent), _verbs(_bnone_sent))
 check("and the ledger is left empty, which is what the page claims",
       _bnone_ledger == [], _bnone_ledger)
+
+# ---- two different reasons somebody is still standing on the map
+#
+# A kick that was sent and did not land, and a kick that was never sent because the ban
+# did not reach that map, are different facts. Wrapped in one sentence they read as a
+# stutter that states the same thing twice and explains neither.
+_bkick_who = _from(_bkick_landed, "<fieldset id=who>")
+_bhere_who = _from(_bhere_landed, "<fieldset id=who>")
+check("a kick that was sent and did not land says so",
+      "The kick did not send" in _bkick_who,
+      _window(_bkick_who, "Ban sent for Bob", 400))
+check("naming the reason the map gave", "timed out" in _bkick_who,
+      _window(_bkick_who, "Ban sent for Bob", 400))
+check("and that they stay there until they log off",
+      "until they log off" in _bkick_who, _window(_bkick_who, "Ban sent", 400))
+check("a kick that was never sent does not claim it was sent and failed",
+      "The kick did not send" not in _bhere_who,
+      _window(_bhere_who, "Ban sent for Bob", 400))
+check("it says instead that there was no kick, and why",
+      "They were not kicked either" in _bhere_who,
+      _window(_bhere_who, "Ban sent for Bob", 400))
+check("without saying the same thing twice in one sentence",
+      _bhere_who.count("did not take the ban") == 1,
+      _window(_bhere_who, "Ban sent for Bob", 400))
+check("that partial still redirects like the other one", _bhere_st == 302, _bhere_st)
+check("and a failed kick does not turn a clean ban into a failure", _bkick_st == 302,
+      _bkick_st)
+
+# ---- a list of four out of ten is not a list of the maps that failed
+check("a ten-map failure counts ten", "did NOT send to any of the 10 maps" in _bten_body,
+      _after(_bten_body, "did NOT")[:400])
+check("and says how many it did not print",
+      "and 6 more" in _after(_bten_body, "did NOT send to any"),
+      _after(_bten_body, "did NOT")[:400])
+check("the announcement counts the same way",
+      any("and 6 more" in (i.get("text") or "") for i in _bten_ev),
+      [i.get("text") for i in _bten_ev])
+check("a two-map failure does not invent a remainder",
+      "and 0 more" not in _bnone_body and "more" not in
+      _window(_bnone_body, "did NOT send to any", 200),
+      _window(_bnone_body, "did NOT send to any", 200))
 
 for _tail, _want in (("ban_sent", "✅"), ("ban_partial", "⚠"),
                      ("ban_failed", "❌")):

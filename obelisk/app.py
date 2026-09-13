@@ -1075,7 +1075,12 @@ def build_app(store, docker=None):
         # Then the kick, on the map they are standing on. Only worth attempting if the
         # ban reached that map - kicking somebody off a server that did not take the
         # ban just sends them back through a door that is still open.
-        kick_why = ""
+        #
+        # Two different things can leave them still standing there, and they read as
+        # one sentence if they share a phrasing: the kick was tried and did not land,
+        # or it was never sent because the ban did not reach that map. kick_why is the
+        # reason for the ledger; kick_note is the sentence for the operator.
+        kick_why = kick_note = ""
         if label in took:
             here = [(h, p) for l, h, p in targets if l == label]
             if here:
@@ -1084,26 +1089,34 @@ def build_app(store, docker=None):
                                         "KickPlayer %s" % netid, timeout=10)
                 except Exception as e:               # noqa: BLE001 - reported, not fatal
                     kick_why = str(e).strip() or e.__class__.__name__
+                    kick_note = (" The kick did not send (%s), so they stay on %s until "
+                                 "they log off." % (kick_why, label))
         else:
             kick_why = "%s did not take the ban, so no kick was sent there" % label
+            kick_note = (" They were not kicked either, because %s is the map that did "
+                         "not take the ban - removing them from a door still open would "
+                         "only look like it worked." % label)
+
+        def reasons(items, cap=4):
+            """The first few maps and why, without pretending there were only a few."""
+            shown = "; ".join("%s (%s)" % (l, w) for l, w in items[:cap])
+            return shown + ("; and %d more" % (len(items) - cap)
+                            if len(items) > cap else "")
 
         if not took:
             announce.say("player.ban_failed",
                          "A ban for %s did NOT send to any map: %s"
-                         % (name, "; ".join("%s (%s)" % (l, w) for l, w in missed[:4])),
+                         % (name, reasons(missed)),
                          level="error", player=name, netid=netid)
             return broke("The ban did NOT send to any of the %d maps: %s. Nothing was "
                          "written and %s is still able to play."
-                         % (len(results),
-                            "; ".join("%s (%s)" % (l, w) for l, w in missed[:4]), name))
+                         % (len(results), reasons(missed), name))
 
         # Recorded whatever the spread, because the ledger is what Obelisk did rather
         # than what worked - and the maps it missed are precisely what somebody has to
         # deal with afterwards.
         bansctl.record(store, name, netid, results, kick=kick_why)
 
-        kick_note = (" The kick did not send (%s), so they stay on %s until they log "
-                     "off." % (kick_why, label)) if kick_why else ""
         if missed:
             announce.say(
                 "player.ban_partial",
@@ -1113,11 +1126,23 @@ def build_app(store, docker=None):
                 level="warning", player=name, netid=netid,
                 detail="\n".join("%-14s %s" % (l, w or "sent")
                                   for l, w in sorted(results.items())))
-            return chrome(_cluster_body(request, refusal=ui.warn_block(
-                "Ban sent for %s on %d of %d maps - NOT on %s, and they can still join "
-                "those.%s" % (name, len(took), len(results),
-                              clusterctl._and([l for l, _w in missed]), kick_note))),
-                "Cluster", "/admin/cluster")
+            # Redirected like the clean ban, not rendered. A partial answered with a
+            # page is a POST sitting in the browser's history: a refresh re-runs the
+            # whole fan-out and, worse, writes a second ledger entry for one ban - and
+            # the ledger is the only record there is of what was banned, so a phantom
+            # row there makes the list lie and makes "which of these does Unban undo?"
+            # a question about an artefact. The amber comes back through the same
+            # one-shot slot the clean ban uses, so it is still shown once, to the
+            # person who pressed the button.
+            raise web.HTTPFound(
+                "/admin/cluster?said=%s#who"
+                % _say_next(where="who",
+                            problem="Ban sent for %s on %d of %d maps - NOT on %s, and "
+                                    "they can still join those.%s Try those maps again, "
+                                    "or check they are reachable."
+                                    % (name, len(took), len(results),
+                                       clusterctl._and([l for l, _w in missed]),
+                                       kick_note)))
 
         announce.say("player.ban_sent",
                      "Ban sent for %s on all %d maps from the web UI.%s"
