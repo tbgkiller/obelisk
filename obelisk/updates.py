@@ -90,6 +90,18 @@ def held_down(store):
     return list((got or {}).get("maps") or []) if isinstance(got, dict) else []
 
 
+def held_down_states(store):
+    """{label: state} for the maps being held down, so a page can advise per map.
+
+    Labels alone cannot tell a mount failure from a damaged world, and the advice for
+    the two is opposite: one wants a restore, the other must not have one. Kept beside
+    held_down() rather than folded into it so the caller that only filters by name does
+    not have to change.
+    """
+    got = state(store).get("held_down")
+    return dict((got or {}).get("states") or {}) if isinstance(got, dict) else {}
+
+
 # ---------------------------------------------------------------- what to stage
 
 # How many times to rehearse the same thing before leaving it alone, and how long to
@@ -671,20 +683,31 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
             else:
                 back = "No other map was fit to start, so the cluster is down."
 
+            # Only-storage gets its own name, because the old one appears as a code
+            # chip directly above the sentence saying this is not damage. A mixed batch
+            # keeps the damaged name: something in it really is damaged.
             announce.say(
-                "ark.world_damaged",
+                "ark.world_unreachable" if unreachable and not (damaged or writing
+                                                                or other)
+                else "ark.world_damaged",
                 "Stopped before swapping. The build was NOT applied and nothing was "
                 "moved or deleted - the previous build is still in place and the staged "
                 "one is still staged. %s %s" % (" ".join(said), back),
                 level="error",
-                detail=_lines("%-14s %-9s %s" % (l, health[l].get("state") or "",
+                detail=_lines("%-14s %-12s %s" % (l, health[l].get("state") or "",
                                                  health[l].get("why") or "")
                               for l in sorted(health)))
             # Remembered so the pages can warn about it. Launch and "Apply and restart"
             # both call launch(), which brings every map up including this one - one
             # click, onto the exact world that was just refused, undoing the protection
             # without saying a word about it.
-            remember(store, held_down={"maps": broken, "when": int(now())})
+            remember(store, held_down={
+                "maps": broken, "when": int(now()),
+                # The state travels with the label. Without it the page can only
+                # say one thing about every held map, and for an unreachable one
+                # that one thing was "restore" - the advice this very event tells
+                # them not to take.
+                "states": {l: health[l].get("state") or "" for l in broken}})
             step("refused: %s has no usable world" % _and(broken))
             return False, ("did not swap: %s did not come through the shutdown with a "
                            "usable world" % _and(broken)), {

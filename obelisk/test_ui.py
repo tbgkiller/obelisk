@@ -572,6 +572,54 @@ check("and keeps its singular nouns",
       "The world it holds" in _held1 and "that same world" in _held1, _held1)
 
 
+# ---- the held-down banner has to agree with the event that put it there
+#
+# It said "Restore them from a save point" to every held map, including one held because
+# its storage could not be read - where the announcement says in as many words not to
+# restore, and restoring would swap a healthy world for an older one to fix a mount. It
+# also said it to a map that has never booted and has no save point to restore from.
+_unr1 = ui.render_held_down(["The Island"], states={"The Island": "unreachable"})
+check("an unreachable map is never told to restore",
+      "Restore" not in _unr1 and "save point" not in _unr1, _unr1)
+check("it is told to check the mount instead",
+      "mounted and readable" in _unr1, _unr1)
+check("and told explicitly not to restore yet",
+      "do not restore anything yet" in _unr1, _unr1)
+check("it says storage rather than damage",
+      "rather than a damaged world" in _unr1, _unr1)
+
+_unr2 = ui.render_held_down(["Astraeos", "The Island"],
+                            states={"Astraeos": "unreachable",
+                                    "The Island": "unreachable"})
+check("and it still agrees in the plural",
+      "Their storage" in _unr2 and "Restore" not in _unr2, _unr2)
+
+# A map that has never booted has nothing to restore from either.
+_abs1 = ui.render_held_down(["The Island"], states={"The Island": "absent"})
+check("a never-booted map is not sent to a save point that does not exist",
+      "save point" not in _abs1, _abs1)
+
+# Damage still gets the restore line - that advice was right.
+_dmg1 = ui.render_held_down(["The Island"], states={"The Island": "damaged"})
+check("a damaged map is still told to restore from a save point",
+      "Restore it from a save point" in _dmg1, _dmg1)
+_wrt1 = ui.render_held_down(["The Island"], states={"The Island": "writing"})
+check("so is one that had not finished writing",
+      "Restore it from a save point" in _wrt1, _wrt1)
+
+# Mixed: something really is damaged, so the restore line stands.
+_mix = ui.render_held_down(["Astraeos", "The Island"],
+                           states={"Astraeos": "unreachable",
+                                   "The Island": "damaged"})
+check("a mixed set keeps the restore advice - one of them genuinely needs it",
+      "Restore them from a save point" in _mix, _mix)
+
+# And a caller that passes no states at all still renders the old, safe advice.
+_legacy = ui.render_held_down(["The Island"])
+check("with no states given it falls back to the restore line",
+      "Restore it from a save point" in _legacy, _legacy)
+
+
 # The integrity gate is minutes long and can end the apply. Every line it emits has to
 # land on a phase: one that matches nothing scores -1, and render_stepper then draws the
 # whole bar grey - every finished phase reading as undone - during the most alarming

@@ -1007,7 +1007,7 @@ def running_rows(jobs):
 _EVENT_ICONS = {"start": "▶", "done": "✅", "failed": "❌", "unsafe": "❌",
                 "applied": "✅", "primed": "✅", "up": "✅", "degraded": "⚠",
                 "warning": "⚠", "phase": "…", "available": "⬆", "updated": "⬆",
-                "stop": "■", "note": "•"}
+                "stop": "■", "note": "•", "damaged": "❌", "unreachable": "⚠"}
 
 
 # Polls for events newer than the newest one on the page and prepends them, so an
@@ -1168,7 +1168,7 @@ def render_status(status):
             '</fieldset>' % rows)
 
 
-def render_held_down(maps):
+def render_held_down(maps, states=None):
     """The gate refused these and is holding them down. Say so where the buttons are.
 
     Launch and "Apply and restart" both bring every map up, this one included, onto the
@@ -1179,21 +1179,45 @@ def render_held_down(maps):
     The plural case is the one that has actually happened - three worlds were damaged in
     a single shutdown on 2026-09-12 - so every verb, noun and pronoun agrees with the
     count rather than being written for one map and left to fend for itself.
+
+    `states` decides the last sentence, and it is the reason this takes them at all. A
+    map held down because its storage could not be read must not be told to restore: the
+    announcement for that case says in as many words not to, and restoring there would
+    swap a healthy world for an older one to fix a mount. A map that has never booted has
+    no save point to restore from either.
     """
     from .cluster import _and
     one = len(maps) == 1
+    kinds = {(states or {}).get(m) or "" for m in maps}
+    storage_only = bool(kinds) and kinds <= {"unreachable"}
+    nothing_saved = bool(kinds) and kinds <= {"unreachable", "absent", "unknown"}
+
+    if storage_only:
+        advice = ('Their storage could not be read, so this is a mount or permission '
+                  'problem rather than a damaged world. Check the ARK volume is mounted '
+                  'and readable, then apply again - do not restore anything yet.'
+                  if not one else
+                  'Its storage could not be read, so this is a mount or permission '
+                  'problem rather than a damaged world. Check the ARK volume is mounted '
+                  'and readable, then apply again - do not restore anything yet.')
+    elif nothing_saved:
+        advice = ('Check the ARK volume is mounted and readable before starting %s '
+                  'again.' % ("it" if one else "them"))
+    else:
+        advice = ('Restore %s from a save point first, unless you already have.'
+                  % ("it" if one else "them"))
+
     return ('<div class=problem><b>%s %s still stopped after a refused update.</b> '
             'The %s %s %s could not be read, so %s not started - the files are '
-            'being left exactly as they are for a restore.'
+            'being left exactly as they are.'
             '<div class=help style="margin-top:6px">Launch and Apply and restart will '
-            'start %s again on %s same %s. Restore %s from a save point first, unless '
-            'you already have.</div></div>'
+            'start %s again on %s same %s. %s</div></div>'
             % (_e(_and(maps)), "is" if one else "are",
                "world" if one else "worlds", "it" if one else "they",
                "holds" if one else "hold",
                "it was" if one else "they were",
                "it" if one else "them", "that" if one else "those",
-               "world" if one else "worlds", "it" if one else "them"))
+               "world" if one else "worlds", advice))
 
 
 def render_cluster(store, plan, status=None):

@@ -797,9 +797,10 @@ def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
     # that has never started can never start.
     if len(out) > 1 and all(w["state"] == "absent" for w in out.values()):
         return {label: dict(w, ok=False, state="unreachable",
-                            why=("no map has a world, which ten maps do not do at "
-                                 "once - the ARK data directory may be the wrong one "
-                                 "or only half mounted"))
+                            why=("none of the %d maps has a world, which %d maps do "
+                                 "not stop having at once - the ARK data directory may "
+                                 "be the wrong one or only half mounted"
+                                 % (len(out), len(out))))
                 for label, w in out.items()}
     return out
 

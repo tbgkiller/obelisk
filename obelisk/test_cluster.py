@@ -1355,6 +1355,18 @@ check("every map absent at once is refused, not waved through as never-booted",
 check("and it points at the data directory rather than the maps",
       "ARK data directory" in res_all["The Island"]["why"], res_all["The Island"])
 
+# The count came from the incident and was hardcoded - "which ten maps do not do at
+# once" on a two-map cluster reads as a copy-paste bug, which is what it was.
+check("the message counts the maps this cluster actually has",
+      "2 maps" in res_all["The Island"]["why"]
+      and "ten maps" not in res_all["The Island"]["why"], res_all["The Island"])
+
+ROWS3 = ROWS_N1 + [("Scorched Earth", "scorched")]
+res_3 = clusterctl.worlds_intact(st_n1, ark_root=_n2, keys=ROWS3)
+check("and it counts three when there are three",
+      "3 maps" in res_3["The Island"]["why"] and "2 maps" not in res_3["The Island"]["why"],
+      res_3["The Island"])
+
 # But one map on a one-map cluster is indistinguishable from a genuine first boot, and
 # that case has to keep working or a map that has never started never can.
 res_solo = clusterctl.worlds_intact(st_n1, ark_root=_n2,

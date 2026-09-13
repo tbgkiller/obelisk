@@ -1514,7 +1514,17 @@ UNREACHABLE = {"The Island": {"ok": False, "state": "unreachable", "key": "islan
 ok_u, msg_u, det_u, _c_u, ren_u, started_u, _st_u, ev_u = with_gate(UNREACHABLE)
 check("worlds that cannot be reached refuse the apply", not ok_u, msg_u)
 check("and nothing is renamed", ren_u == [], ren_u)
-_msg_u = [i for i in ev_u if i["event"] == "ark.world_damaged"][0]["text"]
+# Its own event name, because the old one rendered as a code chip directly above the
+# sentence saying this is not damage.
+_ev_names_u = [i["event"] for i in ev_u]
+check("a storage-only refusal is not called ark.world_damaged",
+      "ark.world_damaged" not in _ev_names_u, _ev_names_u)
+check("it has its own name", "ark.world_unreachable" in _ev_names_u, _ev_names_u)
+_u_item = [i for i in ev_u if i["event"] == "ark.world_unreachable"][0]
+_msg_u = _u_item["text"]
+check("the per-map breakdown column fits 'unreachable' without eating the gap",
+      all(("unreachable " in ln or not ln.strip())
+          for ln in _u_item["detail"].splitlines()), _u_item["detail"])
 check("the message says it is a storage problem, not a damaged world",
       "storage problem" in _msg_u, _msg_u)
 check("it points at the volume being mounted", "mounted" in _msg_u, _msg_u)
@@ -1530,6 +1540,19 @@ check("the detail separates unreachable from damaged and mid-write",
 check("nothing is started when the storage itself is the problem",
       started_u == [], started_u)
 
+
+MIXED_U = {"The Island": {"ok": False, "state": "unreachable", "key": "island",
+                          "why": "its world folder could not be read"},
+           "Astraeos": {"ok": False, "state": "damaged", "key": "astraeos",
+                        "why": "SQLite reports it damaged"}}
+_o, _m, _d, _c, _r, _s, _st, ev_mx = with_gate(MIXED_U)
+_names_mx = [i["event"] for i in ev_mx]
+check("a mixed batch keeps the damaged name - something in it really is damaged",
+      "ark.world_damaged" in _names_mx and "ark.world_unreachable" not in _names_mx,
+      _names_mx)
+_msg_mx = [i for i in ev_mx if i["event"] == "ark.world_damaged"][0]["text"]
+check("and it says both things, each about the right map",
+      "Restore" in _msg_mx and "storage problem" in _msg_mx, _msg_mx)
 
 # ---- the count has to be true
 #

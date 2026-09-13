@@ -321,7 +321,10 @@ def build_app(store, docker=None):
             # so there is nothing to warn about and nothing that would ever clear it.
             still = [l for l in held if l in keys and keys[l] not in running]
             if still:
-                banner += ui.render_held_down(still)
+                # The state travels with them, because "restore it" and "check the
+                # mount" are opposite advice and the label alone cannot tell which.
+                banner += ui.render_held_down(
+                    still, states=updatesctl.held_down_states(store))
         return (banner + _pending_panel() + _update_panel() +
                 ui.render_cluster(store, plan, status=st))
 
