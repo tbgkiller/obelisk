@@ -135,6 +135,29 @@ def build_app(store, docker=None):
             raise web.HTTPFound("/setup")
         return chrome(ui.render_settings(store), "Obelisk settings", "/admin")
 
+    def _safe_back(raw):
+        """Where to send the browser after a save. Never what the form asked for.
+
+        The form carries a `back` so an edit made on a map's page returns to that page.
+        Echoing it into a redirect would be an open redirect with a hidden field for a
+        control - so this does not echo it: it recognises it. Only the two shapes this
+        manager renders are accepted, and the map key has to be a real one; anything
+        else goes to the settings page, which is where a save without a `back` has
+        always gone.
+        """
+        back = str(raw or "")
+        # Exact matches only. Trimming a path back into something acceptable - taking
+        # the first segment of "island/../../../etc" and calling it "island" - is safe
+        # this time and is the habit that lets the next one through. Either it is one of
+        # the addresses this manager renders, or it is not.
+        for key in mapsmod.BY_KEY:
+            if back == "/admin/cluster/map/" + key:
+                return back
+        for sect in ("backups", "cloud", "restore", "mods"):
+            if back == "/admin/data#" + sect:
+                return back
+        return "/admin"
+
     async def save(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
@@ -280,7 +303,17 @@ def build_app(store, docker=None):
             return chrome('<div class=problem>%s</div>%s'
                           % (ui._e(str(e)), ui.render_settings(store)),
                           "Obelisk settings", "/admin")
-        raise web.HTTPFound("/admin")
+        where = _safe_back(form.get("back"))
+        if where == "/admin":
+            raise web.HTTPFound("/admin")
+        # An edit made somewhere else says so where it was made, the way every other
+        # action on those pages does.
+        said = _say_next(where="map" if "/map/" in where else "data",
+                         message="Saved.")
+        raise web.HTTPFound("%s%ssaid=%s%s"
+                            % (where.split("#")[0],
+                               "&" if "?" in where else "?", said,
+                               "#" + where.split("#")[1] if "#" in where else ""))
 
     async def _restage_if_needed(changed):
         """Bounce the staging server, but only for a value that actually moved."""
@@ -1526,10 +1559,22 @@ def build_app(store, docker=None):
                     break
         except Exception as e:                       # noqa: BLE001 - never a blank page
             log.info("could not read the state of %s: %s", key, e)
+        q = pendingctl.queued(store)
+        overrides = ui.render_map_overrides(
+            store, key, queued=(q.get("maps") or {}).get(key) or {},
+            clears=(q.get("clears") or {}).get(key) or ())
+        notice = ""
+        token = str((getattr(request, "query", None) or {}).get("said") or "")
+        said = _said.pop(token, None) if token else None
+        if said and said.get("where") == "map":
+            notice = ('<div class=note>%s</div>' % ui._e(said["message"])
+                      if said.get("message") else
+                      ui.warn_block(said.get("problem") or said.get("refusal") or ""))
         return chrome(ui.render_map(name, key, row=row, address=address,
                                     host_known=host != "<this-host>",
                                     points=_points_for(key) if row else [],
-                                    job=rjob, state=state),
+                                    job=rjob, state=state, overrides=overrides,
+                                    notice=notice),
                       name, "/admin/cluster")
 
     async def cluster_launch(request):
@@ -1699,15 +1744,34 @@ def build_app(store, docker=None):
         return (ui.render_jump_row(DATA_SECTIONS)
                 + ui.render_area("backups", titles["backups"], ui.render_backups(
                     store, backupctl.listing(store),
-                    message=b.get("message", ""), problem=b.get("problem", "")))
-                + ui.render_area("cloud", titles["cloud"], _cloud_section(
+                    message=b.get("message", ""), problem=b.get("problem", ""))
+                    + _schedule_fields(("backup_times", "backup_keep", "backup_flush"),
+                                       "backups", "When backups happen"))
+                + ui.render_area("cloud", titles["cloud"], _schedule_after(
+                    _cloud_section(
                     msg=c.get("message", ""), problem=c.get("problem", ""),
-                    warning=c.get("warning", "") or c.get("refusal", "")))
+                    warning=c.get("warning", "") or c.get("refusal", "")),
+                    ("cloud_enabled", "cloud_keep"), "cloud",
+                    "What goes off-site"))
                 + ui.render_area("restore", titles["restore"], _restore_body(
                     message=r.get("message", ""), problem=r.get("problem", ""),
                     refusal=r.get("refusal", "")))
                 + ui.render_area("mods", titles["mods"],
                                  _mods_section(problem=m.get("problem", ""))))
+
+    def _schedule_fields(keys, section, legend):
+        """The settings that govern this section, on the page with its buttons."""
+        try:
+            q = pendingctl.queued(store)["cluster"]
+        except Exception:                            # noqa: BLE001 - never a blank page
+            q = {}
+        body = ui.render_data_settings(store, keys, "/admin/data#" + section, queued=q)
+        if not body:
+            return ""
+        return ('<fieldset><legend>%s</legend>%s</fieldset>' % (ui._e(legend), body))
+
+    def _schedule_after(body, keys, section, legend):
+        return body + _schedule_fields(keys, section, legend)
 
     def _data(**kw):
         return chrome(_data_body(**kw), "Data", "/admin/data")

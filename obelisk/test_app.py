@@ -5055,13 +5055,23 @@ check("nor gathers the points it would need for one",
       "_points_by_map" not in _s1src, "the restore page still collects save points")
 
 # ---- overrides are a link, and stay one
-check("the overrides are pointed at, not copied here",
-      'href="/admin#g-per-map"' in _mp_body,
-      _window(_mp_body, "g-per-map", 200))
-check("no second way to write them",
-      'name="map:' not in _mp_body, _window(_mp_body, "Settings for this map", 400))
-check("and the route adds no write path of its own",
+# The boxes are here now, and they still post to the one writer that has always
+# owned store["maps"] - a second handler would be a second set of rules for the same
+# data, which is how two writers come to disagree.
+check("the overrides are on the map's own page",
+      "<fieldset id=overrides>" in _mp_body,
+      _window(_mp_body, "id=overrides", 200))
+check("with this map's own fields",
+      'name="map:island:' in _mp_body, _window(_mp_body, 'name="map:island:', 200))
+check("and no fields belonging to any other map",
+      'name="map:ragnarok:' not in _mp_body, _window(_mp_body, "map:", 300))
+check("posting to the writer that already owned them",
+      'action="/admin/save"' in _from(_mp_body, "<fieldset id=overrides>"),
+      _window(_from(_mp_body, "<fieldset id=overrides>"), "form", 200))
+check("and the route still adds no write path of its own",
       "add_post(\"/admin/cluster/map" not in _s1src, "a new write path appeared")
+check("the link to the old collapsed block is gone",
+      "/admin#g-per-map" not in _mp_body, _window(_mp_body, "g-per-map", 200))
 
 # ---- keys all the way down
 check("an unknown key is not a page", _mp_bad_st == 302, _mp_bad_st)
@@ -5155,6 +5165,7 @@ try:
                 "connected": False, "provider": "", "path": "", "reachable": None,
                 "reachable_detail": ""}
             off = await (await client.get("/admin/data")).text()
+            settings_pg = await (await client.get("/admin")).text()
             olds = {}
             for path in ("/admin/backups", "/admin/restore", "/admin/cloud",
                          "/admin/mods"):
@@ -5169,10 +5180,10 @@ try:
             _appmod.backupctl.listing = _real_list4
             _appmod.cloudctl.status = _real_cst
             _appmod.cloudctl.listing = _real_cls
-        return page, off, olds, codes, health.status
+        return page, off, olds, codes, health.status, settings_pg
 
-    (_data_pg4, _data_off4, _olds4, _poll_codes,
-     _health4) = _t28.run_until_complete(_data_and_redirects())
+    (_data_pg4, _data_off4, _olds4, _poll_codes, _health4,
+     _settings_pg5) = _t28.run_until_complete(_data_and_redirects())
 finally:
     _t28.close()
     _appmod.clusterctl.status = _real_status_s1
@@ -5198,6 +5209,23 @@ check("with a row of links to them",
       _in_order(_from(_data_pg4, "<div class=jump>"), '"#backups"', '"#cloud"',
                 '"#restore"', '"#mods"'),
       _window(_data_pg4, "<div class=jump>", 300))
+# ---- the settings that govern these sections, on the page with their buttons
+check("when backups happen is on the page that makes them",
+      "Backup schedule" in _area(_data_pg4, "backups")
+      and "Backups to keep" in _area(_data_pg4, "backups"),
+      _window(_area(_data_pg4, "backups"), "schedule", 300))
+check("and what goes off-site is beside the off-site actions",
+      "Send backups off-site" in _area(_data_pg4, "cloud"),
+      _window(_area(_data_pg4, "cloud"), "off-site", 300))
+check("they save through the one writer",
+      _area(_data_pg4, "backups").count('action="/admin/save"') == 1,
+      _area(_data_pg4, "backups").count('action="/admin/save"'))
+check("and say which section to come back to",
+      'name=back value="/admin/data#backups"' in _area(_data_pg4, "backups"),
+      _window(_area(_data_pg4, "backups"), "name=back", 200))
+check("the settings page no longer carries them",
+      "Backup schedule" not in _settings_pg5, _window(_settings_pg5, "Backup", 200))
+
 check("and the archive it holds is listed under restore",
       "obelisk-2026-09-13.tar.zst" in _data_pg4,
       _area(_data_pg4, "restore")[:600])
@@ -5438,6 +5466,131 @@ check("not the word the other one could be showing at the same time",
       ">Working</strong>" not in _data_pg4, _window(_data_pg4, "bkphase", 160))
 check("and the restore panel still says its own",
       "Restoring" in _data_pg4, _window(_data_pg4, "rswrap", 200))
+
+# ---- the critical one: a map-page save touches that map and nothing else
+#
+# The map page posts map:<key>:<setting> to /admin/save - the writer that has always
+# owned store["maps"] - rather than growing a second handler with its own idea of the
+# rules. That is only safe if an absent key means "leave it alone" and never "clear it",
+# because blank already means "drop this override". So it is measured, not assumed: the
+# whole store is diffed around one post.
+import copy as _copy9                                                 # noqa: E402
+
+_t31 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _save_store = _lstore
+    _save_store.data.setdefault("maps", {})["island"] = {"max_players": 10}
+    _save_store.data["maps"]["ragnarok"] = {"max_players": 20, "mem_limit": "24g"}
+    _save_store.data["stats"] = {"player": {"0": 1.5}}
+    _save_store.data.setdefault("rows", {})["engram_overrides"] = [[["ClassName", "x"]]]
+    _save_store.patch({"max_players": 40, "mem_limit": "16g"})
+    _save_store.save()
+
+    async def _save_post(data):
+        client = TestClient(TestServer(build_app(_save_store, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_save_store.get("admin_token"))})
+        r = await client.post("/admin/save", data=data, allow_redirects=False)
+        await client.close()
+        return r.status, r.headers.get("Location", "")
+
+    _before9 = _copy9.deepcopy(_save_store.data)
+    _sv_st, _sv_where = _t31.run_until_complete(_save_post(
+        {"map:island:max_players": "30",
+         "back": "/admin/cluster/map/island"}))
+    _after9 = _copy9.deepcopy(_save_store.data)
+
+    # blank drops one override and only that one
+    _blank_before = _copy9.deepcopy(_save_store.data)
+    _t31.run_until_complete(_save_post({"map:ragnarok:mem_limit": "",
+                                        "back": "/admin/cluster/map/ragnarok"}))
+    _blank_after = _copy9.deepcopy(_save_store.data)
+
+    # a cluster-wide key posted as if it were a per-map one
+    _cw_before = _copy9.deepcopy(_save_store.data)
+    _t31.run_until_complete(_save_post({"map:island:host_ram_gb": "8",
+                                        "back": "/admin/cluster/map/island"}))
+    _cw_after = _copy9.deepcopy(_save_store.data)
+
+    # and where a posted `back` is allowed to send the browser
+    _backs = {}
+    for _raw in ("/admin/cluster/map/island", "/admin/data#backups",
+                 "https://evil.example/x", "/admin/cluster/map/nosuchmap",
+                 "/../admin/cluster/map/island", "//evil.example",
+                 "/admin/cluster/map/island/../../../etc", ""):
+        _backs[_raw] = _t31.run_until_complete(
+            _save_post({"map:island:motd": "hi", "back": _raw}))[1]
+finally:
+    _t31.close()
+
+# The cookie name is asserted, not assumed: a post that lands on /setup writes nothing
+# and would make every assertion below vacuously true.
+check("the save actually ran, rather than bouncing to setup",
+      _sv_st == 302 and not _sv_where.startswith("/setup"), [_sv_st, _sv_where])
+
+check("the override it was given is the one that changed",
+      (_after9.get("maps") or {}).get("island", {}).get("max_players") == 30
+      and (_before9.get("maps") or {}).get("island", {}).get("max_players") == 10,
+      [_before9["maps"].get("island"), _after9["maps"].get("island")])
+check("every other map's overrides are byte-identical",
+      (_after9.get("maps") or {}).get("ragnarok", {}) == (_before9.get("maps") or {}).get("ragnarok", {}),
+      [_before9["maps"].get("ragnarok"), _after9["maps"].get("ragnarok")])
+check("no cluster-wide setting was removed",
+      not (set((_before9.get("cluster") or {})) - set((_after9.get("cluster") or {}))),
+      sorted(set((_before9.get("cluster") or {})) - set((_after9.get("cluster") or {}))))
+check("nor changed",
+      not [k for k in set((_before9.get("cluster") or {})) & set((_after9.get("cluster") or {}))
+           if (_before9.get("cluster") or {})[k] != (_after9.get("cluster") or {})[k]],
+      [k for k in set((_before9.get("cluster") or {})) & set((_after9.get("cluster") or {}))
+       if (_before9.get("cluster") or {})[k] != (_after9.get("cluster") or {})[k]])
+check("the stat grid is untouched by a form that mentioned no stats",
+      _after9.get("stats") == _before9.get("stats"),
+      [_before9.get("stats"), _after9.get("stats")])
+check("and so are the row arrays",
+      _after9.get("rows") == _before9.get("rows"),
+      [_before9.get("rows"), _after9.get("rows")])
+
+# ---- blank is the only way an override goes
+check("a blank drops that override",
+      "mem_limit" not in (_blank_after.get("maps") or {}).get("ragnarok", {})
+      and "mem_limit" in (_blank_before.get("maps") or {}).get("ragnarok", {}),
+      [(_blank_before.get("maps") or {}).get("ragnarok", {}), (_blank_after.get("maps") or {}).get("ragnarok", {})])
+check("and leaves the rest of that map alone",
+      (_blank_after.get("maps") or {}).get("ragnarok", {}).get("max_players")
+      == (_blank_before.get("maps") or {}).get("ragnarok", {}).get("max_players"),
+      (_blank_after.get("maps") or {}).get("ragnarok", {}))
+check("absence drops nothing - island was not in that post at all",
+      (_blank_after.get("maps") or {}).get("island", {}) == (_blank_before.get("maps") or {}).get("island", {}),
+      [(_blank_before.get("maps") or {}).get("island", {}), (_blank_after.get("maps") or {}).get("island", {})])
+check("nor does absence touch the cluster",
+      (_blank_after.get("cluster") or {}) == (_blank_before.get("cluster") or {}), "the cluster moved")
+
+# ---- a cluster-wide key cannot be smuggled in as a per-map one
+check("a cluster-wide key posted as an override is refused",
+      "host_ram_gb" not in (_cw_after.get("maps") or {}).get("island", {}),
+      (_cw_after.get("maps") or {}).get("island"))
+check("and the cluster value it names is untouched",
+      (_cw_after.get("cluster") or {}).get("host_ram_gb")
+      == (_cw_before.get("cluster") or {}).get("host_ram_gb"),
+      [(_cw_before.get("cluster") or {}).get("host_ram_gb"),
+       (_cw_after.get("cluster") or {}).get("host_ram_gb")])
+
+# ---- where a posted `back` may send somebody
+check("a real map page is honoured",
+      _backs["/admin/cluster/map/island"].startswith("/admin/cluster/map/island"),
+      _backs["/admin/cluster/map/island"])
+check("carrying its result, so the save says so where it was made",
+      "said=" in _backs["/admin/cluster/map/island"],
+      _backs["/admin/cluster/map/island"])
+check("a data section is honoured too",
+      _backs["/admin/data#backups"].startswith("/admin/data"),
+      _backs["/admin/data#backups"])
+for _bad in ("https://evil.example/x", "//evil.example",
+             "/admin/cluster/map/nosuchmap", "/../admin/cluster/map/island",
+             "/admin/cluster/map/island/../../../etc", ""):
+    check("%r is not somewhere this form gets to send anybody" % _bad,
+          _backs[_bad] == "/admin", [_bad, _backs[_bad]])
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

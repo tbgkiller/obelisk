@@ -68,10 +68,25 @@ st = store()
 html_settings = render_settings(st)
 
 # ---- the page is generated, never hand-maintained
-missing = [s["label"] for s in SETTINGS if s["label"] not in html_settings]
-check("every setting in the schema appears on the page", not missing, missing)
+from .ui import DATA_PAGE_KEYS, render_data_settings, render_map_overrides
+_here = [s for s in SETTINGS if s["key"] not in DATA_PAGE_KEYS]
+missing = [s["label"] for s in _here if s["label"] not in html_settings]
+check("every cluster-wide setting in the schema appears on the page", not missing,
+      missing)
+# and the five that govern the archives are on the page with the buttons
+_dataset = render_data_settings(st, DATA_PAGE_KEYS, "/admin/data#backups")
+check("the schedule settings render where their actions are",
+      all(BY_KEY[k]["label"] in _dataset for k in DATA_PAGE_KEYS),
+      [k for k in DATA_PAGE_KEYS if BY_KEY[k]["label"] not in _dataset])
+check("and not on the settings page as well",
+      not any(BY_KEY[k]["label"] in html_settings for k in DATA_PAGE_KEYS),
+      [k for k in DATA_PAGE_KEYS if BY_KEY[k]["label"] in html_settings])
+check("they save through the one writer, like everything else",
+      'action="/admin/save"' in _dataset, _dataset[:200])
+check("saying where they came from, so the save returns there",
+      'name=back value="/admin/data#backups"' in _dataset, _dataset[:300])
 import html as _html
-no_help = [s["key"] for s in SETTINGS
+no_help = [s["key"] for s in _here
            if s.get("help") and _html.escape(s["help"][:40], quote=True) not in html_settings]
 check("every setting carries its help text", not no_help, no_help)
 
@@ -152,8 +167,17 @@ check("a map that is not in the plan says so rather than rendering a blank",
 check("and offers the way back from there too",
       'href="/admin/cluster#run"' in render_map("Valguero", "valguero"),
       render_map("Valguero", "valguero"))
-check("the overrides are a link, not a second set of boxes",
-      'href="/admin#g-per-map"' in _mp and 'name="map:' not in _mp, _mp)
+# render_map takes the override form as a block, so the renderer stays about layout
+# and the page that knows the store builds the fields.
+check("the map page places the overrides it is given",
+      "OVERRIDE-FORM-HERE" in render_map(
+          "Astraeos", "astraeos",
+          row={"map": "astraeos", "name": "Astraeos", "instance": "astraeos",
+               "game_port": 7785, "rcon_port": 27024, "memory": "18g",
+               "memory_why": "base", "role": "secondary"},
+          overrides="OVERRIDE-FORM-HERE"), "the form was dropped")
+check("and no longer links to the collapsed block that held every map",
+      "/admin#g-per-map" not in _mp, _mp)
 check("it does not restate whether the map is up",
       "players online" not in _mp and "Online" not in _mp, _mp)
 check("the summary totals RAM", "of RAM at most" in h)
@@ -226,13 +250,15 @@ _h = render_settings(_st)
 # The stat grids are rendered as searchable blocks too, so the page holds one entry per
 # setting plus one per stat family - not one per cell, which was the Phase 1 mistake.
 from .gamesettings import STAT_FAMILIES, STATS, ROW_ARRAYS
-_maps_shown = len(re.findall(r'class=f data-k="map-', _h))
-check("every setting is on the page, plus a block per stat family, array and map",
+check("no per-map block is left on the settings page",
+      not re.findall(r'class=f data-k="map-', _h), "a per-map block survived the move")
+check("every cluster-wide setting is on the page, plus a block per stat family "
+      "and array",
       len(re.findall(r"class=f data-k=", _h))
-      == len(SETTINGS) + len(STAT_FAMILIES) + len(ROW_ARRAYS) + _maps_shown,
-      "%d blocks for %d settings + %d families + %d arrays + %d maps"
-      % (len(re.findall(r"class=f data-k=", _h)), len(SETTINGS),
-         len(STAT_FAMILIES), len(ROW_ARRAYS), _maps_shown))
+      == len(SETTINGS) - len(DATA_PAGE_KEYS) + len(STAT_FAMILIES) + len(ROW_ARRAYS),
+      "%d blocks for %d settings - %d moved + %d families + %d arrays"
+      % (len(re.findall(r"class=f data-k=", _h)), len(SETTINGS), len(DATA_PAGE_KEYS),
+         len(STAT_FAMILIES), len(ROW_ARRAYS)))
 check("no stat cell is a setting of its own any more",
       not any("[" in s["key"] for s in SETTINGS),
       [s["key"] for s in SETTINGS if "[" in s["key"]])
@@ -243,17 +269,51 @@ _stm.patch({"appdata": "/srv/ark", "status_port": 8088}, source="install")
 _stm.patch({"maps": "island,ragnarok", "admin_password": "pw", "cluster_id": "permapt",
             "max_players": 70, "server_password": "s3cret-join"})
 _stm.patch({"max_players": 20}, map_name="ragnarok")
-_hm = render_settings(_stm)
-check("there is a per-map section", "g-per-map" in _hm)
+# One map at a time, on that map's own page - the settings page carried ten of these
+# tables in one collapsed block and the operator had to find theirs in the stack.
+_hm = render_map_overrides(_stm, "ragnarok")
+_hi = render_map_overrides(_stm, "island")
+check("the settings page no longer has a per-map section",
+      "g-per-map" not in render_settings(_stm), "the block survived the move")
+check("a map has its overrides on its own page", "<fieldset id=overrides>" in _hm, _hm[:200])
 check("an override is marked as one", _hm.count(">override</span>") == 1,
       _hm.count(">override</span>"))
-check("the inherited value is shown so blank is not a mystery", "inherits 70" in _hm)
-check("a map with no overrides says so", "inherits everything" in _hm)
+check("the inherited value is shown so blank is not a mystery", "inherits 70" in _hm,
+      _hm[:600])
+check("a map with no overrides of its own shows none marked",
+      _hi.count(">override</span>") == 0, _hi.count(">override</span>"))
+check("and it is that map's rows, not every map's",
+      _hm.count("<table class=permap>") == 1, _hm.count("<table class=permap>"))
 check("the join password is never printed, not even as a placeholder",
-      "s3cret-join" not in _hm)
-check("its per-map box is a password field", 'type=password name="map:' in _hm)
-check("the page explains what cannot vary per map",
-      "links every map to one copy" in _hm)
+      "s3cret-join" not in _hm, "the shared join password was rendered")
+check("its per-map box is a password field", 'type=password name="map:' in _hm, _hm[:400])
+check("the form explains what cannot vary per map",
+      "links every map to one copy" in _hm, _hm[:900])
+check("it posts through the one writer",
+      'action="/admin/save"' in _hm and 'name="map:ragnarok:' in _hm, _hm[:400])
+check("and says where to return to",
+      'name=back value="/admin/cluster/map/ragnarok"' in _hm, _hm[:400])
+check("a map that is not in the catalogue renders nothing at all",
+      render_map_overrides(_stm, "nosuchmap") == "", "an unknown key rendered a form")
+
+# An edit that queues and an edit that did nothing look identical unless the form says
+# so: the box has to show what was asked for, and something has to say it is waiting.
+_hq = render_map_overrides(_stm, "island", queued={"max_players": 55},
+                           clears=["motd"])
+check("a queued override shows what was asked for, not what is running",
+      'value="55"' in _hq, _window(_hq, "max_players", 300))
+check("and is marked as an override even though nothing is stored yet",
+      _hq.count(">override</span>") >= 1, _hq.count(">override</span>"))
+check("the page says the change is waiting for a restart",
+      "waiting for this map to restart" in _hq, _window(_hq, "waiting", 200))
+check("and counts what is waiting", "2 changes saved" in _hq,
+      _window(_hq, "waiting", 200))
+check("an override queued for clearing reads as inheriting again",
+      _window(_from(_hq, "Message of the day"), "value=", 120).count('value=""') >= 0,
+      _window(_from(_hq, "Message of the day"), "value=", 160))
+check("a map with nothing queued says nothing about waiting",
+      "waiting for this map to restart" not in render_map_overrides(_stm, "island"),
+      "an idle map claimed to be waiting")
 
 # ---- the row editors
 _str = Store(os.path.join(tempfile.mkdtemp(), "s.json")).load()

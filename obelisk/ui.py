@@ -513,26 +513,34 @@ def render_row_arrays(store):
 
 
 
-def render_map_overrides(store):
-    """What each map does differently, and what it simply inherits.
+def render_map_overrides(store, map_key, queued=None, clears=()):
+    """What this one map does differently, and what it simply inherits.
 
     Blank means inherited, and the cluster's value is in the placeholder so there is no
     guessing what blank resolves to. Typing a value makes an override; clearing it takes
     the override away rather than setting the field to nothing - which is the difference
     between "this map is the same as the others" and "this map has no players allowed".
+
+    It lives on the map's own page now. As one table per map on the Settings page it was
+    ten tables of twelve rows attached to a form about the cluster, and the operator had
+    to find their map in a stack of them; here there is one map and it is the page they
+    are already on.
+
+    `queued` is what has been asked for but is waiting for a restart, and `clears` the
+    overrides waiting to be taken away. Both are shown, because an edit that queues and
+    an edit that did nothing look identical otherwise.
     """
     from .schema import SETTINGS
     from . import maps as mapcat
     per_map = [s for s in SETTINGS if s.get("per_map")]
-    raw = store.get("maps")
-    keys = [k.strip() for k in str(raw).split(",") if k.strip()] if isinstance(raw, str) else list(raw or ())
-    if not keys:
+    if map_key not in mapcat.BY_KEY:
         return ""
-    chosen = mapcat.resolve(keys)
-    ids = mapcat.instance_ids([m["key"] for m in chosen])
+    chosen = [mapcat.BY_KEY[map_key]]
+    queued = queued or {}
+    clears = set(clears or ())
 
     blocks, total = [], 0
-    for m, instance in zip(chosen, ids):
+    for m in chosen:
         here = store.data.get("maps", {}).get(m["key"], {}) or {}
         rows, n = [], 0
         for s in per_map:
@@ -542,6 +550,14 @@ def render_map_overrides(store):
                 n += 1
             cluster = store.get(key)
             shown = here.get(key, "") if overridden else ""
+            # What was asked for beats what is stored: a queued edit that rendered the
+            # old value would read as a save that did not happen.
+            waiting = key in queued
+            clearing = key in clears
+            if waiting:
+                shown, overridden = queued[key], True
+            elif clearing:
+                shown, overridden = "", False
             if s["type"] == "bool":
                 ctrl = ('<select name="map:%s:%s"><option value=""%s>inherit (%s)</option>'
                         '<option value="true"%s>Yes</option>'
@@ -570,27 +586,29 @@ def render_map_overrides(store):
                            ' <span class="tag chg">override</span>' if overridden else "",
                            ctrl))
         total += n
-        blocks.append(
-            '<div class=f data-k="map-%s" data-hay="%s" data-changed="%s">'
-            '<label>%s%s</label>'
-            '<table class=permap>%s</table></div>'
-            % (_e(m["key"]),
-               _e(("%s %s per map override" % (m["name"], instance)).lower()),
-               "1" if n else "0", _e(m["name"]),
-               (' <span class=count>%d override%s</span>' % (n, "" if n == 1 else "s"))
-               if n else ' <span class=count>inherits everything</span>',
-               "".join(rows)))
+        blocks.append('<table class=permap>%s</table>' % "".join(rows))
 
-    return ('<fieldset id="g-per-map" class=grp data-group="Per-map">'
-            '<legend><button type=button class="ghost gtoggle" aria-expanded="false">'
-            'Per-map overrides</button><span class=count>%d</span></legend>'
-            '<div class=gbody hidden>'
-            '<div class=help style="margin:8px 0 14px">Blank inherits the cluster value, '
-            'shown in each box. Only these %d settings can differ per map: everything '
-            'that reaches the game through Game.ini or GameUserSettings.ini is shared, '
-            'because the server image links every map to one copy of those files.</div>'
-            '%s</div></fieldset>'
-            % (total, len(per_map), "".join(blocks)))
+    waiting_note = ""
+    if queued or clears:
+        waiting_note = ('<div class=warn>%d change%s saved and waiting for this map to '
+                        'restart. It is running now, so the world it is in does not '
+                        'change under the people on it.</div>'
+                        % (len(queued) + len(clears),
+                           "" if (len(queued) + len(clears)) == 1 else "s"))
+    return ('<fieldset id=overrides><legend>Settings for this map</legend>%s'
+            '<div class=help style="margin:0 0 14px">Blank inherits the cluster value, '
+            'shown in each box - clearing a box takes the override away rather than '
+            'setting the field to nothing. Only these %d settings can differ per map: '
+            'everything that reaches the game through Game.ini or GameUserSettings.ini '
+            'is shared, because the server image links every map to one copy of those '
+            'files.</div>'
+            '<form method=post action="/admin/save">'
+            '<input type=hidden name=back value="/admin/cluster/map/%s">'
+            '%s<div style="margin-top:12px">'
+            '<button type=submit class=ghost>Save this map\u2019s settings</button> '
+            '<span class=help>%d override%s set</span></div></form></fieldset>'
+            % (waiting_note, len(per_map), _e(map_key), "".join(blocks), total,
+               "" if total == 1 else "s"))
 
 
 
@@ -1143,6 +1161,34 @@ FEED_LIVE = """
 """
 
 
+# Rendered on the Data page, beside the backups and off-site actions they govern,
+# rather than on a settings page two tabs from the button they describe.
+DATA_PAGE_KEYS = ("backup_times", "backup_keep", "backup_flush",
+                  "cloud_enabled", "cloud_keep")
+
+
+def render_data_settings(store, keys, back, queued=None):
+    """A handful of settings, on the page about the thing they control.
+
+    The same controls the settings page draws and the same form target - this is where
+    they are rendered, not a second way to write them.
+    """
+    from .schema import BY_KEY, INSTALL_KEYS
+    queued = queued or {}
+    rows = [BY_KEY[k] for k in keys if k in BY_KEY]
+    if not rows:
+        return ""
+    fields = "".join(
+        _field(s, store.get(s["key"]), s["key"] in INSTALL_KEYS,
+               pending_value=(queued[s["key"]] if s["key"] in queued else _UNSET))
+        for s in rows)
+    return ('<form method=post action="/admin/save">'
+            '<input type=hidden name=back value="%s">%s'
+            '<div style="margin-top:10px">'
+            '<button type=submit class=ghost>Save</button></div></form>'
+            % (_e(back), fields))
+
+
 def render_settings(store):
     """The settings page: 194 of them, so finding one has to be a first-class job.
 
@@ -1159,7 +1205,11 @@ def render_settings(store):
 
     blocks, index, total_changed = [], [], 0
     for g in GROUPS:
-        rows = [s for s in SETTINGS if s["group"] == g]
+        # What a backup does and when it happens are one subject, and this page was the
+        # other half of it: the schedule here, the button two tabs away. The five keys
+        # that govern the archives are rendered beside the actions that make them.
+        rows = [s for s in SETTINGS
+                if s["group"] == g and s["key"] not in DATA_PAGE_KEYS]
         if not rows:
             continue
         gid = "g-" + re.sub(r"[^a-z0-9]+", "-", g.lower()).strip("-")
@@ -1186,10 +1236,6 @@ def render_settings(store):
                  '<span class=count>5</span></a>')
     blocks.append(render_row_arrays(store))
     index.append('<a href="#g-engrams">Engrams &amp; lists</a>')
-    _pm = render_map_overrides(store)
-    if _pm:
-        blocks.append(_pm)
-        index.append('<a href="#g-per-map">Per-map overrides</a>')
 
     todo = store.readiness()
     banner = ""
@@ -2141,7 +2187,7 @@ def render_jump():
 
 
 def render_map(name, key, row=None, address="", host_known=True, points=None,
-               job=None, state=None):
+               job=None, state=None, overrides="", notice=""):
     """One map, in detail, for the things that are only true of that map.
 
     The overview answers "is it up, who is on, is anything broken" for a cluster. Ports,
@@ -2186,15 +2232,9 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
                  '<div class=note>No dated saves for %s yet. ARK writes one every '
                  '15 minutes once the map has been running.</div></fieldset>'
                  % _e(name))
-    # A link, not a second set of boxes. The overrides are written by one form on the
-    # Settings page, and a second way to write the same values is a second way for them
-    # to disagree.
-    overrides = ('<fieldset><legend>Settings for this map</legend>'
-                 '<div class=help>Per-map overrides are set on the Settings page, under '
-                 '<b>Per-map overrides</b> - everything else this map uses is the '
-                 'cluster value.</div>'
-                 '<a class=help href="/admin#g-per-map">Open per-map overrides</a>'
-                 '</fieldset>')
+    # The boxes themselves now, not a link to a page that had ten maps' worth of them
+    # stacked in one collapsed block. Still one writer: this form posts the same
+    # map:<key>:<setting> names to the same /admin/save that the settings page uses.
     # Orientation, not a second reading. Which state this map is in is a fact the
     # operator needs to have landed in the right place - what it is doing right now,
     # and how many are on it, stay on the overview where one poll answers for every
@@ -2210,7 +2250,7 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
                  '<a class=maplink href="/admin/cluster#run">Running now</a> on the '
                  'cluster page shows what is.</div>')
     return ('<div class=jump><a href="/admin/cluster#run">Back to the cluster</a></div>'
-            + here + where + connect + saves + overrides)
+            + (notice or "") + here + where + connect + saves + (overrides or ""))
 
 
 def render_cluster(store, plan, status=None, roster=None,
