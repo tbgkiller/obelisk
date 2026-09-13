@@ -486,6 +486,23 @@ def build_app(store, docker=None):
                 results[key] = bool(ok_h) and clusterctl.verify_instance(store, key)[0]
             return all(results.values()), results
 
+        def _start_some(keys):
+            """Start just these maps, and say which actually came up.
+
+            One at a time rather than through launch(), which regenerates the compose
+            file and brings the whole stack up - the point here is that some maps are
+            deliberately staying down.
+            """
+            up = []
+            for key in keys:
+                ok_s, why_s = clusterctl.start_one(store, key)
+                if ok_s:
+                    up.append(key)
+                else:
+                    log.warning("could not start %s after the gate refused: %s",
+                                key, why_s)
+            return up
+
         return updatesctl.apply_batch(
             store, _ark_root(), warn=warn,
             # save_and_settle rather than save_world: the apply is about to stop the
@@ -500,6 +517,11 @@ def build_app(store, docker=None):
                     "saving every world - %s saved (%d/%d)" % (label, done, total))),
             stop_all=stop_all, start_all=lambda: clusterctl.launch(store),
             verify=verify_all,
+            # Asked after the stop and before the swap, while every world is a static
+            # file. start_some is what keeps a refusal from costing the whole cluster:
+            # the maps that are fine come back, the ones that are not stay down.
+            check_worlds=lambda: clusterctl.worlds_intact(store, _ark_root()),
+            start_some=_start_some,
             players=lambda: clusterctl.players_online(store), force=force,
             on_step=_note_update)
 
@@ -1308,6 +1330,63 @@ async def empty_watch(store, interval=60, needed=3, busy=None, apply_now=None):
             streak = 0
 
 
+async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
+    """Every few hours, is the newest save point of each map still readable?
+
+    **It looks at save points, never at the live world.** The live file is rewritten at
+    every autosave - all ten within the same second, as it happens - and verify_world
+    opens with immutable=1, which is a promise that the file is static. Point that at a
+    world mid-write and SQLite can read a torn page and report damage that is not there.
+    A false "your world is corrupt" at three in the morning is worse than no sweep at
+    all, so the sweep asks about the files the game has finished with.
+
+    That is also the more useful question. A save point is what a restore actually comes
+    from, so "is the newest one good" is the thing somebody needs to know *before* they
+    need it - which is the whole complaint about the backups this product exists to keep.
+
+    quick_check rather than the full walk: ten worlds of up to 135 MB on spinning disks,
+    four times a day. The damage this hunts is structural and quick_check sees it; the
+    apply gate pays for the deep check because that answer decides a promotion.
+
+    **It never acts.** No stop, no start, no move, no delete, no restore - it says what
+    it found and that is the end of its authority. A background loop that can touch a
+    cluster is a background loop that will, at four in the morning, for a reason nobody
+    is awake to read.
+    """
+    from . import savepoints
+    seen_bad = set()
+    while True:
+        if sleep_first:
+            await asyncio.sleep(interval)
+        sleep_first = True
+        try:
+            for key in clusterctl._map_keys(store):
+                points = (check or savepoints.list_points)(store, key)
+                if not points:
+                    continue                      # never started, or pruned: not news
+                newest = points[0]
+                ok, why = restorectl.verify_world(newest["path"], deep=False)
+                if ok:
+                    if key in seen_bad:
+                        seen_bad.discard(key)
+                        announce.say("world.readable_again",
+                                     "%s's newest save point reads cleanly again (%s)."
+                                     % (key, newest["name"]))
+                    continue
+                if key in seen_bad:
+                    continue                      # already said; do not storm the channel
+                seen_bad.add(key)
+                announce.say(
+                    "world.damaged",
+                    "%s's newest save point will not read: %s. Nothing has been "
+                    "changed - this is a warning, not an action. Check the older save "
+                    "points for this map before the next restart needs one."
+                    % (key, why), level="error",
+                    detail="%s\n%s" % (newest["path"], why))
+        except Exception as e:                    # noqa: BLE001 - never fatal
+            log.info("world sweep skipped: %s", e)
+
+
 async def relay_watch(store, bot, interval=120):
     """Keep the relay pointed at every player map, as they come and go.
 
@@ -1492,8 +1571,23 @@ def _scheduled_apply(store, force=False, recheck=True):
             results[key] = bool(ok_h) and clusterctl.verify_instance(store, key)[0]
         return all(results.values()), results
 
+    def start_some(keys):
+        up = []
+        for key in keys:
+            ok_s, why_s = clusterctl.start_one(store, key)
+            if ok_s:
+                up.append(key)
+            else:
+                log.warning("could not start %s after the gate refused: %s", key, why_s)
+        return up
+
     return upd.apply_batch(
         store, layout.ark_root_of(store), warn=warn, force=force,
+        # The unattended path gets the same gate as the button. An apply nobody is
+        # watching is the one that most needs to refuse rather than promote.
+        check_worlds=lambda: clusterctl.worlds_intact(
+            store, layout.ark_root_of(store)),
+        start_some=start_some,
         # Proved on disk, not merely accepted - a stop is what follows this.
         save=lambda: clusterctl.save_and_settle(store, layout.ark_root_of(store)),
         stop_all=stop_all,
@@ -1584,6 +1678,7 @@ async def main():
     tasks.append(asyncio.create_task(ark_update_watch(store)))
     tasks.append(asyncio.create_task(events_persist(store)))
     tasks.append(asyncio.create_task(empty_watch(store)))
+    tasks.append(asyncio.create_task(world_watch(store)))
 
     from . import bot
     # The relay used to learn its maps from a SERVERS environment variable, which only

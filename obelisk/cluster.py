@@ -178,6 +178,12 @@ EXIT_INTERVAL = 5
 # minutes, or ten.
 STOP_SLOT = "cluster.stop"
 
+# How many consecutive looks at nothing before wait_healthy decides a container is not
+# coming rather than not ready. A minute: long enough for a container being created to
+# appear, short enough that a map left down on purpose does not hold a batch for the
+# full twenty-five.
+ABSENT_POLLS = 6
+
 
 def _and(names):
     """"Ragnarok", or "Ragnarok and Valguero", or "A, B and C" - for a sentence a
@@ -653,6 +659,56 @@ def save_and_settle(store, ark_root=None, rcon=None, now=None, **kw):
     return ok, detail, worlds
 
 
+# ------------------------------------------------- is each world still readable at all
+#
+# save_and_settle proves a world finished being written. It cannot prove the bytes are
+# any good, and on 2026-09-12 they were not: the server image performs its own save on
+# the way down, that save damaged the three largest worlds, and the apply promoted a new
+# build over the top of them and started servers onto the wreckage. The crash loop that
+# followed was the first anybody heard of it, two hours later.
+#
+# So there is one moment worth asking the question - after the stop, before anything
+# moves. The cluster is down, so every world is a static file, which is exactly what
+# verify_world's immutable=1 open assumes. Any earlier and the shutdown save has not
+# happened yet; any later and a rename has already been made on the strength of an
+# answer nobody asked for.
+def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
+                  deep=True):
+    """Every selected map's world, checked on disk. {label: {ok, why, key}}.
+
+    The check itself is restore.verify_world - the one that already exists, reused
+    rather than reimplemented, so there is a single answer in the product to "is this a
+    world". The sidecar test is added on top because verify_world deliberately cannot
+    see it: immutable=1 ignores a hot journal, so a world with a transaction still open
+    passes an integrity check and is still mid-write.
+    """
+    from . import restore, savepoints
+    verify = verify or restore.verify_world
+    exists = exists or os.path.exists
+
+    rows = keys if keys is not None else [(r["name"], r["map"])
+                                          for r in build_plan(store)["maps"]]
+    out = {}
+    for label, key in rows:
+        try:
+            path = savepoints.live_world(store, key, ark_root)
+        except KeyError:
+            out[label] = {"ok": False, "key": key,
+                          "why": "could not work out where its world file is"}
+            continue
+        hot = [s for s in restore.SIDECARS if exists(path + s)]
+        if hot:
+            # Never read as damage - it is a world that was still being written when
+            # everything stopped, which is its own kind of not-safe-to-promote.
+            out[label] = {"ok": False, "key": key,
+                          "why": ("a %s file is still open beside it, so it was still "
+                                  "being written" % ", ".join(sorted(hot)))}
+            continue
+        ok, why = verify(path, deep=deep)
+        out[label] = {"ok": bool(ok), "key": key, "why": why}
+    return out
+
+
 def _join_network(store, environ=None):
     """Put this container on the cluster's network so the maps are reachable by name.
 
@@ -768,12 +824,22 @@ def wait_healthy(store, map_key, minutes=25, sleep=None, details=None):
     # At least one look, always. int(minutes * 6) rounds a short timeout down to zero
     # iterations, so a caller asking for a quick check got "it did not report healthy"
     # without the container ever having been asked.
+    # A map that was deliberately not started is not a map that is slow to start. The
+    # integrity gate can now leave one down on purpose, and waiting twenty-five minutes
+    # for a container nobody created would turn one refused map into a stalled batch.
+    # Counted rather than decided on the first look, because a container that is being
+    # created legitimately takes a moment to appear.
+    missing = 0
     for _ in range(max(1, int(minutes * 6))):
         got = (details([name]) or {}).get(name, {})
         if got.get("health") == "healthy":
             return True, "healthy"
         if got.get("state") == "exited":
             return False, "the container exited while starting"
+        missing = missing + 1 if not got else 0
+        if missing >= ABSENT_POLLS:
+            return False, ("there is no container for it - it was not started, so "
+                           "there is nothing to wait for")
         sleep(10)
     return False, "it did not report healthy within %d minutes" % minutes
 

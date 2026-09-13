@@ -1361,5 +1361,96 @@ ok, msg, _ = updates.prime(s, ARK, up=spy_up,
 check("priming when the current build is unknown refuses - it will not stage 'latest' "
       "on a guess", not ok and "current build is" in msg, msg)
 
+# ---- the integrity gate: after the stop, before anything moves
+#
+# The save gate proves a world finished being written. It cannot prove the bytes are any
+# good, and on 2026-09-12 they were not - the server image's own shutdown save damaged
+# the three largest worlds and this promoted a build over the top of them. Refusing here
+# costs a postponement; not refusing cost two hours and a restore.
+def with_gate(health, force=False, primed_=None):
+    """An apply whose world check answers `health`. Returns everything it did."""
+    drain()
+    st_ = real_store()
+    updates.remember(st_, primed=primed_ or ready)
+    clk_ = _Clock()
+    c_ = Cluster()
+    renamed_, rename_ = moved_nothing()
+    started_ = []
+    disk_ = _Disk(_QUIET)
+    ok_, msg_, detail_ = updates.apply_batch(
+        st_, ARK, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
+        save=lambda: _cl.save_and_settle(
+            st_, ARK, rcon=lambda h, p, cmd: None, now=clk_.now, stat=disk_.stat,
+            exists=disk_.exists, wait=clk_.wait, budget=60),
+        check_worlds=lambda: health,
+        start_some=lambda keys: (started_.extend(keys) or list(keys)),
+        players=lambda: (0, {}, []), force=force, rename=rename_,
+        exists=tree_exists(), now=lambda: 4242)
+    return ok_, msg_, detail_, c_, renamed_, started_, st_, drain()
+
+
+ALL_GOOD = {"The Island": {"ok": True, "key": "island", "why": "ok"},
+            "Astraeos": {"ok": True, "key": "astraeos", "why": "ok"}}
+ONE_BAD = {"The Island": {"ok": False, "key": "island",
+                          "why": "SQLite reports it damaged: page 4 is never used"},
+           "Astraeos": {"ok": True, "key": "astraeos", "why": "ok"}}
+
+# 1/8. every world readable - the sequence is exactly what it was before the gate
+ok, msg, _d, c, renamed, started, st_g, _ev = with_gate(ALL_GOOD)
+check("an apply whose worlds all read cleanly still succeeds", ok, msg)
+check("and the swap still happened", len(renamed) >= 3, renamed)
+check("and the order either side of the gate is unchanged",
+      c.log == ["stop", "start", "verify"], c.log)
+check("and nothing was started piecemeal - the normal path starts the cluster",
+      started == [], started)
+
+# 1/3/5. one world damaged - the swap is refused before a single rename
+ok, msg, detail, c, renamed, started, st_b, ev = with_gate(ONE_BAD)
+check("a damaged world refuses the apply", not ok, msg)
+check("and NOTHING was renamed - the swap never ran", renamed == [], renamed)
+check("so the build was not promoted", detail.get("swapped") is False, detail)
+check("the refusal names the map", "The Island" in msg, msg)
+check("and the detail carries the list for anything downstream",
+      detail.get("corrupt") == ["The Island"], detail)
+
+# 5. the staged build survives, so it can be applied once the world is restored
+check("the primed record is still there - the staged build is still staged",
+      updates.primed(st_b) is not None, updates.state(st_b))
+
+# 2. last_apply is NOT stamped by a refused batch: the backstop must stay available
+check("a refused batch does not spend the backstop",
+      not updates.state(st_b).get("last_apply"), updates.state(st_b))
+check("but a successful one does", updates.state(st_g).get("last_apply") == 4242,
+      updates.state(st_g))
+
+# 6. the maps that passed come back; the one that failed stays down on purpose
+check("the maps that are fine are started again", started == ["astraeos"], started)
+check("and the damaged map is NOT started - its files are the ones that just failed",
+      "island" not in started, started)
+check("the whole cluster is not relaunched behind our back",
+      "start" not in c.log, c.log)
+
+# 7. it is announced, at error level, with the per-map reason in the detail
+_dmg = [i for i in ev if i["event"] == "ark.world_damaged"]
+check("the refusal is announced", len(_dmg) == 1, [i["event"] for i in ev])
+check("as an error, not a note", _dmg and _dmg[0]["level"] == "error", _dmg)
+check("naming the map in the sentence", _dmg and "The Island" in _dmg[0]["text"], _dmg)
+check("saying plainly that nothing was moved or deleted",
+      _dmg and "nothing was moved or deleted" in _dmg[0]["text"].lower(), _dmg)
+check("and pointing at the way out", _dmg and "Restore" in _dmg[0]["text"], _dmg)
+check("with every map's reason in the detail",
+      _dmg and "page 4 is never used" in _dmg[0]["detail"], _dmg)
+
+# force is about players, not about a world that will not read
+ok_f, msg_f, _d, _c, renamed_f, _s, _st, _e = with_gate(ONE_BAD, force=True)
+check("force does not get past a damaged world", not ok_f, msg_f)
+check("and force renames nothing either", renamed_f == [], renamed_f)
+
+# An apply with no checker wired is the old behaviour, unchanged - so the gate cannot
+# break a caller that has not been taught about it.
+ok_n, _m, _d, _c, renamed_n, _s, _st, _e = with_gate(None)
+check("an apply with no world check still works, exactly as before",
+      ok_n and len(renamed_n) >= 3, renamed_n)
+
 print("\nFAILURES: %s" % fails if fails else "\nall updates tests passed")
 sys.exit(1 if fails else 0)

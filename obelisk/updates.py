@@ -396,6 +396,7 @@ def _staging_answers(store, probe=None):
 
 def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=None,
                 verify=None, players=None, on_step=None, force=False,
+                check_worlds=None, start_some=None,
                 rename=None, exists=None, now=None):
     """Apply everything that is waiting, in one restart. (ok, message, detail).
 
@@ -570,11 +571,49 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                      level="error")
         return False, "could not stop the cluster: %s" % detail, {}
 
-    # From here the cluster has actually been disturbed, so this is the moment that
-    # counts - whatever the rest of the batch does. The backstop window reads it to
-    # decide whether a 4 a.m. restart would be adding anything, and a batch that got
-    # this far has already spent the disruption the window exists to arrange.
-    remember(store, last_apply=int(now()))
+    # ---- the last question before anything moves: are the worlds still readable?
+    #
+    # Everything above proves the save finished. Nothing above proves it is any good,
+    # and on 2026-09-12 it was not - the server image's own shutdown save damaged three
+    # worlds, this promoted a new build over them, and ten servers were started onto the
+    # result. Refusing here costs a postponement. Not refusing cost two hours and a
+    # restore.
+    if check_worlds:
+        step("checking every world is readable")
+        health = check_worlds() or {}
+        broken = sorted(l for l, w in health.items() if not w.get("ok"))
+        if broken:
+            # The swap does not happen, so ServerFiles and ServerFiles.staging are both
+            # exactly as they were and the staged build is still staged for next time.
+            # Nothing is deleted, nothing is moved, and the damaged world is left
+            # untouched for whoever restores it.
+            good = [(l, w.get("key")) for l, w in sorted(health.items())
+                    if w.get("ok") and w.get("key")]
+            started = []
+            if start_some:
+                # The maps that are fine go back to serving. The ones that are not stay
+                # down on purpose: the swap was refused, so the files under them are the
+                # same files that just failed, and starting one only reproduces the
+                # crash loop while writing more over the evidence.
+                step("starting the %d map(s) that are fine" % len(good))
+                started = start_some([k for _l, k in good]) or []
+            announce.say(
+                "ark.world_damaged",
+                "Stopped before swapping: %s did not come through the shutdown with a "
+                "readable world. The build was NOT applied and nothing was moved or "
+                "deleted - the previous build is still in place and the staged one is "
+                "still staged. %s %s"
+                % (", ".join(broken),
+                   ("The other %d map(s) are starting again." % len(good)) if good
+                    else "No other map was fit to start.",
+                   "Restore the affected world from a save point before starting it."),
+                level="error",
+                detail=_lines("%-14s %s" % (l, health[l].get("why") or "")
+                              for l in sorted(health)))
+            step("refused: %s has no readable world" % ", ".join(broken))
+            return False, ("did not swap: %s did not come through the shutdown with a "
+                           "readable world" % ", ".join(broken)), {
+                "corrupt": broken, "started": started, "swapped": False}
 
     done = []
     if swap_files:
@@ -589,6 +628,13 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                          "The swap failed and was undone; the cluster is starting again "
                          "on the previous build. %s" % problem, level="error")
             return False, problem, {"undone": True}
+
+    # Stamped here rather than the moment the cluster stopped. The backstop window reads
+    # it to decide whether a 4 a.m. restart would be adding anything, and a batch that
+    # refused at the gate added nothing - it stopped the cluster and put it back. Marking
+    # that as the disruption spent would hold the window shut for a day starting from
+    # the exact moment corruption was found, which is when it is most wanted.
+    remember(store, last_apply=int(now()))
 
     # The settings go in between the swap and the start, because start_all regenerates
     # the compose file from the store - so this is the last moment they can land and

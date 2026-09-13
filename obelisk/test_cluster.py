@@ -1040,6 +1040,101 @@ check("save_and_settle passes the reporter through to the wait",
       sorted(calls_kw) == ["Ragnarok", "The Island"], calls_kw)
 
 
+# ---- a map left down on purpose is not a map that is slow to start
+#
+# The integrity gate can now refuse one map and start the rest, so wait_healthy has to
+# tell "not ready yet" apart from "nobody created this". Waiting twenty-five minutes for
+# a container that was deliberately not started would turn one refused map into a
+# stalled batch.
+slept_h = []
+ok_h, why_h = clusterctl.wait_healthy(
+    st, "island", minutes=25, sleep=lambda s: slept_h.append(s),
+    details=lambda names: {})
+check("a map with no container at all gives up quickly, not in 25 minutes",
+      not ok_h and len(slept_h) <= clusterctl.ABSENT_POLLS, len(slept_h))
+check("and says it was never started rather than blaming the health check",
+      "not started" in why_h, why_h)
+
+# But a container that is merely slow to appear must still be waited for - that is the
+# ordinary case on a launch, and giving up on the first empty look would break it.
+seen_h = [0]
+
+
+def _late(names):
+    seen_h[0] += 1
+    if seen_h[0] <= 2:
+        return {}                       # not created yet
+    return {list(names)[0]: {"state": "running", "health": "healthy"}}
+
+
+ok_l, why_l = clusterctl.wait_healthy(st, "island", minutes=25,
+                                      sleep=lambda s: None, details=_late)
+check("a container that takes a moment to appear is still waited for", ok_l, why_l)
+
+
+# ---- worlds_intact: is each world still readable, checked while the cluster is down
+#
+# The save gate proves a world finished being written. These prove somebody then asked
+# whether the bytes are any good - the question nobody asked on 2026-09-12, when a build
+# was promoted over three damaged worlds and ten servers started onto the wreckage.
+ROWS_I = [("The Island", "island"), ("Ragnarok", "ragnarok")]
+
+
+def intact(answers, sidecars=(), deep=True):
+    seen_deep = []
+
+    def fake_verify(path, deep=True):
+        seen_deep.append(deep)
+        key = "island" if "TheIsland" in path else "ragnarok"
+        return answers[key]
+
+    out = clusterctl.worlds_intact(
+        st_q, keys=ROWS_I, verify=fake_verify,
+        exists=lambda p: any(p.endswith(s) for s in sidecars), deep=deep)
+    return out, seen_deep
+
+
+good = {"island": (True, "ok"), "ragnarok": (True, "ok")}
+res_i, deep_i = intact(good)
+check("a cluster of readable worlds passes",
+      all(v["ok"] for v in res_i.values()), res_i)
+check("and every map is reported, not just the bad ones", len(res_i) == 2, res_i)
+check("each answer carries the map key, so a caller can act on it",
+      sorted(v["key"] for v in res_i.values()) == ["island", "ragnarok"], res_i)
+
+bad = {"island": (False, "SQLite reports it damaged: page 4 is never used"),
+       "ragnarok": (True, "ok")}
+res_b, _d = intact(bad)
+check("a damaged world is reported damaged", res_b["The Island"]["ok"] is False, res_b)
+check("and the reason is carried through verbatim",
+      "page 4" in res_b["The Island"]["why"], res_b)
+check("while the healthy one is untouched", res_b["Ragnarok"]["ok"] is True, res_b)
+
+# 4. verify_world cannot see a hot journal - immutable=1 ignores it by design - so the
+# sidecar test sits on top. A world with a transaction still open is not promotable.
+res_s, _d = intact(good, sidecars=("-wal",))
+check("a world with a -wal beside it fails even though SQLite says it is fine",
+      not any(v["ok"] for v in res_s.values()), res_s)
+check("and it says that is why, rather than calling it damage",
+      "still being written" in res_s["The Island"]["why"], res_s)
+for side in ("-shm", "-journal"):
+    r_x, _d = intact(good, sidecars=(side,))
+    check("a %s beside a world fails it too" % side,
+          not r_x["The Island"]["ok"], r_x)
+
+# 3 (the check mode). The apply gate pays for the deep walk; the sweep does not.
+_r, deep_true = intact(good, deep=True)
+_r, deep_false = intact(good, deep=False)
+check("the gate asks for the full integrity check", all(deep_true), deep_true)
+check("and a caller can ask for the cheap one instead",
+      not any(deep_false), deep_false)
+
+# 2. one checker in the product, not two.
+import inspect as _inspect
+check("worlds_intact calls restore.verify_world rather than reimplementing it",
+      "verify_world" in _inspect.getsource(clusterctl.worlds_intact))
+
+
 # ---- save_and_settle: one call that sends the command and proves the write
 asked_q = []
 clk_sw = Clock()

@@ -709,5 +709,129 @@ check("boot and the loop describe coverage through the same helper, so the count
 # There was no summary and no exit, so every check here printed PASS or FAIL and the
 # process returned 0 either way. A test that cannot fail the build is a test that is
 # not being run, however many lines of it there are.
+# ---- the periodic world sweep: it looks, and that is all it may do
+#
+# A background loop that can touch a cluster is a background loop that will, at four in
+# the morning, for a reason nobody is awake to read. So the authority it does NOT have
+# is the part worth pinning: no stop, no start, no move, no delete, no restore.
+import asyncio as _aio2                                          # noqa: E402
+from . import app as _appmod                                     # noqa: E402
+from . import announce as _ann2                                  # noqa: E402
+from . import cluster as _cl2                                    # noqa: E402
+from . import restore as _re2                                    # noqa: E402
+
+
+def _drain2():
+    out, batch = [], _ann2.pop_all(limit=100)
+    while batch:
+        out += batch
+        batch = _ann2.pop_all(limit=100)
+    return out
+
+
+class _Tripwire:
+    """Every side-effecting call the sweep must never make."""
+
+    def __init__(self):
+        self.calls = []
+
+    def __getattr__(self, name):
+        def boom(*a, **k):
+            self.calls.append(name)
+            raise AssertionError("the sweep called %s" % name)
+        return boom
+
+
+_sw_store = Store(os.path.join(tempfile.mkdtemp(), "settings.json")).load()
+_sw_store.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
+_sw_store.patch({"maps": "island", "admin_password": "pw", "cluster_id": "swtest",
+                 "host_ram_gb": 256})
+
+_POINT = [{"map": "island", "name": "TheIsland_WP_13.09.2026_01.00.00.ark",
+           "path": "/ark/shared/SavedArks/TheIsland_WP/point.ark", "when": 1, "age": 1,
+           "size": 4096, "human_size": "4 KB", "local": "x", "ago": "1m"}]
+
+_verdicts = []
+_deep_seen = []
+_real_verify = _re2.verify_world
+
+
+def _fake_verify(path, deep=True):
+    _deep_seen.append(deep)
+    return _verdicts.pop(0)
+
+
+async def _sweep_once(verdicts):
+    """One pass of the real loop, with the clock and the checker faked."""
+    global _verdicts
+    _verdicts = list(verdicts)
+    _re2.verify_world = _fake_verify
+    _appmod.restorectl.verify_world = _fake_verify
+    tripped = _Tripwire()
+    real_stop, real_start, real_one = _cl2.stop, _cl2.launch, _cl2.start_one
+    _cl2.stop, _cl2.launch, _cl2.start_one = tripped.stop, tripped.launch, tripped.start_one
+    try:
+        task = _aio2.create_task(_appmod.world_watch(
+            _sw_store, interval=0.01, check=lambda st, key: _POINT,
+            sleep_first=False))
+        await _aio2.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except _aio2.CancelledError:
+            pass
+    finally:
+        _cl2.stop, _cl2.launch, _cl2.start_one = real_stop, real_start, real_one
+        _re2.verify_world = _real_verify
+        _appmod.restorectl.verify_world = _real_verify
+    return tripped
+
+
+_drain2()
+_t = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    trip = _t.run_until_complete(_sweep_once([(False, "SQLite reports it damaged: x")]
+                                            * 40))
+    _ev2 = _drain2()
+    _bad = [i for i in _ev2 if i["event"] == "world.damaged"]
+    check("the sweep reports a save point that will not read", len(_bad) >= 1,
+          [i["event"] for i in _ev2])
+    check("as an error", _bad and _bad[0]["level"] == "error", _bad[:1])
+    check("naming the map and the reason",
+          _bad and "island" in _bad[0]["text"] and "damaged" in _bad[0]["text"], _bad[:1])
+    check("and saying plainly that it changed nothing",
+          _bad and "Nothing has been changed" in _bad[0]["text"], _bad[:1])
+
+    # 10. it says it once, not once per pass, however long the fault lasts.
+    check("it does not storm the channel while the fault persists", len(_bad) == 1,
+          len(_bad))
+
+    # 9. the authority it does not have.
+    check("the sweep never stopped, started or relaunched anything",
+          trip.calls == [], trip.calls)
+
+    # 3. the cheap check, not the full walk.
+    check("the sweep uses quick_check, not the full integrity walk",
+          _deep_seen and not any(_deep_seen), _deep_seen)
+
+    # and it says so when the fault clears, so the channel is not left on red. One
+    # long-lived loop, because remembering what it already said is the whole point -
+    # a fresh loop per pass would report a recovery it never saw break.
+    _drain2()
+    _deep_seen[:] = []
+    _t.run_until_complete(_sweep_once([(False, "SQLite reports it damaged: x")] * 2
+                                      + [(True, "ok")] * 60))
+    _ev3 = _drain2()
+    _names3 = [i["event"] for i in _ev3]
+    check("a save point that reads again is reported as recovered",
+          "world.readable_again" in _names3, _names3)
+    check("and only after it was reported broken, in that order",
+          _names3.index("world.damaged") < _names3.index("world.readable_again"),
+          _names3)
+finally:
+    _t.close()
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
+

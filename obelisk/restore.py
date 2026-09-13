@@ -215,8 +215,15 @@ def give_world_to_server(path, chown=None):
         return False
 
 
-def verify_world(path):
+def verify_world(path, deep=True):
     """(ok, detail) - is this actually a world, or just a path that exists?
+
+    `deep` picks which SQLite check runs. The full integrity_check walks every page and
+    is what an apply uses, because that is the one moment the answer decides whether a
+    build gets promoted and it is worth the I/O. quick_check skips the most expensive
+    cross-references and is what the periodic sweep uses - ten worlds of up to 135 MB on
+    spinning disks, every six hours, cannot afford the full walk and does not need it:
+    the damage this hunts is structural and quick_check sees it.
 
     The failure this exists for is the symlink trap: saves live behind a link into a
     container-only path, so an extract can leave a dangling link where a world should
@@ -250,7 +257,9 @@ def verify_world(path):
         con = sqlite3.connect("file:%s?mode=ro&immutable=1" % path.replace("?", "%3f"),
                               uri=True)
         try:
-            integrity = con.execute("PRAGMA integrity_check;").fetchone()[0]
+            integrity = con.execute(
+                "PRAGMA integrity_check;" if deep else "PRAGMA quick_check;"
+            ).fetchone()[0]
             rows = con.execute("SELECT count(*) FROM game;").fetchone()[0]
         finally:
             con.close()
