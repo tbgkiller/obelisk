@@ -66,8 +66,20 @@ tr:last-child td{border-bottom:none}
    red of a thing that broke. Collapsing it into either one is how a cloud nobody
    ever connected reads as an outage, or as a completed upload. */
 .warn{background:#2a2519;color:#e8c37a;border:1px solid #4a3f22}
-.chip{display:inline-block;background:#1d2530;border:1px solid #2b3542;border-radius:6px;padding:2px 8px;margin:2px 4px 2px 0;font-size:12px}
-.chip.dim{color:#8b94a3;border-style:dashed}
+/* Who's online. Its own names, not .chip - the mods panel defines .chip later in
+   this same sheet at equal specificity, so the rules here were being overridden
+   and player names were quietly inheriting a mod's look. It also owns .chip.ok,
+   .bad, .new and .unk, which is the exact vocabulary per-player state will want
+   once there are buttons on these rows. */
+.whoroster{margin:2px 0 4px}
+.whomap{margin:12px 0 4px;font-size:12px;color:#8b94a3;letter-spacing:.3px;text-transform:uppercase}
+.whomap:first-child{margin-top:2px}
+.whorow{display:flex;align-items:center;gap:10px;padding:6px 10px;margin:3px 0;background:#12151a;border:1px solid #232b36;border-radius:8px}
+.whoname{font-weight:500;color:#e6e9ef}
+.whoacts{margin-left:auto;display:flex;gap:6px;align-items:center}
+.whonote{padding:6px 10px;margin:3px 0;font-size:12px;color:#8b94a3}
+.whorow.quiet{border-style:dashed;color:#8b94a3}
+.whoflag{font-size:11px;color:#8b94a3}
 /* Three states, three colours. "Could not check" is deliberately not green and not
    quiet - the failure this panel answers was a checker that said "up to date" about a
    question it never asked, and an unknown that looks like a pass repeats it. */
@@ -1514,66 +1526,62 @@ NAME_UNREADABLE = ("this line of the server's answer could not be read as a name
                    "an id, so there is nothing here to act on")
 
 
-def render_whos_online(roster):
-    """Who is on, by map, from the poll that already counted them.
+def render_whos_online(roster, maps=()):
+    """Who is on, one row per player, under the map they are on.
 
-    Grouped by map because that is the unit everything else here works in - a kick goes
-    to one map, a ban goes to all of them - and because "seven people online" is not a
-    thing anybody can act on while "four on Ragnarok" is.
+    **No header.** The count section six lines above already says how many people are
+    on how many maps and how old the answer is, from the same poll - restating it here
+    was the duplication this whole overhaul exists to remove, and in the stale case it
+    was two near-identical amber warnings one after the other.
 
-    Only maps that answered the last poll, which is online_roster's rule rather than
-    this function's: a name list built from a map that has gone quiet would offer up
-    people who may have left, and the actions coming in the next slices would be aimed
-    at them.
+    `maps` is the running maps in the order the status table lists them, so the eye can
+    travel down the two without re-sorting. It is also what makes a map that did not
+    answer visible here: the roster simply has no entry for it, and a map that silently
+    disappears from a list of who is online is the "we cannot tell who is on Ragnarok"
+    signal going missing exactly where somebody is about to press Stop.
 
-    Read-only. Nothing here writes, and nothing here asks a server anything - the names
-    were in the answer the relay already had.
+    One row per player rather than a line of chips, because every one of these rows is
+    about to grow Message, Kick and Ban buttons. Thirty-odd controls wrapped inside one
+    table cell is not a thing to build and then fix.
     """
-    if roster is None:
-        return ('<fieldset><legend>Who\u2019s online</legend>%s</fieldset>'
-                % _unavailable("Player names", NO_RELAY_WHY))
-    by_map = roster.get("by_map") or {}
-    if not by_map:
-        return ('<fieldset><legend>Who\u2019s online</legend>%s</fieldset>'
-                % _unavailable("Player names", NOTHING_ANSWERED_WHY))
+    if roster is None or not (roster.get("by_map") or {}):
+        # Slice 1 has already printed the full explanation immediately above - why
+        # there is no count is exactly why there are no names. Saying all thirty words
+        # again eight lines later is how people learn to skip both.
+        return ('<fieldset><legend>Who\u2019s online</legend>'
+                '<div class=help>No names to show \u2014 for the same reason there is '
+                'no player count above.</div></fieldset>')
 
-    blocks, total = [], 0
-    for label in sorted(by_map):
-        people = by_map[label] or []
-        total += len(people)
-        if not people:
-            blocks.append('<tr><td>%s</td><td class=help>nobody on it</td></tr>'
-                          % _e(label))
+    by_map = roster.get("by_map") or {}
+    order = [m for m in (maps or []) if m]
+    order += [m for m in sorted(by_map) if m not in order]
+
+    out = []
+    for label in order:
+        out.append('<div class=whomap>%s</div>' % _e(label))
+        if label not in by_map:
+            out.append('<div class="whorow quiet"><span class=whoname>&mdash;</span>'
+                       '<span class=whoflag>did not answer the last poll, so who is on '
+                       'it is not known</span></div>')
             continue
-        names = []
+        people = by_map[label] or []
+        if not people:
+            out.append('<div class=whonote>nobody on it</div>')
+            continue
         for row in people:
             name = _e(row.get("name") or "?")
             if row.get("netid"):
-                names.append('<span class=chip>%s</span>' % name)
+                flag = ""
             else:
-                # Someone the parser could see and could not key on. Shown, because a
-                # person on a server is a fact whatever we can do about them - and
-                # marked, because the actions in the next slices will have no id to use.
-                names.append('<span class="chip dim" title="%s">%s <span class=help>'
-                             '(name not readable)</span></span>'
-                             % (_e(NAME_UNREADABLE), name))
-        blocks.append('<tr><td>%s</td><td>%s</td></tr>'
-                      % (_e(label), " ".join(names)))
+                # The consequence, in text, not only in a tooltip - a title attribute
+                # is invisible on a touch screen, which is where half of this gets read.
+                flag = ('<span class=whoflag title="%s">no id &mdash; nothing to act '
+                        'on</span>' % _e(NAME_UNREADABLE))
+            out.append('<div class=whorow><span class=whoname>%s</span>%s'
+                       '<span class=whoacts></span></div>' % (name, flag))
 
-    age = _ago(roster.get("age"))
-    stale = int(roster.get("age") or 0) > STALE_AFTER
     return ('<fieldset><legend>Who\u2019s online</legend>'
-            '<div class="%s">%d player%s on %d map%s '
-            '<span class=help>&middot; %s%s</span></div>'
-            '<table>%s</table>'
-            '<div class=help style="margin-top:10px">From the same check that counts '
-            'them above, so a map listing three names is the map showing three '
-            'players.</div></fieldset>'
-            % ("warn" if stale else "note", total, "" if total == 1 else "s",
-               len(by_map), "" if len(by_map) == 1 else "s", _e(age),
-               " &middot; the list refreshes every minute, so this is out of date"
-               if stale else "",
-               "".join(blocks)))
+            '<div class=whoroster>%s</div></fieldset>' % "".join(out))
 
 
 def render_cluster(store, plan, status=None, players=None, roster=None):
@@ -1609,8 +1617,11 @@ def render_cluster(store, plan, status=None, players=None, roster=None):
                % (len(plan["maps"]), "" if len(plan["maps"]) == 1 else "s",
                   plan["total_memory"], plan["obelisk_port"]))
 
+    # The same sequence the status table renders, so the two read down together.
+    running = [x.get("label") or x.get("service") or ""
+               for x in ((status or {}).get("services") or [])]
     return (render_status(status, players=players) +
-            render_whos_online(roster) +
+            render_whos_online(roster, maps=[m for m in running if m]) +
             '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '

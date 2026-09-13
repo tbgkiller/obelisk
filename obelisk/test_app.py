@@ -2726,37 +2726,61 @@ finally:
     _bot_s1.LIVE = _real_live
 
 check("the Cluster page carries the who's-online section",
-      "Who\u2019s online" in _cluster_r, _cluster_r[-1200:])
-check("listing the people by map",
-      ">Bob<" in _cluster_r and ">Dee<" in _cluster_r, _cluster_r[-1500:])
-check("with the comma'd name intact", "Cha,rlie" in _cluster_r, _cluster_r[-1500:])
-check("and the unreadable row marked rather than dropped",
-      "unreadable row" in _cluster_r and "name not readable" in _cluster_r,
-      _cluster_r[-1500:])
-check("the section says how old the list is",
-      "25s ago" in _cluster_r or "just now" in _cluster_r, _cluster_r[-900:])
+      "Who\u2019s online" in _cluster_r, _cluster_r[-1400:])
+check("listing the people, one row each",
+      _cluster_r.count("<div class=whorow>") == 5,
+      _cluster_r.count("<div class=whorow>"))
+check("with the comma'd name intact", "Cha,rlie" in _cluster_r, _cluster_r[-1600:])
+check("and every row has a slot for the buttons 2c will add",
+      _cluster_r.count("<span class=whoacts></span>") == 5,
+      _cluster_r.count("<span class=whoacts></span>"))
+check("the unreadable row is shown and says what it costs",
+      "unreadable row" in _cluster_r and "nothing to act on" in _cluster_r,
+      _cluster_r[-1600:])
 
-# the count column and the name list are the same poll, so they agree on screen
+# the count column and the name list are one poll, so they agree on screen
 check("a map counted at four lists four names",
-      ">4</td>" in _cluster_r and _cluster_r.count("<span class=chip") >= 4,
-      _cluster_r.count("<span class=chip"))
-check("and the two headers give the same population",
-      "<b>5 players online</b>" in _cluster_r and "5 players on 2 maps" in _cluster_r,
-      _cluster_r[:0] or "headers disagree")
+      ">4</td>" in _cluster_r
+      and _cluster_r.split("The Island</div>")[1].count("<div class=whorow>") >= 4,
+      _cluster_r[-1600:])
 
-# a map that went quiet leaves both views at once
-check("a quiet map is absent from the roster",
-      "unreadable row" not in _cluster_q2, _cluster_q2[-1200:])
+# ---- one header, not two
+_r_section = _cluster_r[_cluster_r.index("Who’s online"):]
+check("only the count section states the population",
+      "players" not in _r_section.split("<div class=whoroster>")[0],
+      _r_section[:300])
+check("and only it states the age",
+      "ago" not in _r_section.split("<div class=whoroster>")[0], _r_section[:300])
+check("the page states the population exactly once",
+      _cluster_r.count("players online") == 1, _cluster_r.count("players online"))
+
+# ---- the map order is the status table's
+_tbl_order = [m for m in ("The Island", "Ragnarok")
+              if ("<td>%s</td>" % m) in _cluster_r]
+_roster_part = _cluster_r[_cluster_r.index("Who\u2019s online"):]
+check("the section lists maps in the order the table above did",
+      [_roster_part.index(m) for m in _tbl_order]
+      == sorted(_roster_part.index(m) for m in _tbl_order),
+      [(m, _roster_part.index(m)) for m in _tbl_order])
+
+# a map that went quiet leaves both views at once, and says so in both
+check("a quiet map's people are gone from the roster",
+      "unreadable row" not in _cluster_q2, _cluster_q2[-1400:])
+# Scoped to the section, and asserted on the element: the phrase "did not answer the
+# last poll" also lives in the dash tooltip above, so looking for it anywhere on the
+# page passes with this row deleted.
+_q2_section = _cluster_q2[_cluster_q2.index("Who’s online"):]
+check("but the map itself is still listed, as unknown rather than absent",
+      '<div class="whorow quiet">' in _q2_section
+      and "Ragnarok" in _q2_section, _q2_section[:600])
 check("and dashed in the count, not zeroed",
-      "&mdash;</td>" in _cluster_q2, _cluster_q2[-1500:])
-check("with the section counting only what it could see",
-      "4 players on 1 map " in _cluster_q2, _cluster_q2[-1200:])
+      "&mdash;</td>" in _cluster_q2, _cluster_q2[-1600:])
 
-check("no relay gives the section the same sentence as the count",
-      _cluster_nr.count("chat relay is not running") == 2, 
+check("no relay explains itself once, not twice on one page",
+      _cluster_nr.count("chat relay is not running") == 1,
       _cluster_nr.count("chat relay is not running"))
-check("and points at Discord in Settings",
-      "Discord" in _cluster_nr and "Settings" in _cluster_nr, "no pointer")
+check("with the section pointing at the explanation above it",
+      "no player count above" in _cluster_nr, _cluster_nr[-800:])
 
 # the front page is the status table only - the roster lives with the actions to come
 check("the Status page is not given a second copy of the roster",
