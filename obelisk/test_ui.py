@@ -2028,14 +2028,33 @@ check("and says what it is not",
       "not the join allow-list" in _caps, _window(_caps, "<fieldset id=cap>", 400))
 
 # ---- and it does not claim to know a thing nothing can read
-check("the list is labelled as what Obelisk sent",
-      "log of what Obelisk sent" in _caps, _window(_caps, "<fieldset id=cap>", 500))
-check("saying plainly that the live list cannot be read",
-      "no way to read back who is currently let past" in _caps,
+#
+# Both lists rest on the same fact, so they say it in the same words - one constant,
+# consumed by both. This was two phrasings ten lines apart, which is how a caveat comes
+# to say two different things about one fact: whichever half somebody edits, the other
+# is now wrong and nothing fails.
+check("the list says it is a record of what was sent",
+      ui.SENT_NOT_READ in _caps, _window(_caps, "<fieldset id=cap>", 500))
+check("and the bans list says it in exactly the same words",
+      ui.SENT_NOT_READ in _banlist, _window(_banlist, "<fieldset id=bans>", 400))
+check("which is one sentence, not two that can drift apart",
+      ui.CAP_ARE.endswith(ui.SENT_NOT_READ)
+      and ui.BANS_ARE.endswith(ui.SENT_NOT_READ), [ui.CAP_ARE, ui.BANS_ARE])
+check("each section states it once, not twice",
+      _caps.count(ui.SENT_NOT_READ) == 1 and _banlist.count(ui.SENT_NOT_READ) == 1,
+      [_caps.count(ui.SENT_NOT_READ), _banlist.count(ui.SENT_NOT_READ)])
+check("saying plainly that the servers' own lists cannot be read",
+      "not a read of each server" in _caps and "nothing here can see" in _caps,
       _window(_caps, "<fieldset id=cap>", 500))
-check("it does not repeat the bans list's sentence five lines further down the page",
-      "not a read of each server" not in _caps,
-      _window(_caps, "<fieldset id=cap>", 500))
+check("and each list still names what it is a list OF",
+      _in_order(_caps, "allows issued from Obelisk", "a record of what was sent")
+      and _in_order(_banlist, "bans issued from Obelisk",
+                    "a record of what was sent"), [_caps[:400], _banlist[:400]])
+check("the cap keeps the sentences that are its own, which the bans list has no use for",
+      "join even when the server is full" in _caps
+      and "not the join allow-list" in _caps
+      and "join even when the server is full" not in _banlist,
+      _window(_caps, "<fieldset id=cap>", 400))
 
 # ---- the rows
 check("a row is keyed on the id, since somebody not online has no name",

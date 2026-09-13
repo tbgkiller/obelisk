@@ -1778,12 +1778,21 @@ def render_whos_online(roster, maps=(), pending=None, notice=None):
             % (notice or "", "".join(out)))
 
 
-# What the ban list is a record OF, said once, where somebody reading the list can see
-# it. ARK has no RCON command that reads back a server's BanList.txt, and those files
-# sit on ten filesystems this container cannot open - so this is what Obelisk did, which
-# is not the same claim as what the servers hold.
-BANS_ARE = ("bans issued from Obelisk \u2014 not a read of each server\u2019s ban "
-            "list, which nothing here can see")
+# What these lists are records OF, said once for both of them.
+#
+# There are two on this page - the bans and the cap - and they rest on exactly the same
+# fact: ARK has no RCON command that reads either list back, and the files sit on ten
+# filesystems this container cannot open. So what can honestly be shown is what this
+# manager sent, which is a different claim from what the servers hold.
+#
+# One constant, consumed by both, for the reason NO_RELAY_WHY is one constant: the
+# second copy of a caveat is the copy that drifts, and two drifted halves of one caveat
+# are two different claims about the same thing. Each section supplies only its own
+# subject.
+SENT_NOT_READ = ("\u2014 a record of what was sent, and not a read of each "
+                 "server\u2019s own list, which nothing here can see")
+
+BANS_ARE = "bans issued from Obelisk " + SENT_NOT_READ
 
 
 def _when_title(when):
@@ -1957,11 +1966,9 @@ def _shorten_id(netid):
 CAP_DOES = ("Lets one id join even when the server is full. It is not the join "
             "allow-list \u2014 it does not decide who may connect, only who may "
             "connect to a full server.")
-# Deliberately not the bans list's sentence. That one is a few lines up the same page,
-# and two near-identical thirteen-word provenance clauses in one view read as
-# boilerplate that nobody finishes - the same duplication polish caught in 2b.
-CAP_IS = ("Below is a log of what Obelisk sent \u2014 ARK gives no way to read back "
-          "who is currently let past.")
+# The provenance half is the shared sentence above - the same words under both lists,
+# because it is the same fact. Only the subject is this section's own.
+CAP_ARE = "allows issued from Obelisk " + SENT_NOT_READ
 
 
 def _cap_form(entry):
@@ -2066,7 +2073,7 @@ def render_cap(entries, notice=None, pending=None, now=None, total=None):
     return ('<fieldset id=cap><legend>Let past the player cap</legend>%s'
             '<div class=help>%s %s</div>'
             '<div class=whoroster>%s</div>%s</fieldset>'
-            % (notice or "", CAP_DOES, CAP_IS, "".join(out), byid))
+            % (notice or "", CAP_DOES, CAP_ARE, "".join(out), byid))
 
 
 def render_cluster(store, plan, status=None, players=None, roster=None,
