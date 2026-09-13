@@ -2381,12 +2381,17 @@ finally:
 
 _s1src = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
                  encoding="utf-8").read()
-check("the status page asks for the count",
-      "players=_players_now()" in _s1src.split("async def root")[1][:600],
-      "the front page does not ask")
-check("and names its maps before rendering them",
-      "_label_services(st)" in _s1src.split("async def root")[1][:600],
-      "the front page does not name its maps")
+# The front page IS the cluster page now. Status called render_status with the same
+# services and the same poll as this one, which is two renderings of one answer and two
+# places for it to go stale differently.
+_rootsrc = _after(_s1src, "async def root(request):").split(
+    chr(10) + "    async def ")[0]
+check("the front door renders nothing of its own",
+      "ui.render_" not in _rootsrc and "_players_now()" not in _rootsrc, _rootsrc)
+check("it sends people to the one page that does",
+      'HTTPFound("/admin/cluster")' in _rootsrc, _rootsrc)
+check("and still sends a stranger to setup first",
+      _in_order(_rootsrc, "authed(request)", '"/setup"', '"/admin/cluster"'), _rootsrc)
 _cbsrc = _s1src.split("def _cluster_body")[1].split(chr(10) + "    def ")[0]
 check("the cluster page does both too",
       "_label_services(st)" in _cbsrc and "players=_players_now()" in _cbsrc,
@@ -2784,10 +2789,12 @@ check("the unreadable row is shown and says what it costs",
       _cluster_r[-1600:])
 
 # the count column and the name list are one poll, so they agree on screen
+# Scoped to the roster: "The Island</div>" also ends the relay card's "Cannot reach:"
+# line further up the merged page, and _after() returns the span to the NEXT occurrence.
+_r_island = _after(_from(_cluster_r, "<fieldset id=who>"), "The Island</div>")
 check("a map counted at four lists four names",
-      ">4</td>" in _cluster_r
-      and _after(_cluster_r, "The Island</div>").count("<div class=whorow>") >= 4,
-      _cluster_r[-1600:])
+      ">4</td>" in _cluster_r and _r_island.count("<div class=whorow>") >= 4,
+      _r_island[:400])
 
 # ---- one header, not two
 _r_section = _from(_cluster_r, "Who’s online")
@@ -2826,9 +2833,13 @@ check("no relay explains itself once, not twice on one page",
 check("with the section pointing at the explanation above it",
       "no player count above" in _cluster_nr, _cluster_nr[-800:])
 
-# the front page is the status table only - the roster lives with the actions to come
-check("the Status page is not given a second copy of the roster",
-      "Who\u2019s online" not in _front_r, _front_r[-800:])
+# One page now, so "/" and "/admin/cluster" are the same page rather than two that
+# each drew the running-maps table.
+check("the front door lands on the page with the roster on it",
+      "Who\u2019s online" in _front_r, _front_r[-800:])
+check("and the running-maps table is drawn once there, not once per page",
+      _front_r.count("<legend>Running now</legend>") == 1,
+      _front_r.count("<legend>Running now</legend>"))
 
 # ---- read-only, and it cannot reach back into the relay
 _appsrc_2b = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
@@ -3475,6 +3486,8 @@ for _tail, _want in (("kick_sent", "✅"), ("kick_failed", "❌")):
           _ann2.ICONS.get(_tail))
 
 # ---- the roster is re-checked, and this added a kick and nothing else
+_uisrc_merge = io.open(os.path.join(os.path.dirname(__file__), "ui.py"),
+                          encoding="utf-8").read()
 _appsrc_2d = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
                      encoding="utf-8").read()
 _kicksrc = _after(_appsrc_2d, "async def player_kick").split(
@@ -3545,8 +3558,12 @@ check("and so does the message redirect",
 check("the result is shown inside the section it is about",
       _in_order(_kick_landed, "<fieldset id=who>", "Kick sent for Bob on The Island."),
       _after(_kick_landed, "<fieldset id=who>")[:300])
-check("and not repeated at the top of the page",
-      "Kick sent for Bob" not in _kick_landed.split("<fieldset id=who>")[0],
+# The events feed above the sections now carries the announcement of this same kick,
+# which is the log doing its job - a line of history, not a second result banner. What
+# must not happen is the RESULT being painted twice.
+check("and the result banner is not repeated at the top of the page",
+      "<div class=note>Kick sent for Bob" not in
+      _kick_landed.split("<fieldset id=who>")[0],
       _kick_landed.split("<fieldset id=who>")[0][-300:])
 check("it says reload rather than promising a refresh nothing performs",
       "reload to see whether they are off" in _kick_landed,
@@ -3783,15 +3800,14 @@ check("the result is shown in the section it is about",
 # commands and heard "Server received, But no response!!" ten times, which is not the
 # same as knowing. It is not a ban on the word "banned": since 2f the banner points at
 # the Banned players list, and naming a section is not a claim about a player.
-_bgo_says = _window(_bgo_landed, "Ban sent for Bob", 400)
+_bgo_says = _window(_from(_bgo_landed, "<fieldset id=who>"), "Ban sent for Bob", 400)
 for _claim in ("has been banned", "is banned", "now banned", "was banned",
                "Banned Bob", "banned Bob"):
     check("the banner does not say %r" % _claim, _claim not in _bgo_says, _bgo_says)
 check("it says the ban was sent", "Ban sent for Bob on all 2 maps." in _bgo_says,
       _bgo_says)
 check("and says the list on screen is the old one",
-      "reload to see it" in _window(_bgo_landed, "Ban sent for Bob", 300),
-      _window(_bgo_landed, "Ban sent for Bob", 300))
+      "reload to see it" in _bgo_says, _bgo_says)
 check("announced at info", ("player.ban_sent", "info") in
       [(i["event"], i["level"]) for i in _bgo_ev],
       [(i["event"], i["level"]) for i in _bgo_ev])
@@ -3828,12 +3844,14 @@ check("ending with something to do about it, like every other refusal here",
       _from(_bpart_landed, "<fieldset id=who>"),
       _window(_bpart_landed, "Ban sent for Bob", 400))
 check("in amber, in the section it is about - something was done, and something not",
-      _in_order(_bpart_landed, "<fieldset id=who>", "<div class=warn>",
+      _in_order(_from(_bpart_landed, "<fieldset id=who>"), "<div class=warn>",
                 "Ban sent for Bob")
       and "<div class=problem>" not in _bpart_landed,
       _window(_from(_bpart_landed, "<fieldset id=who>"), "<div class=warn>", 300))
+# The one-shot slot is emptied by the first render. The feed above still lists the
+# announcement, because that is a log and not a result.
 check("said once, to whoever pressed the button",
-      "Ban sent for Bob" not in _bpart_again,
+      "Ban sent for Bob" not in _from(_bpart_again, "<fieldset id=who>"),
       _window(_bpart_again, "<fieldset id=who>", 300))
 check("and reloading that page bans nobody a second time",
       [x for x in _bpart_after_refresh
@@ -4118,15 +4136,14 @@ check("the operator is redirected, so a refresh cannot unban twice", _ugo_st == 
 check("to the list it is about", _ugo_where.endswith("#bans") and "said=" in _ugo_where,
       _ugo_where)
 check("the result is shown in that section",
-      _in_order(_ugo_landed, "<fieldset id=bans>",
-                "Unban sent for Bob on all 2 maps"),
+      "Unban sent for Bob on all 2 maps" in _from(_ugo_landed, "<fieldset id=bans>"),
       _window(_from(_ugo_landed, "<fieldset id=bans>"), "Unban sent", 300))
+_ugo_says = _window(_from(_ugo_landed, "<fieldset id=bans>"), "Unban sent for Bob",
+                    300)
 check("it says sent, and does not claim they are back",
-      "is unbanned" not in _window(_ugo_landed, "Unban sent for Bob", 300)
-      and "they can join again" in _window(_ugo_landed, "Unban sent for Bob", 300),
-      _window(_ugo_landed, "Unban sent for Bob", 300))
+      "is unbanned" not in _ugo_says and "they can join again" in _ugo_says, _ugo_says)
 check("said once, to whoever pressed it",
-      "Unban sent for Bob" not in _ugo_again,
+      "Unban sent for Bob" not in _from(_ugo_again, "<fieldset id=bans>"),
       _window(_ugo_again, "<fieldset id=bans>", 300))
 check("announced at info",
       ("player.unban_sent", "info") in [(i["event"], i["level"]) for i in _ugo_ev],
@@ -4159,7 +4176,7 @@ check("ending with something to do about it",
       _from(_upart_landed, "<fieldset id=bans>"),
       _window(_upart_landed, "Unban sent for Bob", 400))
 check("in amber, in the section it is about",
-      _in_order(_upart_landed, "<fieldset id=bans>", "<div class=warn>",
+      _in_order(_from(_upart_landed, "<fieldset id=bans>"), "<div class=warn>",
                 "Unban sent for Bob")
       and "<div class=problem>" not in _upart_landed,
       _window(_from(_upart_landed, "<fieldset id=bans>"), "<div class=warn>", 300))
@@ -4568,6 +4585,177 @@ for _what_c, _frag_c in sorted({
         "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
 }.items()):
     check("%s is untouched by the cap" % _what_c, _frag_c in _appsrc_2d, _frag_c)
+
+# ---- Status is gone, and the page it duplicated is the one that remains
+#
+# Both pages called render_status with the same services and the same poll: the
+# running-maps table, the player-count header and the failing banner were drawn twice,
+# on two tabs, from one set of facts. Two places to look for one answer, and two places
+# for it to be stale differently.
+_real_version = _appmod.VERSION_INFO
+_t25 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _appmod.VERSION_INFO = {"commit": "abc1234def", "digest": "sha256:feed1234",
+                            "published": "sha256:feed1234"}
+    _real_relay_info = _appmod.RELAY_INFO
+    _appmod.RELAY_INFO = {"total": 2, "reachable": 2}
+
+    async def _merged():
+        _appmod.clusterctl.status = lambda store: dict(
+            _lstatus, services=[dict(x) for x in _lstatus["services"]])
+        _bot_s1.LIVE = _kick_relay()
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        r = await client.get("/", allow_redirects=False)
+        where = r.headers.get("Location", "")
+        page = await (await client.get("/admin/cluster")).text()
+        health = await client.get("/healthz")
+        hbody = await health.json()
+        # and the same door, to somebody who has not logged in
+        bare = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await bare.start_server()
+        out = await bare.get("/", allow_redirects=False)
+        stranger = out.headers.get("Location", "")
+        await bare.close()
+        await client.close()
+        return r.status, where, page, health.status, hbody, stranger
+
+    (_m_st, _m_where, _merged_pg, _m_health, _m_hbody,
+     _m_stranger) = _t25.run_until_complete(_merged())
+
+    async def _merged_idle():
+        _appmod.clusterctl.status = lambda store: {
+            "docker_ok": True, "compose_exists": True, "running": 0, "services": []}
+        _bot_s1.LIVE = None
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        page = await (await client.get("/admin/cluster")).text()
+        await client.close()
+        return page
+
+    _idle_pg = _t25.run_until_complete(_merged_idle())
+finally:
+    _t25.close()
+    _appmod.VERSION_INFO = _real_version
+    _appmod.RELAY_INFO = _real_relay_info
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+# ---- one door
+check("the front door redirects rather than rendering", _m_st == 302, _m_st)
+check("to the cluster page", _m_where == "/admin/cluster", _m_where)
+check("and a stranger is still sent to set up first", _m_stranger == "/setup",
+      _m_stranger)
+check("healthz is untouched by any of this",
+      _m_health == 200 and _m_hbody.get("ok") is True, [_m_health, _m_hbody])
+
+# ---- one running-maps table
+check("the running-maps table is drawn once",
+      _merged_pg.count("<legend>Running now</legend>") == 1,
+      _merged_pg.count("<legend>Running now</legend>"))
+check("and the player-count header states the population once",
+      _merged_pg.count("players online") == 1, _merged_pg.count("players online"))
+check("the duplication is gone at the call, not merely on the page",
+      "ui.render_status(" not in _s1src, "app.py still calls render_status")
+check("one caller remains, and it is the cluster renderer",
+      _uisrc_merge.count("render_status(") == 2,     # the def, and render_cluster's call
+      _uisrc_merge.count("render_status("))
+check("which is the page that has the controls under it",
+      _in_order(_after(_uisrc_merge, "def render_cluster("), "render_status(",
+                "render_whos_online("),
+      _window(_after(_uisrc_merge, "def render_cluster("), "render_status(", 200))
+
+# ---- and no way back to a page that no longer exists
+check("the nav has no Status tab", ">Status</a>" not in _merged_pg,
+      _window(_merged_pg, "<nav>", 400))
+check("cluster is the first tab",
+      _in_order(_window(_merged_pg, "<nav>", 500), "/admin/cluster", "/admin\"",
+                "/admin/mods"),
+      _window(_merged_pg, "<nav>", 500))
+check("and it is the one marked as where you are",
+      '<a href="/admin/cluster" class=on>Cluster</a>' in _merged_pg,
+      _window(_merged_pg, "<nav>", 400))
+
+# ---- what Status brought with it
+check("the connect addresses came too",
+      "<legend>Connect</legend>" in _merged_pg, "no connect panel")
+check("with an address per map",
+      _from(_merged_pg, "<legend>Connect</legend>").count("<code>") >= 3,
+      _window(_merged_pg, "<legend>Connect</legend>", 400))
+check("and the address of Obelisk itself",
+      "Obelisk itself:" in _from(_merged_pg, "<legend>Connect</legend>"),
+      _window(_merged_pg, "<legend>Connect</legend>", 300))
+check("the version panel came too",
+      "<legend>Obelisk version</legend>" in _merged_pg
+      and "abc1234" in _merged_pg, _window(_merged_pg, "Obelisk version", 300))
+check("the recent events came too, compact",
+      _in_order(_merged_pg, "<div id=feed", "See everything"),
+      _window(_merged_pg, "<div id=feed", 200))
+check("live, so it updates without reloading the page under somebody",
+      'data-newest="' in _merged_pg
+      and "/admin/activity/feed?since=" in _merged_pg,
+      _window(_merged_pg, "data-newest", 120))
+check("pointing at the full history rather than trying to be it",
+      'href="/admin/activity"' in _from(_merged_pg, "<div id=feed"),
+      _window(_from(_merged_pg, "<div id=feed"), "activity", 120))
+check("the dashboard cards came too",
+      _in_order(_merged_pg, "<legend>Right now</legend>", "Chat relay 2/2"),
+      _window(_merged_pg, "Right now", 300))
+check("which is where the jobs Obelisk runs end to end report themselves",
+      "<div class=dash>" in _merged_pg, _window(_merged_pg, "Right now", 300))
+check("and the readiness note, when there is nothing running",
+      "Cluster not running." in _idle_pg, _window(_idle_pg, "not running", 200))
+check("which no longer sends people to a tab they are already on",
+      "from the Cluster tab" not in _idle_pg,
+      _window(_idle_pg, "not running", 200))
+check("a running cluster is not told it is not running",
+      "Cluster not running." not in _merged_pg, "the note is unconditional")
+
+# ---- one rendering of update state, not two
+#
+# render_dashboard drew the build badge, the primed/unsafe card and the apply stepper;
+# render_ark_update draws all three again, differently, with the buttons that act on
+# them. Two pictures of one state, and the operator has no way to know which is stale.
+check("the update panel is on the page", "ARK build and mods" in _merged_pg,
+      "no update panel")
+# Named one by one, because the cards this page DOES keep use the same badge markup -
+# the relay card is a "badge good" too. What must not be here is a second picture of the
+# build, the prime, or an apply in flight.
+for _twice in ("Primed &amp; verified", "Unsafe &mdash;", "Applying an update",
+               "Priming an update", "could not check", "available</div>"):
+    check("the dashboard does not draw %r beside the update panel" % _twice,
+          _twice not in _from(_merged_pg, "<legend>Right now</legend>").split(
+              "</fieldset>")[0],
+          _window(_merged_pg, "Right now", 400))
+check("the page asks for the cards without the update half",
+      "render_dashboard(relay=" in _s1src, _window(_s1src, "render_dashboard", 200))
+check("so nothing on it computes an update state for a second renderer",
+      "failed=failed" not in _s1src, _window(_s1src, "render_dashboard", 300))
+
+# ---- and the operational half is all still there, under the summary
+for _sec, _mark in (("the running-maps table", "<legend>Running now</legend>"),
+                    ("who is online", "<fieldset id=who>"),
+                    ("the banned list", "<fieldset id=bans>"),
+                    ("the cap log", "<fieldset id=cap>"),
+                    ("the presets", "<legend>Presets</legend>"),
+                    ("the map checkboxes", "<legend>Maps</legend>"),
+                    ("the plan", "<legend>Plan</legend>"),
+                    ("the moderation controls", "/admin/player/kick"),
+                    ("the launch controls", 'formaction="/admin/launch"')):
+    check("%s is still on the page" % _sec, _mark in _merged_pg, _sec)
+
+check("the summary sits above the operational half",
+      _in_order(_merged_pg, "<div id=feed", "<legend>Running now</legend>",
+                "<fieldset id=who>", "<legend>Plan</legend>"),
+      "the band is not above the sections")
+check("and the reference material sits below it, not between",
+      _in_order(_merged_pg, "<legend>Plan</legend>", "<legend>Connect</legend>",
+                "<legend>Obelisk version</legend>"),
+      "connect and version are not at the foot")
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

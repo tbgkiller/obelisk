@@ -225,7 +225,11 @@ def _e(v):
 
 
 def page(title, body, nav_on=""):
-    tabs = [("/", "Status"), ("/admin", "Settings"), ("/admin/cluster", "Cluster"),
+    # Cluster is the front door. Status used to be the first tab and rendered the same
+    # running-maps table this one does - the same function, the same data, two pages -
+    # so it was two places to look for one answer and two places for that answer to
+    # disagree with itself.
+    tabs = [("/admin/cluster", "Cluster"), ("/admin", "Settings"),
             ("/admin/mods", "Mods"), ("/admin/activity", "Activity"),
             ("/admin/backups", "Backups"),
             ("/admin/restore", "Restore"),

@@ -451,7 +451,7 @@ def build_app(store, docker=None):
         # One panel. render_stop_job owns #stopwrap and the poller replaces what is
         # inside it, so the server-rendered paint and the polled one are the same
         # element rather than two of them stacked.
-        return (banner + _pending_panel() + _update_panel() +
+        return (banner + _summary_band(st) + _pending_panel() + _update_panel() +
                 ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
                 ui.render_cluster(store, plan, status=_label_services(st),
                                   players=_players_now(), roster=_roster_now(),
@@ -463,7 +463,8 @@ def build_app(store, docker=None):
                                   caps=capctl.recent(store),
                                   caps_pending=_asking(pending, "cap"),
                                   caps_notice=caps_notice,
-                                  caps_total=capctl.count(store)))
+                                  caps_total=capctl.count(store))
+                + _reference_foot())
 
     # The last poll, so opening the page does not go to the network before it renders.
     # A panel that takes two round trips to CurseForge to appear is a panel people
@@ -535,6 +536,54 @@ def build_app(store, docker=None):
         except Exception as e:                       # noqa: BLE001 - never a blank page
             log.warning("could not render pending changes: %s", e)
             return ""
+
+    def _recent_panel():
+        """The last few things Obelisk did, live, with the way to the full history.
+
+        Six lines rather than the feed: "what has this thing been doing" should be
+        answerable without opening a tab, and everything past six is what Activity is
+        for. The data-newest attribute is what FEED_LIVE polls against, so the panel
+        updates itself without the page reloading under somebody mid-action.
+        """
+        try:
+            feed = ui.render_events(announce.recent(limit=6), jobs=_jobs(),
+                                    compact=True)
+            feed = feed.replace('<div id=feed>',
+                                '<div id=feed data-newest="%d">'
+                                % announce.newest_id(), 1)
+            return feed.replace("</fieldset>",
+                                '<a href="/admin/activity">See everything</a>'
+                                "</fieldset>", 1)
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.warning("could not render the recent events: %s", e)
+            return ""
+
+    def _summary_band(st):
+        """The at-a-glance half of the page, above everything operational.
+
+        What Status was for, minus the table it shared with this page: is anything
+        wrong, is anything running, what has just happened. Compact on purpose - it
+        sits above the controls, so every line here is a line between the operator and
+        the button they came for.
+        """
+        note = ""
+        if not (st or {}).get("running"):
+            todo = store.readiness()
+            note = ('<div class=note>Cluster not running. %s</div>'
+                    % (("Still to set: " + ", ".join(b["label"] for b in todo))
+                       if todo else "Launch it below."))
+        return note + _dashboard() + _recent_panel()
+
+    def _reference_foot():
+        """Where to connect and what this is - at the foot, where reference belongs.
+
+        Connect is a row per map, and so is the running-maps table. Stacked, they are
+        two full-width tables of the same ten names competing for the top of the page,
+        which is the shape this merge is supposed to be removing rather than creating.
+        Down here it is where somebody looks when they want it and nowhere near what
+        they read when something is wrong.
+        """
+        return _connect_panel() + ui.render_version(VERSION_INFO) + ui.FEED_LIVE
 
     async def cluster_page(request):
         if not authed(request):
@@ -740,16 +789,12 @@ def build_app(store, docker=None):
 
     def _dashboard():
         try:
-            failed = None
-            if not updatesctl.primed(store):
-                got = (store.data.get("ark_update") or {}).get("primed")
-                if isinstance(got, dict) and not got.get("ok"):
-                    failed = dict(got, expected=[
-                        m.strip() for m in str(store.get("mod_ids") or "").split(",")
-                        if m.strip()])
-            return ui.render_dashboard(
-                status=ARK_UPDATE, ready=updatesctl.primed(store), failed=failed,
-                job=_ujob_live(), relay=RELAY_INFO, backup=job, restore=rjob)
+            # No update state here. The ARK build, whether it is primed, and an
+            # apply in flight are all rendered by the update panel below, which is the
+            # one that also carries the buttons - and two differing pictures of one
+            # state is the thing this merge exists to remove, not to relocate. The
+            # cards keep the jobs Obelisk owns end to end and the relay.
+            return ui.render_dashboard(relay=RELAY_INFO, backup=job, restore=rjob)
         except Exception as e:                       # noqa: BLE001 - never a blank page
             log.warning("could not render the dashboard: %s", e)
             return ""
@@ -2051,29 +2096,17 @@ def build_app(store, docker=None):
                              "folder." % name, "")
 
     async def root(request):
+        """The front door is the Cluster page.
+
+        Status and Cluster had grown into two renderings of one thing: both called
+        render_status, with the same services and the same poll, so the running-maps
+        table and the player count were drawn twice on two tabs. Everything Status had
+        of its own now lives on Cluster, and this address goes there rather than
+        rendering a third copy of any of it.
+        """
         if not authed(request):
             raise web.HTTPFound("/setup")
-        body_version = ui.render_version(VERSION_INFO)
-        todo = store.readiness()
-        st = clusterctl.status(store)
-        if st.get("running"):
-            body = ui.render_status(_label_services(st), players=_players_now())
-        else:
-            body = ('<div class=note>Cluster not running. %s</div>'
-                    % (("Still to set: " + ", ".join(b["label"] for b in todo))
-                       if todo else "Launch it from the Cluster tab."))
-        # The last few events on the front page, because "what has Obelisk been doing"
-        # should not need a tab - that was the shape of the complaint. The full history
-        # and the detail live on Activity.
-        recent = _dashboard() + ui.render_events(announce.recent(limit=6),
-                                                 jobs=_jobs(), compact=True)
-        recent = recent.replace("<div id=feed>",
-                                '<div id=feed data-newest="%d">' % announce.newest_id(), 1)
-        recent = recent.replace("</fieldset>",
-                                '<a href="/admin/activity">See everything</a>'
-                                "</fieldset>", 1)
-        body += recent + _connect_panel() + body_version + ui.FEED_LIVE
-        return chrome(body, "Obelisk", "/")
+        raise web.HTTPFound("/admin/cluster")
 
     async def healthz(_request):
         ok, msg = docker
