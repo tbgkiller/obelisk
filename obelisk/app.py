@@ -337,6 +337,9 @@ def build_app(store, docker=None):
                 # mount" are opposite advice and the label alone cannot tell which.
                 banner += ui.render_held_down(
                     still, states=updatesctl.held_down_states(store))
+        # One panel. render_stop_job owns #stopwrap and the poller replaces what is
+        # inside it, so the server-rendered paint and the polled one are the same
+        # element rather than two of them stacked.
         return (banner + _pending_panel() + _update_panel() +
                 ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
                 ui.render_cluster(store, plan, status=st))

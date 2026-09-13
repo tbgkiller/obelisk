@@ -1685,7 +1685,7 @@ check("and on exactly one marker, so the bar cannot jump", _ambiguous == [],
       _ambiguous)
 check("the stages come in the order the stop takes them",
       [ui.phase_index(t, ui.STOP_PHASES) for t in _STOP_EMITS]
-      == [0, 0, 0, 0, 1, 1, 1, 2],
+      == [1, 1, 1, 1, 2, 2, 2, 3],
       [ui.phase_index(t, ui.STOP_PHASES) for t in _STOP_EMITS])
 
 # ...and those strings are the real ones. Pinned against cluster.py's own source, so a
@@ -1861,12 +1861,165 @@ check("which swaps in the panel the server rendered",
       "wrap.innerHTML=j.html" in ui.STOP_JS, "panel is rebuilt in the browser")
 check("and reloads once the stop is done rather than polling for ever",
       "location.reload()" in ui.STOP_JS, "never reloads")
-check("a stop that is not running renders no panel",
-      ui.render_stop_job({"state": "idle"}) == "",
+check("an idle stop renders the empty wrapper and nothing else",
+      ui.render_stop_job({"state": "idle"}) == "<div id=stopwrap></div>",
       ui.render_stop_job({"state": "idle"}))
 check("a running one renders the stepper",
       "stepper" in ui.render_stop_job({"state": "running", "step": _STOP_EMITS[0]}),
       "no stepper")
+
+
+
+# ---- a stop that is over has to say how it went
+#
+# The first version rendered nothing at all for a finished job and reloaded the page,
+# so a stop that failed showed no reason anywhere - worse than the synchronous version
+# it replaced, which at least put the docker error in a red banner. And a stop that
+# worked lost its acknowledgement: "nothing is running" describes a state, it does not
+# confirm an action, and it reads exactly like a cluster that was never launched.
+_STOPPED_MSG = ("Cluster stopped. Saves and settings are untouched; Launch brings it "
+                "back.")
+_FAILED_MSG = "docker compose down failed:\nno such network: asa-cluster"
+
+_good_job = {"state": "done", "ok": True, "message": _STOPPED_MSG, "step": "done"}
+_bad_job = {"state": "done", "ok": False, "message": _FAILED_MSG, "step": "failed"}
+
+_good_html = ui.render_stop_job(_good_job)
+_bad_html = ui.render_stop_job(_bad_job)
+
+check("a stop that worked says so on the page, not only in Discord",
+      ui._e(_STOPPED_MSG) in _good_html, _good_html)
+check("as a note, because it is what was asked for",
+      '<div class="note">' in _good_html, _good_html)
+check("and it confirms the action rather than describing a state",
+      "untouched" in _good_html and "Launch brings it back" in _good_html, _good_html)
+check("a stop that failed shows the reason",
+      "no such network" in _bad_html, _bad_html)
+check("in red, because something is wrong",
+      '<div class="problem">' in _bad_html, _bad_html)
+check("the result is read from the message, not from the step",
+      ui._e(_FAILED_MSG) in _bad_html, _bad_html)
+check("a bare step of 'failed' never becomes the whole banner",
+      _bad_html != '<div id=stopwrap><div class="problem">failed</div></div>',
+      _bad_html)
+
+# ---- the bar is lit from the first paint, including the route's own opening steps
+#
+# The panel appears on the redirect, a second or two before the stop itself says
+# anything. Those opening steps used to resolve to -1, so the first thing the operator
+# saw was a bar with no cell lit - indistinguishable from a broken one, which is the
+# exact thing this stepper exists to rule out.
+_OPENING = ["starting", "Stop requested from the web UI."]
+_WHOLE_FLOW = _OPENING + _STOP_EMITS
+_dark = [t for t in _WHOLE_FLOW if ui.phase_index(t, ui.STOP_PHASES) < 0]
+check("no step in the whole flow leaves the bar dark", _dark == [],
+      [t[:60] for t in _dark])
+check("including the very first one the route sets",
+      ui.phase_index("starting", ui.STOP_PHASES) == 0,
+      ui.phase_index("starting", ui.STOP_PHASES))
+check("and the one the request announces",
+      ui.phase_index("Stop requested from the web UI.", ui.STOP_PHASES) == 0,
+      ui.phase_index("Stop requested from the web UI.", ui.STOP_PHASES))
+_idx_flow = [ui.phase_index(t, ui.STOP_PHASES) for t in _WHOLE_FLOW]
+check("the bar only ever moves forward", all(b >= a for a, b in zip(_idx_flow,
+                                                                   _idx_flow[1:])),
+      _idx_flow)
+_amb2 = [(t[:40], [m for _l, ms in ui.STOP_PHASES for m in ms if m.lower() in t.lower()])
+         for t in _WHOLE_FLOW
+         if len([m for _l, ms in ui.STOP_PHASES for m in ms if m.lower() in t.lower()]) != 1]
+check("and every step still matches exactly one marker", _amb2 == [], _amb2)
+check("a running stop always lights a cell",
+      '"st now"' in ui.render_stop_job({"state": "running", "step": "starting"}),
+      ui.render_stop_job({"state": "running", "step": "starting"}))
+
+# ---- one panel, not two
+#
+# _cluster_body rendered the panel inline and STOP_JS injected another into its own
+# #stopwrap, so the operator watched two identical "Stopping the cluster" panels
+# stacked for the length of the stop.
+check("the wrapper the poller targets is rendered exactly once",
+      (ui.render_stop_job({"state": "running", "step": "starting"})
+       + ui.STOP_JS).count("id=stopwrap") == 1,
+      (ui.render_stop_job({"state": "running", "step": "starting"})
+       + ui.STOP_JS).count("id=stopwrap"))
+check("the script no longer carries a wrapper of its own",
+      "id=stopwrap" not in ui.STOP_JS, ui.STOP_JS[:200])
+check("and it replaces what is inside the one that is there",
+      "wrap.innerHTML=j.html" in ui.STOP_JS, "poller does not target the wrapper")
+
+# ---- polling stops when the job does
+check("the poller only schedules another round while the job is running",
+      ui.STOP_JS.count("setTimeout(tick,2000)") == 1
+      and "return;" in ui.STOP_JS.split("setTimeout(tick,2000)")[1][:40],
+      ui.STOP_JS)
+check("a terminal state is not polled for ever",
+      "if(j.state==='running')" in ui.STOP_JS, "no terminal check")
+check("and the result is swapped in before it gives up",
+      ui.STOP_JS.index("wrap.innerHTML=j.html")
+      < ui.STOP_JS.index("if(j.state==='running')"), "result swap comes too late")
+
+# ---- the refusal splits the count per map
+_split_block = ui.render_stop_warning({"Ragnarok": 3, "The Island": 1}, [])
+check("the refusal says where the players are, not just how many",
+      "3 on Ragnarok, 1 on The Island" in _split_block, _split_block[:300])
+check("with the total still in front of it",
+      "4 players are on Ragnarok and The Island" in _split_block, _split_block[:300])
+check("one map needs no split", "(1 on Ragnarok)" not in
+      ui.render_stop_warning({"Ragnarok": 1}, []),
+      ui.render_stop_warning({"Ragnarok": 1}, []))
+check("and it still reads as one sentence for one player",
+      "1 player is on Ragnarok" in ui.render_stop_warning({"Ragnarok": 1}, []),
+      ui.render_stop_warning({"Ragnarok": 1}, []))
+
+# ---- and the whole thing end to end: a finished stop's result reaches the page
+_real_players2, _real_stop2 = _appmod.clusterctl.players_online, _appmod.clusterctl.stop
+
+
+async def _stop_to_the_end(result):
+    _appmod.clusterctl.players_online = lambda store, **k: (0, {}, [])
+    _appmod.clusterctl.stop = lambda store, **k: result
+    client = TestClient(TestServer(build_app(_sstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_sstore.get("admin_token"))})
+    await client.post("/admin/stop", allow_redirects=False)
+    for _ in range(60):
+        j = await (await client.get("/admin/cluster/status")).json()
+        if j.get("state") != "running":
+            break
+        await _aio2.sleep(0.05)
+    page = await (await client.get("/admin/cluster")).text()
+    await client.close()
+    return j, page
+
+
+_t8 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _j_ok, _page_ok = _t8.run_until_complete(
+        _stop_to_the_end((True, _STOPPED_MSG)))
+    _j_bad, _page_bad = _t8.run_until_complete(
+        _stop_to_the_end((False, _FAILED_MSG)))
+    _drain2()
+finally:
+    _t8.close()
+    _appmod.clusterctl.players_online = _real_players2
+    _appmod.clusterctl.stop = _real_stop2
+
+check("the status endpoint carries the result once the stop is over",
+      _j_ok.get("ok") is True and _STOPPED_MSG in (_j_ok.get("message") or ""), _j_ok)
+check("and the html it hands the page is the result banner",
+      '<div class="note">' in (_j_ok.get("html") or ""), _j_ok.get("html"))
+check("a reload after a successful stop still shows what happened",
+      ui._e(_STOPPED_MSG) in _page_ok, _page_ok[-800:])
+check("a failed stop carries its reason in the status too",
+      _j_bad.get("ok") is False and "no such network" in (_j_bad.get("message") or ""),
+      _j_bad)
+check("and a reload after it shows the reason in red",
+      "no such network" in _page_bad and '<div class="problem">' in _page_bad,
+      _page_bad[-800:])
+check("neither page stacks two stop panels",
+      _page_ok.count("id=stopwrap") == 1 and _page_bad.count("id=stopwrap") == 1,
+      [_page_ok.count("id=stopwrap"), _page_bad.count("id=stopwrap")])
 
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")

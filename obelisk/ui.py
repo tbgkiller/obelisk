@@ -734,6 +734,7 @@ APPLY_PHASES = [
 # the servers, done. The per-map "3 of 10" lives in the step text under the bar, which
 # is where a count belongs - it is not a phase of its own.
 STOP_PHASES = [
+    ("Requested", ("starting", "stop requested")),
     ("Closing worlds", ("asked to save and close", "could not be asked to close",
                         "saved its world and closed")),
     ("Stopping servers", ("stopping the servers now",)),
@@ -1238,10 +1239,14 @@ def render_stop_warning(counts, silent=()):
 
     lines = []
     if rows:
-        lines.append("<b>%d player%s on %s.</b> Stopping now disconnects %s."
+        # Per map as well as in total, because "four players are on" is not a decision
+        # and "three on Ragnarok, one on The Island" is - one of those is a raid night
+        # and the other is somebody parked at a spawn point.
+        split = ", ".join("%d on %s" % (n, _e(l)) for l, n in rows)
+        lines.append("<b>%d player%s on %s.</b> Stopping now disconnects them.%s"
                      % (total, " is" if total == 1 else "s are",
                         _e(_and([l for l, _n in rows])),
-                        "them" if total != 1 else "them"))
+                        (" (%s)" % split) if len(rows) > 1 else ""))
     if quiet:
         lines.append("%s did not answer, so it is not known whether anyone is on %s."
                      % (_e(_and(quiet)), "it" if len(quiet) == 1 else "them"))
@@ -1254,46 +1259,72 @@ def render_stop_warning(counts, silent=()):
 
 
 def render_stop_job(job):
-    """Where the stop has got to, for a page that used to just stop responding.
+    """Where the stop has got to, and - when it is over - how it went.
 
-    The request used to be held open across the whole thing - minutes, on ten maps -
-    so the browser showed a dead tab and the operator had no way to tell a stop that
-    was working from one that had hung. The stop already described itself stage by
-    stage to Discord; this is the same description, on the screen where the button was
-    pressed, driven by the same announcements.
+    The request used to be held open across the whole thing - minutes, on ten maps - so
+    the browser showed a dead tab and the operator had no way to tell a stop that was
+    working from one that had hung. The stop already described itself stage by stage to
+    Discord; this is the same description, on the screen where the button was pressed.
+
+    And it says how it ended, which the first version of this did not. It rendered
+    nothing at all for a finished job, so a stop that failed reloaded the page and
+    showed no reason anywhere - worse than the synchronous version it replaced, which
+    at least put the docker error in a red banner. A stop that worked was no better
+    off: "nothing is running" describes a state, it does not confirm an action, and it
+    reads exactly like a cluster that was never launched.
+
+    The result comes from `message` rather than `step`. `step` is the running
+    commentary and is overwritten with a bare "failed" on the way out; the sentence
+    worth reading is the one the stop returned.
+
+    Always wrapped in #stopwrap, whatever the state, so the poller has one thing to
+    replace. It used to render inline *and* be injected, which stacked two identical
+    panels on the page for the length of the stop.
     """
     job = job or {}
-    if job.get("state") != "running":
-        return ""
-    return ('<div class=panel><div class=ptitle>Stopping the cluster</div>%s'
-            '<div class=help style="margin-top:6px">%s</div></div>'
-            % (render_stepper(STOP_PHASES, job.get("step"),
-                              elapsed=job.get("elapsed")),
-               _e(job.get("step") or "starting")))
+    state = job.get("state")
+    if state == "running":
+        inner = ('<div class=panel><div class=ptitle>Stopping the cluster</div>%s'
+                 '<div class=help style="margin-top:6px">%s</div></div>'
+                 % (render_stepper(STOP_PHASES, job.get("step"),
+                                   elapsed=job.get("elapsed")),
+                    _e(job.get("step") or "starting")))
+    elif state == "done":
+        text = job.get("message") or ""
+        inner = ('<div class="%s">%s</div>'
+                 % ("note" if job.get("ok") else "problem", _e(text))) if text else ""
+    else:
+        inner = ""
+    return '<div id=stopwrap>%s</div>' % inner
 
 
 # Shaped like RESTORE_JS, and for the same reason: a long job on a page that would
 # otherwise say nothing until it finished. The panel's HTML comes back with the poll
 # rather than being rebuilt in the browser - the same swap the activity feed already
 # does with its dashboard block, so the stepper on screen and the stepper the server
-# would render cannot disagree. One reload when it finishes, so the result arrives as
-# an ordinary page instead of as another thing to poll.
+# would render cannot disagree.
+#
+# Polling stops the moment the job is terminal, and the result it swaps in is the last
+# thing it does. The reload after it is what makes the rest of the page true again -
+# the map table still says the cluster is up - and it is safe now only because the
+# result banner is rendered from sjob server-side: the reload shows the same sentence
+# rather than losing it, which is what the first version did.
 STOP_JS = """
-<div id=stopwrap hidden></div>
 <script>
 (function(){
   const wrap=document.getElementById('stopwrap');
   if(!wrap) return;
-  let sawRunning = wrap.dataset.running === '1';
+  let sawRunning=false;
   function tick(){
     fetch('/admin/cluster/status',{credentials:'same-origin'})
       .then(function(r){return r.json()}).then(function(j){
+        wrap.innerHTML=j.html||'';
         if(j.state==='running'){
           sawRunning=true;
-          wrap.hidden=false;
-          wrap.innerHTML=j.html||'';
           setTimeout(tick,2000);
-        } else if(sawRunning){ location.reload(); }
+          return;
+        }
+        if(sawRunning){ location.reload(); }
       }).catch(function(){setTimeout(tick,5000)});
   }
   tick();
