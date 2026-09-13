@@ -4283,6 +4283,292 @@ check("the page it points at is on the same page, below the roster",
       _in_order(_bgo_landed, "<fieldset id=who>", "<fieldset id=bans>"),
       "sections out of order")
 
+# ---- the cap route: one route, two directions, and no claim about the live list
+_csent = []
+
+
+def _cap_rcon(fail=()):
+    async def go(host, port, password, command, timeout=6.0):
+        _csent.append({"host": host, "command": command})
+        if any(f in host for f in fail):
+            raise TimeoutError("timed out after 10s")
+        return "Server received, But no response!!"
+    return go
+
+
+def _seed_caps(rows):
+    _lstore.data["cap_allows"] = [dict(r) for r in rows]
+
+
+def _caps_now():
+    return [dict(r) for r in (_lstore.data.get("cap_allows") or [])]
+
+
+_CAPID = "76561198000000001"
+_CA1 = {"netid": _CAPID, "when": 1789000000, "maps": {"The Island": "", "Ragnarok": ""}}
+_CA2 = {"netid": "999888777666555444", "when": 1789000500,
+        "maps": {"The Island": "", "Ragnarok": ""}}
+
+
+async def _post_cap(data, rcon=None, follow=True):
+    _csent[:] = []
+    _bot_s1.LIVE = _kick_relay()
+    _bot_s1.rcon_with = rcon or _cap_rcon()
+    _appmod.clusterctl.status = lambda store: dict(
+        _lstatus, services=[dict(x) for x in _lstatus["services"]])
+    client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_lstore.get("admin_token"))})
+    r = await client.post("/admin/player/cap", data=data, allow_redirects=False)
+    body = await r.text()
+    where, landed, again = r.headers.get("Location", ""), "", ""
+    if follow and r.status == 302:
+        landed = await (await client.get(where)).text()
+        again = await (await client.get(where)).text()
+    await client.close()
+    return r.status, where, body, landed, again
+
+
+_t24 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _seed_caps([])
+    _cask_st, _, _cask_body, _, _ = _t24.run_until_complete(
+        _post_cap({"netid": _CAPID, "action": "allow"}))
+    _cask_sent, _cask_ev, _cask_rows = list(_csent), _drain2(), _caps_now()
+
+    _seed_caps([])
+    _cgo_st, _cgo_where, _, _cgo_landed, _cgo_again = _t24.run_until_complete(
+        _post_cap({"netid": _CAPID, "action": "allow", "confirm": "1"}))
+    _cgo_sent, _cgo_ev, _cgo_rows = list(_csent), _drain2(), _caps_now()
+
+    _seed_caps([])
+    _cpart_st, _, _, _cpart_landed, _ = _t24.run_until_complete(
+        _post_cap({"netid": _CAPID, "action": "allow", "confirm": "1"},
+                  rcon=_cap_rcon(fail=("ragnarok",))))
+    _cpart_ev, _cpart_rows = _drain2(), _caps_now()
+
+    _seed_caps([])
+    _cnone_st, _, _cnone_body, _, _ = _t24.run_until_complete(
+        _post_cap({"netid": _CAPID, "action": "allow", "confirm": "1"},
+                  rcon=_cap_rcon(fail=("asa-",))))
+    _cnone_ev, _cnone_rows = _drain2(), _caps_now()
+
+    # ---- and back the other way
+    _seed_caps([_CA1, _CA2])
+    _crev_st, _crev_where, _, _crev_landed, _ = _t24.run_until_complete(
+        _post_cap({"netid": _CAPID, "action": "revoke", "confirm": "1"}))
+    _crev_sent, _crev_ev, _crev_rows = list(_csent), _drain2(), _caps_now()
+
+    _seed_caps([_CA1, _CA2])
+    _crevnone_st, _, _crevnone_body, _, _ = _t24.run_until_complete(
+        _post_cap({"netid": _CAPID, "action": "revoke", "confirm": "1"},
+                  rcon=_cap_rcon(fail=("asa-",))))
+    _crevnone_rows = _caps_now()
+    _drain2()
+
+    # a revoke for an id this manager never allowed
+    _seed_caps([_CA2])
+    _cunknown_st, _, _, _cunknown_landed, _ = _t24.run_until_complete(
+        _post_cap({"netid": "11112222333344445", "action": "revoke", "confirm": "1"}))
+    _cunknown_sent, _cunknown_rows = list(_csent), _caps_now()
+    _drain2()
+
+    _seed_caps([])
+    _cbad_st, _, _cbad_body, _, _ = _t24.run_until_complete(
+        _post_cap({"netid": "765;DoExit", "action": "allow", "confirm": "1"}))
+    _cbad_sent, _cbad_rows = list(_csent), _caps_now()
+    _drain2()
+
+    _cempty_st, _, _cempty_body, _, _ = _t24.run_until_complete(
+        _post_cap({"netid": "", "action": "allow", "confirm": "1"}))
+    _cempty_sent = list(_csent)
+    _drain2()
+
+    _seed_caps([dict(_CA2, when=1789000000 + _i) for _i in range(51)])
+    _ccap_st, _, _ccap_body, _, _ = _t24.run_until_complete(
+        _post_cap({"netid": "", "action": "allow"}))
+    _drain2()
+finally:
+    _t24.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+    _seed_caps([])
+
+# ---- it asks first
+check("pressing Allow asks before it acts", _cask_st == 200, _cask_st)
+check("naming the id", "Let %s past the player cap?" % _CAPID in _cask_body,
+      _window(_cask_body, "whorow asking", 400))
+check("in its own section", _in_order(_cask_body, "<fieldset id=cap>", "past the player cap?"),
+      _window(_from(_cask_body, "<fieldset id=cap>"), "asking", 300))
+check("nothing was sent while it was asking", _cask_sent == [], _cask_sent)
+check("nothing was announced", _cask_ev == [], [i["event"] for i in _cask_ev])
+check("and nothing was written down", _cask_rows == [], _cask_rows)
+
+# ---- allow, confirmed
+check("the allow goes to every map",
+      sorted(x["command"] for x in _cgo_sent) ==
+      ["AllowPlayerToJoinNoCheck %s" % _CAPID] * 2, [x["command"] for x in _cgo_sent])
+check("two maps, two hosts", len({x["host"] for x in _cgo_sent}) == 2,
+      [x["host"] for x in _cgo_sent])
+check("and it is the allow command, not the ban's",
+      not any("Ban" in x["command"] for x in _cgo_sent),
+      [x["command"] for x in _cgo_sent])
+check("the operator is redirected, so a refresh cannot send it twice", _cgo_st == 302,
+      _cgo_st)
+check("to the section it is about",
+      _cgo_where.endswith("#cap") and "said=" in _cgo_where, _cgo_where)
+check("the result is shown there",
+      _in_order(_cgo_landed, "<fieldset id=cap>", "Allow sent for %s" % _CAPID),
+      _window(_from(_cgo_landed, "<fieldset id=cap>"), "Allow sent", 300))
+check("said once, to whoever pressed it",
+      "Allow sent for" not in _cgo_again, _window(_cgo_again, "<fieldset id=cap>", 300))
+check("announced at info",
+      ("player.cap_allow_sent", "info") in [(i["event"], i["level"]) for i in _cgo_ev],
+      [(i["event"], i["level"]) for i in _cgo_ev])
+check("and written down, because nothing on the server will say so later",
+      len(_cgo_rows) == 1, _cgo_rows)
+check("with what each map did",
+      sorted((_cgo_rows or [{}]).pop().get("maps", {}).keys()) ==
+      ["Ragnarok", "The Island"], _cgo_rows)
+
+# ---- allow, one map short
+check("a partial redirects like the whole one", _cpart_st == 302, _cpart_st)
+check("naming the map that did not take it",
+      "NOT on Ragnarok" in _from(_cpart_landed, "<fieldset id=cap>"),
+      _window(_cpart_landed, "Allow sent", 400))
+check("and saying what that means for the player",
+      "still held to the cap" in _from(_cpart_landed, "<fieldset id=cap>"),
+      _window(_cpart_landed, "Allow sent", 400))
+check("ending with something to do about it",
+      "Try those maps again, or check they are reachable." in
+      _from(_cpart_landed, "<fieldset id=cap>"),
+      _window(_cpart_landed, "Allow sent", 400))
+check("in amber, in its own section",
+      _in_order(_cpart_landed, "<fieldset id=cap>", "<div class=warn>", "Allow sent")
+      and "<div class=problem>" not in _cpart_landed,
+      _window(_from(_cpart_landed, "<fieldset id=cap>"), "<div class=warn>", 300))
+check("announced as a partial, at warning",
+      ("player.cap_allow_partial", "warning") in
+      [(i["event"], i["level"]) for i in _cpart_ev],
+      [(i["event"], i["level"]) for i in _cpart_ev])
+check("a partial is still written down, since one map did take it",
+      len(_cpart_rows) == 1, _cpart_rows)
+
+# ---- allow, nothing at all
+check("an allow that reached no map is not a redirect", _cnone_st == 200, _cnone_st)
+check("it says it did NOT send",
+      "did NOT send to any of the 2 maps" in _cnone_body,
+      _after(_cnone_body, "did NOT")[:260])
+check("in red", "<div class=problem>" in _cnone_body, _cnone_body[:400])
+check("announced as a failure, at error",
+      ("player.cap_allow_failed", "error") in
+      [(i["event"], i["level"]) for i in _cnone_ev],
+      [(i["event"], i["level"]) for i in _cnone_ev])
+check("and NOTHING is written down - the log would be claiming a command nobody took",
+      _cnone_rows == [], _cnone_rows)
+
+# ---- revoke
+check("the revoke sends the other command, to every map",
+      sorted(x["command"] for x in _crev_sent) ==
+      ["DisallowPlayerToJoinNoCheck %s" % _CAPID] * 2,
+      [x["command"] for x in _crev_sent])
+check("it redirects to the same section", _crev_st == 302
+      and _crev_where.endswith("#cap"), [_crev_st, _crev_where])
+check("saying so there",
+      "Revoke sent for %s" % _CAPID in _from(_crev_landed, "<fieldset id=cap>"),
+      _window(_from(_crev_landed, "<fieldset id=cap>"), "Revoke sent", 300))
+check("announced on its own event",
+      ("player.cap_revoke_sent", "info") in
+      [(i["event"], i["level"]) for i in _crev_ev],
+      [(i["event"], i["level"]) for i in _crev_ev])
+check("the matching record is marked, not deleted",
+      len(_crev_rows) == 2 and [bool(r.get("revoked")) for r in _crev_rows]
+      == [True, False], _crev_rows)
+check("and somebody else's allow is untouched",
+      not any(r.get("revoked") for r in _crev_rows if r["netid"] != _CAPID),
+      _crev_rows)
+check("a revoke that reached no map marks nothing",
+      not any(r.get("revoked") for r in _crevnone_rows), _crevnone_rows)
+check("and says so in red",
+      _crevnone_st == 200 and "<div class=problem>" in _crevnone_body,
+      [_crevnone_st, _crevnone_body[:200]])
+
+# ---- a revoke for an id this manager never allowed
+check("an id with no record here is still revoked on every map",
+      sorted(x["command"] for x in _cunknown_sent) ==
+      ["DisallowPlayerToJoinNoCheck 11112222333344445"] * 2,
+      [x["command"] for x in _cunknown_sent])
+check("and the page says the log did not change",
+      "no record of letting that id past" in
+      _from(_cunknown_landed, "<fieldset id=cap>"),
+      _window(_cunknown_landed, "Revoke sent", 300))
+check("nobody else's record was touched",
+      not any(r.get("revoked") for r in _cunknown_rows), _cunknown_rows)
+
+for _tail, _want in (("cap_allow_sent", "✅"), ("cap_allow_partial", "⚠"),
+                     ("cap_allow_failed", "❌"), ("cap_revoke_sent", "✅"),
+                     ("cap_revoke_partial", "⚠"),
+                     ("cap_revoke_failed", "❌")):
+    check("%s has an icon of its own" % _tail, _ann2.ICONS.get(_tail) == _want,
+          _ann2.ICONS.get(_tail))
+
+# ---- the id is checked, and this one is always typed by hand
+check("an id with a semicolon in it is refused", _cbad_st == 200, _cbad_st)
+check("saying what an id is",
+      "platform ids are letters and digits" in _cbad_body,
+      _after(_cbad_body, "class=warn")[:260])
+check("in amber", "<div class=problem>" not in _cbad_body, _cbad_body[:400])
+check("and NOTHING was sent", _cbad_sent == [], _cbad_sent)
+check("nor written down", _cbad_rows == [], _cbad_rows)
+check("an empty id is refused too",
+      _cempty_st == 200 and "did not say which id" in _cempty_body,
+      _after(_cempty_body, "class=warn")[:200])
+check("and sends nothing", _cempty_sent == [], _cempty_sent)
+
+# ---- and the page says how much of the log it is showing
+_ccap_sec = _from(_ccap_body, "<fieldset id=cap>")
+check("a log holding more than it shows says so on the page",
+      "Showing 50 of 51" in _ccap_sec, _window(_ccap_sec, "Showing", 200))
+check("drawing only the page it said it was drawing",
+      _ccap_sec.count(">Revoke</button>") == 50,
+      _ccap_sec.count(">Revoke</button>"))
+
+# ---- the shape of the route, and what it left alone
+_capsrc = _after(_appsrc_2d, "async def player_cap").split(
+    chr(10) + "    async def ")[0]
+check("the id is checked before anything is sent",
+      _in_order(_capsrc, "valid_netid", "if not confirmed", "PlayerToJoinNoCheck"),
+      _capsrc[:900])
+check("every map is a target", "rcon_targets(store)" in _capsrc,
+      _window(_capsrc, "rcon_targets", 200))
+check("all at once, like the ban and the unban", "asyncio.gather" in _capsrc,
+      _window(_capsrc, "gather", 200))
+check("both directions are keyed on the id",
+      'DisallowPlayerToJoinNoCheck %s" if revoking' in _capsrc
+      and 'AllowPlayerToJoinNoCheck %s") % netid' in _capsrc,
+      _window(_capsrc, "PlayerToJoinNoCheck", 260))
+check("the log is written only after a map took it",
+      _in_order(_capsrc, "if not took:", "capctl.record("),
+      _window(_capsrc, "if not took", 800))
+check("and a revoke marks rather than deletes",
+      "capctl.mark_revoked" in _capsrc and ".remove(" not in _capsrc,
+      _window(_capsrc, "mark_revoked", 200))
+check("the word whitelist is nowhere in the route",
+      "whitelist" not in _capsrc.lower(), _capsrc[:300])
+for _what_c, _frag_c in sorted({
+        "the ban action": "async def player_ban",
+        "the unban action": "async def player_unban",
+        "the kick action": "async def player_kick",
+        "the message action": "async def player_message",
+        "the apply gate": "def verify_every_map(store):",
+        "the restore gate": "def verify_restored(store, key, note=None):",
+        "the stop guard": "ui.render_stop_warning(counts, silent)",
+        "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
+}.items()):
+    check("%s is untouched by the cap" % _what_c, _frag_c in _appsrc_2d, _frag_c)
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

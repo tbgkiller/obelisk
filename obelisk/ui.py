@@ -17,6 +17,7 @@ from . import maps as mapcat
 from .presets import PRESETS
 from . import mods as modlib
 from . import bans as bansctl
+from . import cap as capctl
 
 CSS = """
 :root{color-scheme:dark}
@@ -1949,10 +1950,131 @@ def _shorten_id(netid):
     return netid if len(netid) <= 20 else netid[:10] + "\u2026" + netid[-6:]
 
 
+# Two sentences, because the name of this thing is the part people get wrong. The first
+# says what it does; the second says what the list under it is. Neither of them is the
+# word "whitelist" - to an ARK admin that is the file deciding who may connect at all,
+# and this only exempts somebody from MaxPlayers.
+CAP_DOES = ("Lets one id join even when the server is full. It is not the join "
+            "allow-list \u2014 it does not decide who may connect, only who may "
+            "connect to a full server.")
+# Deliberately not the bans list's sentence. That one is a few lines up the same page,
+# and two near-identical thirteen-word provenance clauses in one view read as
+# boilerplate that nobody finishes - the same duplication polish caught in 2b.
+CAP_IS = ("Below is a log of what Obelisk sent \u2014 ARK gives no way to read back "
+          "who is currently let past.")
+
+
+def _cap_form(entry):
+    return ('<form method=post action="/admin/player/cap" class=whoform>'
+            '<input type=hidden name=netid value="%s">'
+            '<input type=hidden name=when value="%s">'
+            '<input type=hidden name=action value="revoke">'
+            '<button class="whoact talk" type=submit>Revoke</button></form>'
+            % (_e(entry.get("netid") or ""), _e(str(entry.get("when") or 0))))
+
+
+def render_cap_confirm(netid, action="allow", when="", problem=""):
+    """Ask once, and let them press it.
+
+    A click either way. Letting somebody past the cap costs a seat on a full server and
+    taking it away costs them nothing they own, so neither direction earns the typed
+    name the ban guard asks for - and a confirmation people type without reading is
+    worth less than one they read.
+    """
+    warn = ('<span class=whoflag style="color:#ff9d94">%s</span>' % _e(problem)
+            if problem else "")
+    if action == "revoke":
+        head = ('<b>Stop letting %s past the player cap?</b> They can still join when '
+                'there is room. The record below is kept and marked revoked, not '
+                'removed. Nothing has been done yet.' % _e(netid))
+        go = "Yes, revoke"
+    else:
+        head = ('<b>Let %s past the player cap?</b> They will be able to join every '
+                'map even when it is full. This is not the join allow-list. Nothing '
+                'has been done yet.' % _e(netid))
+        go = "Yes, let them past"
+    return ('<span class=whoflag>%s</span>%s'
+            '<form method=post action="/admin/player/cap" class=whoform>'
+            '<input type=hidden name=netid value="%s">'
+            '<input type=hidden name=when value="%s">'
+            '<input type=hidden name=action value="%s">'
+            '<input type=hidden name=confirm value="1">'
+            '<button class="whoact talk" type=submit>%s</button> '
+            '<a class=help href="/admin/cluster#cap">Cancel</a></form>'
+            % (head, warn, _e(netid), _e(when or ""),
+               "revoke" if action == "revoke" else "allow", go))
+
+
+def _cap_by_id_form():
+    return ('<form method=post action="/admin/player/cap" class="whoform byid">'
+            '<label class=help for=capid>Let an id past the cap '
+            '\u2014 they can join a full server:</label>'
+            '<input id=capid name=netid autocomplete=off '
+            'placeholder="platform id (Steam, Epic or EOS)">'
+            '<input type=hidden name=action value="allow">'
+            '<button class="whoact talk" type=submit>Allow by ID</button></form>')
+
+
+def render_cap(entries, notice=None, pending=None, now=None, total=None):
+    """What Obelisk let past the player cap, newest first, and how to take it back.
+
+    Built the same way as the bans list and for the same reason: the two sections
+    answer the same kind of question about the same kind of key, and an operator who
+    has read one should not have to learn the other. The rows carry no name - somebody
+    who is not online has none to carry, and that is exactly who this is used on.
+    """
+    now = time.time() if now is None else now
+    held = list(entries or [])
+    asking = str((pending or {}).get("netid") or "")
+    out = []
+    for entry in held:
+        netid = str(entry.get("netid") or "")
+        when = entry.get("when") or 0
+        mine = asking and netid == asking
+        here = mine and str(pending.get("when") or "") == str(when)
+        gone = capctl.is_revoked(entry)
+        if here:
+            out.append('<div class="whorow asking"><span class=whoname>%s</span>%s'
+                       '</div>' % (_e(_shorten_id(netid)), pending.get("html") or ""))
+            continue
+        if gone:
+            act = ""
+            state = ("revoked %s \u00b7 that allow %s"
+                     % (_ago(now - int(entry.get("revoked") or 0)),
+                        _spread(entry, past=True)))
+        else:
+            act = "" if mine else _cap_form(entry)
+            state = _spread(entry)
+        out.append('<div class="whorow%s"><span class=whoname title="%s">%s</span>'
+                   '<span class=whoflag title="%s">%s</span>'
+                   '<span class=whoflag>%s</span>'
+                   '<span class=whoacts>%s</span></div>'
+                   % (" quiet" if gone else "", _e(netid), _e(_shorten_id(netid)),
+                      _e(_when_title(when)), _e(_ago(now - int(when))),
+                      _e(state), act))
+    if not held:
+        out.append('<div class=whonote>Nobody has been let past the cap from '
+                   'here.</div>')
+    if total is not None and int(total) > len(held):
+        out.append('<div class=whonote>Showing %d of %d \u2014 older events are kept '
+                   'but not listed.</div>' % (len(held), int(total)))
+    if asking and not str((pending or {}).get("when") or ""):
+        byid = ('<div class="whorow asking"><span class=whoname>Allow by ID</span>%s'
+                '</div>' % (pending.get("html") or ""))
+    else:
+        byid = _cap_by_id_form()
+    return ('<fieldset id=cap><legend>Let past the player cap</legend>%s'
+            '<div class=help>%s %s</div>'
+            '<div class=whoroster>%s</div>%s</fieldset>'
+            % (notice or "", CAP_DOES, CAP_IS, "".join(out), byid))
+
+
 def render_cluster(store, plan, status=None, players=None, roster=None,
                    pending=None, notice=None, bans=None,
                    bans_pending=None, bans_notice=None,
-                   bans_total=None):
+                   bans_total=None,
+                   caps=None, caps_pending=None,
+                   caps_notice=None, caps_total=None):
     selected = set(str(store.get("maps")).split(","))
     presets = "".join(
         '<button class=ghost type=button name=preset value="%s" title="%s">%s</button>'
@@ -1993,6 +2115,8 @@ def render_cluster(store, plan, status=None, players=None, roster=None,
                                pending=pending, notice=notice) +
             render_bans(bans, notice=bans_notice, pending=bans_pending,
                         total=bans_total) +
+            render_cap(caps, notice=caps_notice, pending=caps_pending,
+                       total=caps_total) +
             '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '

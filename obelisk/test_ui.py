@@ -371,6 +371,7 @@ _status = {
 from . import ui
 from . import bot as _bot_ui
 from . import bans as _bans
+from . import cap as _cap
 
 _p = ui.render_ark_update(_ps, _status)
 check("the panel shows the running build and the newer one",
@@ -2001,6 +2002,173 @@ check("and an empty list with records behind it says so",
 check("the by-id field says why somebody would use it",
       "for bans made in-game or by hand" in _banlist,
       _from(_banlist, 'class="whoform byid"'))
+
+# ---- letting somebody past the player cap
+#
+# The section that is hardest to name and easiest to misread. AllowPlayerToJoinNoCheck
+# exempts one id from MaxPlayers; it is not the file that decides who may connect, and
+# the word "whitelist" means that file to every ARK admin who has ever run a server.
+_C1 = {"netid": "76561198000000001", "when": _NOW - 300,
+       "maps": {"The Island": "", "Ragnarok": "timed out"}}
+_C2 = {"netid": "0002a1b2c3d4e5f60002a1b2c3d4e5f6", "when": _NOW - 90000,
+       "maps": {"The Island": "", "Ragnarok": ""}, "revoked": _NOW - 400}
+_caps = ui.render_cap([_C1, _C2], now=_NOW)
+
+check("the cap has a section of its own",
+      "<fieldset id=cap>" in _caps
+      and "<legend>Let past the player cap</legend>" in _caps, _caps[:200])
+check("it is never called a whitelist", "whitelist" not in _caps.lower(), _caps[:600])
+check("nor is the confirmation, or anything else this section renders",
+      "whitelist" not in (ui.render_cap_confirm("765", "allow")
+                          + ui.render_cap_confirm("765", "revoke")).lower(),
+      ui.render_cap_confirm("765", "allow"))
+check("it says what it actually does",
+      "join even when the server is full" in _caps, _window(_caps, "<fieldset id=cap>", 400))
+check("and says what it is not",
+      "not the join allow-list" in _caps, _window(_caps, "<fieldset id=cap>", 400))
+
+# ---- and it does not claim to know a thing nothing can read
+check("the list is labelled as what Obelisk sent",
+      "log of what Obelisk sent" in _caps, _window(_caps, "<fieldset id=cap>", 500))
+check("saying plainly that the live list cannot be read",
+      "no way to read back who is currently let past" in _caps,
+      _window(_caps, "<fieldset id=cap>", 500))
+check("it does not repeat the bans list's sentence five lines further down the page",
+      "not a read of each server" not in _caps,
+      _window(_caps, "<fieldset id=cap>", 500))
+
+# ---- the rows
+check("a row is keyed on the id, since somebody not online has no name",
+      "76561198000000001" in _caps, _window(_caps, "whoroster", 400))
+check("a long id is shortened with the whole of it on hover",
+      'title="0002a1b2c3d4e5f60002a1b2c3d4e5f6"' in _caps
+      and "0002a1b2c3…d4e5f6" in _caps, _window(_caps, "0002a1b2", 300))
+check("with when it was sent",
+      "5m ago" in _caps and 'title="%s"' % ui._when_title(_C1["when"]) in _caps,
+      _window(_caps, "whoroster", 400))
+check("and how far it got, in the words the banner used",
+      "1 of 2 — missing Ragnarok" in _caps, _window(_caps, "whoroster", 500))
+check("a live allow offers the way back",
+      '<button class="whoact talk" type=submit>Revoke</button>' in _caps,
+      _window(_caps, "/admin/player/cap", 300))
+check("which carries the id and the direction",
+      _in_order(_window(_from(_caps, "76561198000000001"), "/admin/player/cap", 400),
+                'name=netid value="76561198000000001"', 'name=action value="revoke"'),
+      _window(_from(_caps, "76561198000000001"), "/admin/player/cap", 400))
+
+# ---- a revoked event is a different kind of row, like an unbanned one
+check("a revoked row takes the quiet vocabulary",
+      _caps.count('<div class="whorow quiet">') == 1,
+      _caps.count('<div class="whorow quiet">'))
+check("and a live one does not",
+      _caps.count('<div class="whorow">') == 1, _caps.count('<div class="whorow">'))
+check("it says when it was revoked", "revoked 6m ago" in _caps,
+      _window(_caps, "revoked", 300))
+check("and puts the allow itself in the past",
+      "that allow had reached all 2 maps" in _caps, _window(_caps, "revoked", 300))
+check("a revoked row offers no second Revoke",
+      _caps.count(">Revoke</button>") == 1, _caps.count(">Revoke</button>"))
+check("and nothing is deleted to make that true",
+      _caps.count("<div class=\"whorow") == 2, _caps.count("<div class=\"whorow"))
+
+# ---- nothing yet is a calm sentence
+_nocaps = ui.render_cap([], now=_NOW)
+check("an empty log says so plainly",
+      "Nobody has been let past the cap from here." in _nocaps, _nocaps)
+check("in the quiet style",
+      "<div class=warn>" not in _nocaps and "<div class=problem>" not in _nocaps,
+      _nocaps)
+check("and the way in is still there",
+      'class="whoform byid"' in _nocaps and ">Allow by ID</button>" in _nocaps,
+      _from(_nocaps, 'class="whoform byid"'))
+check("which says what it will do",
+      "they can join a full server" in _nocaps,
+      _from(_nocaps, 'class="whoform byid"'))
+check("and carries the direction, so one route can serve both",
+      'name=action value="allow"' in _from(_nocaps, 'class="whoform byid"'),
+      _from(_nocaps, 'class="whoform byid"'))
+
+# ---- the cap, said out loud, like the bans list
+check("a log holding more than it shows says so",
+      "Showing 2 of 53" in ui.render_cap([_C1, _C2], now=_NOW, total=53),
+      _window(ui.render_cap([_C1, _C2], now=_NOW, total=53), "Showing", 200))
+check("and says the rest is kept",
+      "older events are kept but not listed" in
+      ui.render_cap([_C1, _C2], now=_NOW, total=53),
+      _window(ui.render_cap([_C1, _C2], now=_NOW, total=53), "Showing", 200))
+check("a log that IS all of it says nothing",
+      "Showing" not in ui.render_cap([_C1, _C2], now=_NOW, total=2),
+      ui.render_cap([_C1, _C2], now=_NOW, total=2))
+check("nor one that was never told a total",
+      "Showing" not in _caps, _caps)
+
+# ---- one question at a time, in the place it was asked
+_cask = ui.render_cap([_C1, _C2], now=_NOW, pending={
+    "netid": "76561198000000001", "when": str(_C1["when"]),
+    "html": ui.render_cap_confirm("76561198000000001", "revoke", str(_C1["when"]))})
+check("the question replaces the row it was asked on",
+      '<div class="whorow asking">' in _cask, _cask[:200])
+check("and that row stops offering a one-press Revoke",
+      _cask.count(">Revoke</button>") == 0, _cask.count(">Revoke</button>"))
+_cbyid = ui.render_cap([_C1], now=_NOW, pending={
+    "netid": "999", "when": "", "html": ui.render_cap_confirm("999", "allow")})
+check("a question about a typed id replaces the field it was typed into",
+      'class="whoform byid"' not in _cbyid, _cbyid)
+check("and is asked where that field was",
+      _in_order(_cbyid, "<div class=whoroster>", "whorow asking", "Allow by ID"),
+      _from(_cbyid, "<div class=whoroster>")[-400:])
+
+# ---- what each confirmation says
+_callow = ui.render_cap_confirm("76561198000000001", "allow")
+_crevoke = ui.render_cap_confirm("76561198000000001", "revoke")
+check("the allow asks once and takes a press",
+      '<input type=hidden name=confirm value="1">' in _callow
+      and "placeholder=" not in _callow, _callow)
+check("naming the id it is about", "76561198000000001" in _callow, _callow)
+check("and saying what will change",
+      "join every map even when it is full" in _callow, _callow)
+check("it says nothing has happened yet",
+      "Nothing has been done yet" in _callow, _callow)
+check("the revoke asks the opposite question",
+      "Stop letting 76561198000000001 past the player cap?" in _crevoke, _crevoke)
+check("saying what they keep", "can still join when there is room" in _crevoke,
+      _crevoke)
+check("and that the record survives it",
+      "kept and marked revoked, not removed" in _crevoke, _crevoke)
+check("the two send different directions",
+      'name=action value="allow"' in _callow
+      and 'name=action value="revoke"' in _crevoke, [_callow, _crevoke])
+check("both offer a way out that returns to the section",
+      'href="/admin/cluster#cap"' in _callow
+      and 'href="/admin/cluster#cap"' in _crevoke, [_callow, _crevoke])
+check("a problem comes back with the question still standing",
+      _in_order(ui.render_cap_confirm("765", "allow", "", "That id is not one."),
+                "That id is not one.", "name=confirm"),
+      ui.render_cap_confirm("765", "allow", "", "That id is not one."))
+
+# ---- the log itself
+_cs2 = _LedgerStore()
+_cap.record(_cs2, "765", {"The Island": "", "Ragnarok": "timed out"}, when=100)
+_cap.record(_cs2, "765", {"The Island": "", "Ragnarok": ""}, when=200)
+_cap.record(_cs2, "999", {"The Island": ""}, when=300)
+check("an allow is written down", _cap.count(_cs2) == 3, _cap.count(_cs2))
+check("with what each map did", _cap.missed(_cap.recent(_cs2, limit=1).pop()) == [],
+      _cap.recent(_cs2, limit=1))
+check("newest first", [e["when"] for e in _cap.recent(_cs2)] == [300, 200, 100],
+      [e["when"] for e in _cap.recent(_cs2)])
+_cmarked = _cap.mark_revoked(_cs2, "765", when=400)
+check("a revoke marks every live allow for that id", len(_cmarked) == 2, _cmarked)
+check("and leaves other ids alone",
+      not any(_cap.is_revoked(e) for e in _cap.entries_for(_cs2, "999")),
+      _cap.entries_for(_cs2, "999"))
+check("nothing is deleted", _cap.count(_cs2) == 3, _cap.count(_cs2))
+check("a second revoke marks nothing twice",
+      _cap.mark_revoked(_cs2, "765", when=500) == [], _cs2.data["cap_allows"])
+check("an id nobody allowed is not an error",
+      _cap.mark_revoked(_cs2, "nobody") == [], "mark_revoked on an unknown id")
+check("the log is capped like the ban ledger", _cap.KEEP == 200, _cap.KEEP)
+check("and shares one id whitelist with the bans, rather than growing a second",
+      _cap.valid_netid is _bans.valid_netid, "two whitelists")
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

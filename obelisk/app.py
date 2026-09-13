@@ -28,6 +28,7 @@ from . import staging as stagingctl
 from . import updates as updatesctl
 from . import arkupdate
 from . import bans as bansctl
+from . import cap as capctl
 from . import pending as pendingctl
 from . import savepoints as pointsctl
 from . import maps as mapsmod
@@ -395,16 +396,18 @@ def build_app(store, docker=None):
         # A result about a player is shown in the who's-online section rather than at
         # the top of the page: that is where the operator is looking when they press
         # the button, and where the answer changes something.
-        notice = bans_notice = ""
+        notice = bans_notice = caps_notice = ""
         if not (message or problem or refusal):
             token = str((getattr(request, "query", None) or {}).get("said") or "")
             said = _said.pop(token, None) if token else None
             if said:
-                if said.get("where") in ("who", "bans"):
+                if said.get("where") in ("who", "bans", "cap"):
                     block = ui.warn_block(said["problem"]) if said["problem"] else (
                         '<div class=note>%s</div>' % ui._e(said["message"]))
                     if said["where"] == "bans":
                         bans_notice = block
+                    elif said["where"] == "cap":
+                        caps_notice = block
                     else:
                         notice = block
                 else:
@@ -456,7 +459,11 @@ def build_app(store, docker=None):
                                   bans=bansctl.recent(store),
                                   bans_pending=_asking(pending, "bans"),
                                   bans_notice=bans_notice,
-                                  bans_total=bansctl.count(store)))
+                                  bans_total=bansctl.count(store),
+                                  caps=capctl.recent(store),
+                                  caps_pending=_asking(pending, "cap"),
+                                  caps_notice=caps_notice,
+                                  caps_total=capctl.count(store)))
 
     # The last poll, so opening the page does not go to the network before it renders.
     # A panel that takes two round trips to CurseForge to appear is a panel people
@@ -1281,6 +1288,137 @@ def build_app(store, docker=None):
                         message="Unban sent for %s on all %d maps - they can join "
                                 "again.%s" % (who, len(results), kept)))
 
+    # ---- letting somebody past the player cap
+    #
+    # AllowPlayerToJoinNoCheck exempts one id from MaxPlayers: that player gets in when
+    # the server is full. It is not the join allow-list, and nothing here calls it a
+    # whitelist - to an ARK admin that word is the file deciding who may connect at
+    # all, and calling this by that name would be the most expensive kind of wrong.
+    #
+    # Both directions fan out, because the cap is per server like the ban list: allowed
+    # on nine maps of ten is a player who cannot get into the tenth when it fills, and
+    # revoked on nine is somebody still walking past the cap on the one.
+    #
+    # What this cannot do is tell anybody who is currently allowed. There is no RCON
+    # command that reads PlayersJoinNoCheckList back, so the section under this is a
+    # log of what Obelisk sent rather than a switch showing a state nothing can check.
+    async def player_cap(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        netid = str(form.get("netid") or "").strip()
+        when = str(form.get("when") or "").strip()
+        confirmed = str(form.get("confirm") or "").strip()
+        revoking = str(form.get("action") or "allow").strip() == "revoke"
+        doing = "revoke" if revoking else "allow"
+
+        def refuse(text_):
+            return chrome(_cluster_body(request, refusal=ui.warn_block(text_)),
+                          "Cluster", "/admin/cluster")
+
+        if not netid:
+            return refuse("That did not say which id to %s - nothing has been done."
+                          % doing)
+
+        # The same id check the ban writes through, for a field that is typed by hand
+        # every time: there is no roster row to take this id from, because somebody who
+        # needs letting past a full server is by definition not on it.
+        #
+        # Called an id check rather than by its other common name, because that name
+        # means the join allow-list to every ARK admin - which is precisely the thing
+        # this feature is not, three lines away. The test refuses the word outright
+        # rather than trying to judge which sense a future edit meant.
+        if not bansctl.valid_netid(netid):
+            return refuse("%s is not an id - platform ids are letters and digits. "
+                          "Nothing has been done."
+                          % (netid[:24] + ("..." if len(netid) > 24 else "")))
+
+        if not confirmed:
+            return chrome(
+                _cluster_body(request, pending={
+                    "where": "cap", "netid": netid, "when": when,
+                    "html": ui.render_cap_confirm(netid, doing, when)}),
+                "Cluster", "/admin/cluster")
+
+        from . import bot
+        password = str(store.get("admin_password") or "")
+        targets = clusterctl.rcon_targets(store)
+        command = ("DisallowPlayerToJoinNoCheck %s" if revoking
+                   else "AllowPlayerToJoinNoCheck %s") % netid
+
+        async def cap_one(lbl, host, port):
+            try:
+                await bot.rcon_with(host, port, password, command, timeout=10)
+                return lbl, ""
+            except Exception as e:                   # noqa: BLE001 - the reason is data
+                return lbl, (str(e).strip() or e.__class__.__name__)
+
+        results = dict(await asyncio.gather(
+            *(cap_one(l, h, p) for l, h, p in targets)))
+        took = sorted(l for l, why in results.items() if not why)
+        gone = sorted((l, why) for l, why in results.items() if why)
+
+        def reasons(items, cap=4):
+            shown = "; ".join("%s (%s)" % (l, w) for l, w in items[:cap])
+            return shown + ("; and %d more" % (len(items) - cap)
+                            if len(items) > cap else "")
+
+        did = "revoke for" if revoking else "allow for"
+        if not took:
+            announce.say("player.cap_%s_failed" % doing,
+                         "A cap %s %s did NOT send to any map: %s"
+                         % (did, netid, reasons(gone)),
+                         level="error", netid=netid)
+            return chrome(_cluster_body(request, problem=(
+                "The %s did NOT send to any of the %d maps: %s. Nothing has changed "
+                "and nothing was written down."
+                % (doing, len(results), reasons(gone)))),
+                "Cluster", "/admin/cluster")
+
+        # Written only once a map has taken it. A log saying "allowed" while every
+        # server refused the command is worth less than no log at all.
+        if revoking:
+            marked = capctl.mark_revoked(store, netid)
+            kept = (" The record is kept and marked revoked." if marked else
+                    " Obelisk had no record of letting that id past, so nothing in "
+                    "the list changed.")
+        else:
+            capctl.record(store, netid, results)
+            kept = " Recorded below."
+
+        if gone:
+            announce.say(
+                "player.cap_%s_partial" % doing,
+                "Cap %s %s sent on %d of %d maps. NOT sent on %s."
+                % (did, netid, len(took), len(results),
+                   clusterctl._and([l for l, _w in gone])),
+                level="warning", netid=netid,
+                detail="\n".join("%-14s %s" % (l, w or "sent")
+                                    for l, w in sorted(results.items())))
+            raise web.HTTPFound(
+                "/admin/cluster?said=%s#cap"
+                % _say_next(where="cap",
+                            problem="%s sent for %s on %d of %d maps - NOT on %s, so "
+                                    "%s there.%s Try those maps again, or check they "
+                                    "are reachable."
+                                    % ("Revoke" if revoking else "Allow", netid,
+                                       len(took), len(results),
+                                       clusterctl._and([l for l, _w in gone]),
+                                       "the allow still stands" if revoking
+                                       else "they are still held to the cap", kept)))
+
+        announce.say("player.cap_%s_sent" % doing,
+                     "Cap %s %s sent on all %d maps from the web UI."
+                     % (did, netid, len(results)),
+                     level="info", netid=netid,
+                     detail="\n".join("%-14s sent" % l for l in took))
+        raise web.HTTPFound(
+            "/admin/cluster?said=%s#cap"
+            % _say_next(where="cap",
+                        message="%s sent for %s on all %d maps.%s"
+                                % ("Revoke" if revoking else "Allow", netid,
+                                   len(results), kept)))
+
     async def cluster_launch(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
@@ -1956,6 +2094,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/player/kick", player_kick)
     app.router.add_post("/admin/player/ban", player_ban)
     app.router.add_post("/admin/player/unban", player_unban)
+    app.router.add_post("/admin/player/cap", player_cap)
     app.router.add_get("/admin/cluster/status", cluster_status)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)
