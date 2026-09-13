@@ -1500,6 +1500,37 @@ check("and no refusal is announced for it",
       not [i for i in ev_n if i["event"] == "ark.world_damaged"],
       [i["event"] for i in ev_n])
 
+# ---- unreachable is neither damage nor a missing world, and needs its own advice
+#
+# Telling somebody to restore because a share stopped answering would replace a healthy
+# world with an older one to fix a mount problem.
+UNREACHABLE = {"The Island": {"ok": False, "state": "unreachable", "key": "island",
+                              "why": ("the ARK data directory could not be read "
+                                      "([Errno 2] No such file) - is the volume "
+                                      "mounted?")},
+               "Astraeos": {"ok": False, "state": "unreachable", "key": "astraeos",
+                            "why": "the ARK data directory could not be read"}}
+
+ok_u, msg_u, det_u, _c_u, ren_u, started_u, _st_u, ev_u = with_gate(UNREACHABLE)
+check("worlds that cannot be reached refuse the apply", not ok_u, msg_u)
+check("and nothing is renamed", ren_u == [], ren_u)
+_msg_u = [i for i in ev_u if i["event"] == "ark.world_damaged"][0]["text"]
+check("the message says it is a storage problem, not a damaged world",
+      "storage problem" in _msg_u, _msg_u)
+check("it points at the volume being mounted", "mounted" in _msg_u, _msg_u)
+check("and it explicitly says NOT to restore yet",
+      "Do not restore anything yet" in _msg_u, _msg_u)
+check("it never tells anybody to restore from a save point",
+      "save point" not in _msg_u, _msg_u)
+check("and the spliced-in reason does not run into the next sentence",
+      "read This is" not in _msg_u and "world This is" not in _msg_u, _msg_u)
+check("the detail separates unreachable from damaged and mid-write",
+      det_u.get("unreachable") == ["Astraeos", "The Island"]
+      and det_u.get("damaged") == [] and det_u.get("writing") == [], det_u)
+check("nothing is started when the storage itself is the problem",
+      started_u == [], started_u)
+
+
 # ---- the count has to be true
 #
 # It used to report the maps it ATTEMPTED to start. A start that fails while a world is

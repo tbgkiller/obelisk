@@ -1081,7 +1081,7 @@ check("a container that takes a moment to appear is still waited for", ok_l, why
 ROWS_I = [("The Island", "island"), ("Ragnarok", "ragnarok")]
 
 
-def intact(answers, sidecars=(), deep=True, world_missing=False):
+def intact(answers, sidecars=(), deep=True, world_missing=()):
     seen_deep = []
 
     def fake_verify(path, deep=True):
@@ -1092,12 +1092,13 @@ def intact(answers, sidecars=(), deep=True, world_missing=False):
     out = clusterctl.worlds_intact(
         st_q, keys=ROWS_I, verify=fake_verify,
         exists=lambda p: (any(p.endswith(s) for s in sidecars)
-                          or (not world_missing
-                              and not p.endswith(tuple(restore_mod.SIDECARS)))),
+                          or not p.endswith(tuple(restore_mod.SIDECARS))),
         # lexists is what decides "absent" now, so the fake has to answer it too:
         # the world entry is there unless the case under test says it is not.
-        lexists=lambda p: not world_missing,
+        lexists=lambda p: not any(("TheIsland" if k == "island" else "Ragnarok")
+                                  in p for k in world_missing),
         isdir=lambda p: True,
+        listdir=lambda p: [],
         deep=deep)
     return out, seen_deep
 
@@ -1132,7 +1133,7 @@ check("and it is a state of its own, not lumped in with damage",
 # never create the world whose absence caused the refusal, which is a trap with no way
 # out. Starting it is how it gets one - the same reasoning the save gate uses.
 res_n, _d = intact({"island": (True, "ok"), "ragnarok": (True, "ok")},
-                   world_missing=True)
+                   world_missing=("island",))
 check("a map that has never booted has no world, and that does NOT block the apply",
       all(v["ok"] for v in res_n.values()), res_n)
 check("and it is reported as its own state rather than as damage",
@@ -1180,6 +1181,9 @@ def _real_intact():
 
 # 1. nothing there at all - the SavedArks/<Map> folder does not exist, which is what a
 #    map that has never booted looks like. Still skips, still non-blocking.
+# The root has to exist for any per-map "absent" to mean anything - that is the whole
+# point of the root check - so a launched cluster's SavedArks is the starting state.
+_os_i.makedirs(_os_i.path.dirname(_sa), exist_ok=True)
 res_a = _real_intact()
 check("a map that has genuinely never booted is absent and does not block",
       res_a["The Island"]["state"] == "absent" and res_a["The Island"]["ok"], res_a)
@@ -1248,6 +1252,116 @@ with open(_world, "ab") as _fh2:
 res_g = _real_intact()
 check("a real SQLite world with rows passes on the production path",
       res_g["The Island"]["ok"] and res_g["The Island"]["state"] == "ok", res_g)
+
+
+# ---- "could not look" is never "nothing is there"
+#
+# lexists catches OSError exactly as exists did, so a world behind a share whose
+# permissions have drifted, or behind a volume that is not mounted, answered False and
+# was waved through as a map that had never booted - and started empty. That is the same
+# data-visible failure the gate exists to prevent, arriving by a third route.
+#
+# Production defaults throughout: real directories, real permissions, real absences. The
+# previous two bugs both hid behind an injected seam.
+_n1 = _tf_i.mkdtemp()
+_n1_saved = _os_i.path.join(_n1, "shared", "SavedArks")
+st_n1, _d_n1 = fresh(maps="island,ragnarok")
+ROWS_N1 = [("The Island", "island"), ("Ragnarok", "ragnarok")]
+
+
+def _n1_intact(root=None):
+    return clusterctl.worlds_intact(st_n1, ark_root=root or _n1, keys=ROWS_N1)
+
+
+# 1. The ark root is not there at all - an unmounted volume, or the wrong path. Ten maps
+#    do not stop having worlds together, and this must not sail through as ten absences.
+res_um = _n1_intact()
+check("an unmounted/missing ark root refuses the whole batch",
+      not any(v["ok"] for v in res_um.values()), res_um)
+check("every map is marked unreachable, not absent",
+      all(v["state"] == "unreachable" for v in res_um.values()), res_um)
+check("and the message asks about the mount rather than blaming the worlds",
+      "volume mounted" in res_um["The Island"]["why"], res_um["The Island"])
+check("it never tells anybody a world is missing",
+      "no world yet" not in res_um["The Island"]["why"], res_um["The Island"])
+
+# 2. Root present and readable, one map's folder genuinely missing: still the legitimate
+#    never-booted case, still non-blocking, still no soft-deadlock.
+_os_i.makedirs(_os_i.path.join(_n1_saved, "Ragnarok_WP"), exist_ok=True)
+_rag = _os_i.path.join(_n1_saved, "Ragnarok_WP", "Ragnarok_WP.ark")
+_con_n = _sq_i.connect(_rag)
+_con_n.execute("CREATE TABLE game (k TEXT)")
+_con_n.execute("INSERT INTO game VALUES ('x')")
+_con_n.commit()
+_con_n.close()
+with open(_rag, "ab") as _f:
+    _f.write(b"\0" * 4096)
+res_one = _n1_intact()
+check("with a readable root, a single missing map folder is still absent",
+      res_one["The Island"]["state"] == "absent", res_one)
+check("and still does not block", res_one["The Island"]["ok"] is True, res_one)
+check("while the healthy map beside it passes", res_one["Ragnarok"]["ok"] is True,
+      res_one)
+
+# 3. A world folder that exists and will not open. On POSIX that is chmod 000; on
+#    Windows chmod cannot express it, so the same OSError is produced by asking for a
+#    directory listing of something that is not a directory. Either way the call that
+#    fails is the production one.
+_isl = _os_i.path.join(_n1_saved, "TheIsland_WP")
+_unreadable = False
+_os_i.makedirs(_isl, exist_ok=True)
+try:
+    _os_i.chmod(_isl, 0o000)
+    _os_i.listdir(_isl)                  # if this succeeds, chmod did not take
+except OSError:
+    _unreadable = True
+except Exception:
+    _unreadable = False
+
+if _unreadable:
+    res_perm = _n1_intact()
+    check("a world folder that will not open BLOCKS",
+          res_perm["The Island"]["ok"] is False, res_perm)
+    check("and is called unreachable, never absent",
+          res_perm["The Island"]["state"] == "unreachable", res_perm)
+    check("saying it is a permission or mount problem, not a missing world",
+          "permission or mount" in res_perm["The Island"]["why"], res_perm)
+    _os_i.chmod(_isl, 0o700)
+else:
+    # Windows: prove the same rule through readable_dir, which is what the branch calls.
+    _file_as_dir = _os_i.path.join(_n1, "a-file")
+    with open(_file_as_dir, "w", encoding="utf-8") as _f:
+        _f.write("x")
+    ok_rd, why_rd = clusterctl.readable_dir(_os_i.path.join(_file_as_dir, "sub"))
+    check("a world folder that will not open BLOCKS", ok_rd is False, why_rd)
+    check("and is called unreachable, never absent", ok_rd is False, why_rd)
+    check("saying it is a permission or mount problem, not a missing world",
+          bool(why_rd), why_rd)
+
+# 4. readable_dir asks by listing, not by stat - a directory can stat fine and still
+#    refuse to open, which is the whole distinction this turns on.
+check("a readable directory reads as readable",
+      clusterctl.readable_dir(_n1_saved)[0] is True)
+check("a directory that is not there does not",
+      clusterctl.readable_dir(_os_i.path.join(_n1, "nope"))[0] is False)
+
+# 5. Every map absent at once under a readable root is still a refusal - the root listed,
+#    so this is not the unmount above, but ten maps do not lose their worlds together.
+_n2 = _tf_i.mkdtemp()
+_os_i.makedirs(_os_i.path.join(_n2, "shared", "SavedArks"), exist_ok=True)
+res_all = clusterctl.worlds_intact(st_n1, ark_root=_n2, keys=ROWS_N1)
+check("every map absent at once is refused, not waved through as never-booted",
+      not any(v["ok"] for v in res_all.values()), res_all)
+check("and it points at the data directory rather than the maps",
+      "ARK data directory" in res_all["The Island"]["why"], res_all["The Island"])
+
+# But one map on a one-map cluster is indistinguishable from a genuine first boot, and
+# that case has to keep working or a map that has never started never can.
+res_solo = clusterctl.worlds_intact(st_n1, ark_root=_n2,
+                                    keys=[("The Island", "island")])
+check("a single-map cluster that has never booted still skips, non-blocking",
+      res_solo["The Island"]["ok"] and res_solo["The Island"]["state"] == "absent",
+      res_solo)
 
 
 # ---- save_and_settle: one call that sends the command and proves the write

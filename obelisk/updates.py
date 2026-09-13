@@ -621,7 +621,10 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
             # for an older one for no reason at all.
             damaged = [l for l in broken if health[l].get("state") == "damaged"]
             writing = [l for l in broken if health[l].get("state") == "writing"]
-            other = [l for l in broken if l not in damaged and l not in writing]
+            unreachable = [l for l in broken
+                           if health[l].get("state") == "unreachable"]
+            other = [l for l in broken if l not in damaged and l not in writing
+                     and l not in unreachable]
 
             said = []
             if damaged:
@@ -636,6 +639,20 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                             "Run the apply again."
                             % (_and(writing), "its" if len(writing) == 1 else "their",
                                "it is" if len(writing) == 1 else "they are"))
+            if unreachable:
+                # Not damage and not a missing world: the files could not be reached.
+                # Restoring would be the wrong advice and starting would be worse, so
+                # this one points at the mount and the share instead.
+                # The reason is a sentence fragment written elsewhere and may or may not
+                # end in punctuation, so it is given some rather than run into the next
+                # sentence.
+                _why_u = (health[unreachable[0]].get("why") or "").rstrip()
+                if _why_u and _why_u[-1] not in ".?!":
+                    _why_u += "."
+                said.append("%s could not be reached at all - %s This is a storage "
+                            "problem rather than a damaged world: check the ARK volume "
+                            "is mounted and readable, then run the apply again. Do not "
+                            "restore anything yet." % (_and(unreachable), _why_u))
             if other:
                 said.append("%s could not be checked at all: %s."
                             % (_and(other),
@@ -672,7 +689,7 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
             return False, ("did not swap: %s did not come through the shutdown with a "
                            "usable world" % _and(broken)), {
                 "corrupt": broken, "damaged": damaged, "writing": writing,
-                "started": started, "swapped": False}
+                "unreachable": unreachable, "started": started, "swapped": False}
 
     done = []
     if swap_files:

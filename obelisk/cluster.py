@@ -672,8 +672,26 @@ def save_and_settle(store, ark_root=None, rcon=None, now=None, **kw):
 # verify_world's immutable=1 open assumes. Any earlier and the shutdown save has not
 # happened yet; any later and a rename has already been made on the strength of an
 # answer nobody asked for.
+def readable_dir(path, listdir=None):
+    """(is this a directory we can actually read, why not).
+
+    Asked by listing it rather than by stat'ing it, because the failure being hunted is
+    a directory that exists and will not open: a share whose permissions have drifted,
+    or a volume that is not mounted. os.path.lexists answers False for both - it catches
+    OSError the same way os.path.exists does - and "False" there is indistinguishable
+    from "nothing was ever here", which is how a healthy world behind an unreadable
+    parent came to be read as a map that had never booted.
+    """
+    listdir = listdir or os.listdir
+    try:
+        listdir(path)
+    except OSError as e:
+        return False, str(e)
+    return True, ""
+
+
 def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
-                  deep=True, lexists=None, isdir=None):
+                  deep=True, lexists=None, isdir=None, listdir=None):
     """Every selected map's world, checked on disk. {label: {ok, why, key}}.
 
     The check itself is restore.verify_world - the one that already exists, reused
@@ -690,6 +708,20 @@ def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
 
     rows = keys if keys is not None else [(r["name"], r["map"])
                                           for r in build_plan(store)["maps"]]
+
+    # The ark root first, and the whole batch turns on it. Every "this map has no world"
+    # below is only trustworthy if the folder those worlds live in is genuinely readable
+    # - otherwise "missing" means "I could not look", and ten maps reading absent at
+    # once is an unmounted volume rather than ten maps that have never booted.
+    root = ark_root if ark_root is not None else layout.ark_root_of(store)
+    saved = layout.ark_paths(root)["saved_arks"]
+    ok_root, why_root = readable_dir(saved, listdir=listdir)
+    if not ok_root:
+        return {label: {
+            "ok": False, "state": "unreachable", "key": key,
+            "why": ("the ARK data directory could not be read (%s) - is the volume "
+                    "mounted?" % why_root)} for label, key in rows}
+
     out = {}
     for label, key in rows:
         try:
@@ -728,6 +760,18 @@ def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
                               "why": ("%s is in the way and is not a folder, so its "
                                       "world cannot be read" % folder)}
                 continue
+            if lexists(folder):
+                # The folder is there. If it will not open, the world inside it is an
+                # unknown rather than a thing that does not exist - a world behind a
+                # share whose permissions have drifted is still a world, and starting
+                # that map empty is the failure this whole gate exists to prevent.
+                ok_dir, why_dir = readable_dir(folder, listdir=listdir)
+                if not ok_dir:
+                    out[label] = {"ok": False, "state": "unreachable", "key": key,
+                                  "why": ("its world folder could not be read (%s) - a "
+                                          "permission or mount problem, not a missing "
+                                          "world" % why_dir)}
+                    continue
             # Genuinely nothing there. A map that has never booted has no world, and a
             # world that does not exist cannot be corrupt. Blocking would be a trap with
             # no way out: the apply refuses, the map is held down, and a map that is
@@ -742,6 +786,21 @@ def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
         ok, why = verify(path, deep=deep)
         out[label] = {"ok": bool(ok), "state": "ok" if ok else "damaged",
                       "key": key, "why": why}
+
+    # Every map absent at once, on a cluster that was serving a moment ago. The root
+    # listed, so this is not the unmount above - but ten maps do not stop having worlds
+    # together, and whatever did that is not something to swap a build over. Refused as
+    # a batch rather than skipped ten times.
+    #
+    # Only above one map: on a single-map cluster "all absent" and "the one map has
+    # never booted" are the same observation, and that one has to keep working or a map
+    # that has never started can never start.
+    if len(out) > 1 and all(w["state"] == "absent" for w in out.values()):
+        return {label: dict(w, ok=False, state="unreachable",
+                            why=("no map has a world, which ten maps do not do at "
+                                 "once - the ARK data directory may be the wrong one "
+                                 "or only half mounted"))
+                for label, w in out.items()}
     return out
 
 
