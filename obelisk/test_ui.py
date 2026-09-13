@@ -326,6 +326,7 @@ _status = {
     "mods_newer": [], "any_newer": True, "unknown": True,
 }
 from . import ui
+from . import bot as _bot_ui
 
 _p = ui.render_ark_update(_ps, _status)
 check("the panel shows the running build and the newer one",
@@ -1183,9 +1184,9 @@ check("each player is a row of their own",
       _who.count("<div class=whorow>") == 3, _who.count("<div class=whorow>"))
 check("with the name in its own element",
       _who.count("<span class=whoname>") == 4, _who.count("<span class=whoname>"))
-check("and an empty slot on each row for the actions to come",
-      _who.count("<span class=whoacts></span>") == 3,
-      _who.count("<span class=whoacts></span>"))
+check("and an actions slot on each row",
+      _who.count("<span class=whoacts>") == 3,
+      _who.count("<span class=whoacts>"))
 check("one row per person, not one cell of chips",
       "<span class=chip" not in _who, _who[:600])
 
@@ -1232,9 +1233,7 @@ check("a roster map the caller did not list is still shown, at the end",
 check("an unreadable row still shows the person",
       "some line we could not read" in _who, _who[:900])
 check("and says the consequence in text, not only on hover",
-      "nothing to act on" in _who.replace('title="', "|")[
-          :_who.replace('title="', "|").index("|")] or
-      "no id &mdash; nothing to act on" in _who, _who[:900])
+      ">no id &mdash; nothing to act on</span>" in _who, _who[:900])
 check("the hover carries the longer reason",
       'title="' in _who and "could not be read" in _who, _who[:900])
 
@@ -1304,9 +1303,9 @@ check("the populated map keeps its heading",
       "<div class=whomap>Ragnarok</div>" in _one_on, _one_on[:400])
 check("and a row per person on it",
       _one_on.count("<div class=whorow>") == 2, _one_on.count("<div class=whorow>"))
-check("each still carrying an empty slot for 2c's buttons",
-      _one_on.count("<span class=whoacts></span>") == 2,
-      _one_on.count("<span class=whoacts></span>"))
+check("each still carrying its actions slot",
+      _one_on.count("<span class=whoacts>") == 2,
+      _one_on.count("<span class=whoacts>"))
 check("the nine empty maps take one line between them",
       _one_on.count("Nobody on:") == 1, _one_on.count("Nobody on:"))
 check("naming them", "The Island, The Center, Scorched Earth" in _one_on,
@@ -1350,6 +1349,69 @@ check("with no headings at all", "<div class=whomap>" not in _none_on, _none_on)
 check("and no player rows", "<div class=whorow>" not in _none_on, _none_on)
 check("and it does not restate the count section's zero",
       "0 players" not in _none_on and "players online" not in _none_on, _none_on)
+
+
+# ---- saying something to one player
+#
+# The first of the moderation actions and the only one that affects nobody, which is
+# why it goes first: it proves the plumbing before anything can disconnect somebody.
+_MSG = {"by_map": {
+    "Ragnarok": [{"name": "Dana", "netid": "9"},
+                 {"name": "Cha,rlie", "netid": "8"},
+                 {"name": "some raw line we could not split", "netid": ""}],
+    "The Island": []}, "age": 20}
+_msg_who = ui.render_whos_online(_MSG, maps=["Ragnarok", "The Island", "Valguero"])
+
+check("a real player's row carries a message form",
+      '<form method=post action="/admin/player/message"' in _msg_who, _msg_who[:800])
+check("with somewhere to type", "name=text" in _msg_who, _msg_who[:800])
+check("and something to press", ">Send</button>" in _msg_who, _msg_who[:800])
+check("it says who it is addressing", 'placeholder="say something to Dana"' in _msg_who,
+      _msg_who[:800])
+check("the form carries the player's name",
+      'name=name value="Dana"' in _msg_who, _msg_who[:800])
+check("and the map they are on, because that is where the command goes",
+      'name=map value="Ragnarok"' in _msg_who, _msg_who[:800])
+check("a comma'd name is carried intact, not truncated",
+      'value="Cha,rlie"' in _msg_who, _msg_who[:1200])
+check("one form per real player, not one for the map",
+      _msg_who.count("/admin/player/message") == 2,
+      _msg_who.count("/admin/player/message"))
+
+# ---- and nothing that cannot be messaged is offered a box
+#
+# The "name" on a fallback row is a whole line the parser could not split. Sending to
+# it would address nobody, and a button that cannot work is worse than no button.
+_after_raw = _msg_who.split("some raw line we could not split")[1]
+check("an unreadable row gets no message form",
+      "/admin/player/message" not in _after_raw.split("</div>")[0], _after_raw[:300])
+check("it still says why there is nothing to press",
+      "nothing to act on" in _after_raw[:300], _after_raw[:300])
+_quiet_part = _msg_who[_msg_who.index('<div class="whorow quiet">'):]
+check("a map that did not answer gets no message form",
+      "/admin/player/message" not in _quiet_part, _quiet_part[:300])
+check("and neither does the collapsed empty-maps line",
+      "/admin/player/message" not in _msg_who[_msg_who.index("Nobody on:"):],
+      _msg_who[_msg_who.index("Nobody on:"):])
+check("no relay, no forms",
+      "/admin/player/message" not in ui.render_whos_online(None, maps=["Ragnarok"]),
+      ui.render_whos_online(None, maps=["Ragnarok"]))
+
+# ---- the command itself, written once
+check("the whisper command quotes the name, because names have spaces",
+      _bot_ui.whisper_command("Big Tim", "hello")
+      == 'ServerChatToPlayer "Big Tim" hello',
+      _bot_ui.whisper_command("Big Tim", "hello"))
+check("and leaves the message bare to the end of the line",
+      _bot_ui.whisper_command("D", "a b c") == 'ServerChatToPlayer "D" a b c',
+      _bot_ui.whisper_command("D", "a b c"))
+_botsrc_2c = _io_s1.open(os.path.join(os.path.dirname(__file__), "bot.py"),
+                         encoding="utf-8").read()
+check("the relay's own welcome whisper goes through the same helper",
+      "whisper_command(player, line)" in _botsrc_2c, "the whisper has its own spelling")
+check("so there is one spelling of ServerChatToPlayer in the product",
+      _botsrc_2c.count("ServerChatToPlayer") == 1,
+      _botsrc_2c.count("ServerChatToPlayer"))
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

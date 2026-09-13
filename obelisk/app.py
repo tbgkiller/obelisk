@@ -740,6 +740,81 @@ def build_app(store, docker=None):
         async with cluster_busy:
             return await asyncio.to_thread(_act, fn, request)
 
+    # ---- saying something to one player
+    #
+    # The first of the moderation actions, and the only one that affects nobody: a line
+    # of chat. It is unguarded for that reason and announced for the same reason every
+    # other significant thing here is - an admin who did not send it should be able to
+    # see that somebody did.
+    #
+    # What RCON can tell us is that the server took the command. It cannot tell us the
+    # player read it, or was still standing there when it arrived. So the page says
+    # "sent", and never "messaged" or "delivered", which are claims about the other end.
+    async def player_message(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        label = str(form.get("map") or "").strip()
+        name = str(form.get("name") or "").strip()
+        text = " ".join(str(form.get("text") or "").split())
+
+        def back(message="", problem=""):
+            return chrome(_cluster_body(request, message=message, problem=problem),
+                          "Cluster", "/admin/cluster")
+
+        if not text:
+            return back(problem="Type a message first - nothing was sent.")
+        if not name or not label:
+            return back(problem="That row did not say who to message. Reload the page "
+                                "and try again - nothing was sent.")
+
+        # The page was describing a moment. Between rendering it and pressing Send the
+        # poll may have run again, the player may have left, the map may have stopped
+        # answering - and a message addressed into that is not a message, it is a
+        # command sent at a guess. The roster is the same one the page was drawn from,
+        # so asking it again is asking whether the page is still true.
+        snap = _roster_now()
+        if snap is None:
+            return back(problem="The chat relay is not running, so there is nobody to "
+                                "message - nothing was sent.")
+        on_map = (snap.get("by_map") or {}).get(label)
+        if on_map is None:
+            return back(problem="%s did not answer the last check, so who is on it is "
+                                "not known - nothing was sent to %s."
+                                % (label, name))
+        if not any(p.get("name") == name for p in on_map):
+            return back(problem="%s is no longer listed on %s - nothing was sent."
+                                % (name, label))
+
+        target = None
+        for lbl, host, port in clusterctl.rcon_targets(store):
+            if lbl == label:
+                target = (host, port)
+        if target is None:
+            return back(problem="%s is not a map this cluster runs - nothing was sent."
+                                % label)
+
+        from . import bot
+        try:
+            await bot.rcon_with(target[0], target[1],
+                                str(store.get("admin_password") or ""),
+                                bot.whisper_command(name, text), timeout=10)
+        except Exception as e:                       # noqa: BLE001 - reported as itself
+            why = str(e).strip() or e.__class__.__name__
+            announce.say("player.message_failed",
+                         "A message to %s on %s did NOT send: %s" % (name, label, why),
+                         level="error", map=label, player=name)
+            return back(problem="The message did NOT send to %s on %s: %s. Nothing "
+                                "reached the server." % (name, label, why))
+
+        # Accepted. ARK answers most writes with "Server received, But no response!!",
+        # which is the server saying it took the command and has nothing to add - not
+        # a failure. Either way the only honest claim is that it was sent.
+        announce.say("player.message_sent",
+                     "Message sent to %s on %s from the web UI." % (name, label),
+                     map=label, player=name, detail=text)
+        return back(message="Message sent to %s on %s." % (name, label))
+
     async def cluster_launch(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
@@ -1411,6 +1486,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/maps", cluster_maps)
     app.router.add_post("/admin/launch", cluster_launch)
     app.router.add_post("/admin/stop", cluster_stop)
+    app.router.add_post("/admin/player/message", player_message)
     app.router.add_get("/admin/cluster/status", cluster_status)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)

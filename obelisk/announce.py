@@ -224,6 +224,7 @@ ICONS = {
     "primed": "✅", "update_primed": "✅", "saved": "✅",
     "closed": "✅", "world_closed": "✅", "readable_again": "✅",
     "map_settled": "✅",
+    "message_sent": "✅",
     "offsite_done": "✅", "push_done": "✅",
     "up": "✅",
     # Failures
@@ -231,6 +232,7 @@ ICONS = {
     "batch_failed": "❌", "closing_failed": "❌",
     "unsafe": "❌", "update_unsafe": "❌", "world_damaged": "❌",
     "map_looping": "❌",
+    "message_failed": "❌",
     "offsite_failed": "❌", "push_failed": "❌",
     # world.damaged is the periodic sweep's; ark.world_damaged is the apply gate's.
     "damaged": "❌",

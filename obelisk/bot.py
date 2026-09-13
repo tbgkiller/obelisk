@@ -105,6 +105,17 @@ async def rcon(host, port, command, timeout=6.0):
     return await rcon_with(host, port, RCON_PASSWORD, command, timeout)
 
 
+def whisper_command(player, text):
+    """The RCON line that says `text` to one player by name.
+
+    Written down once. The relay has whispered welcomes this way since before the web
+    UI existed - name quoted because names have spaces in them, message bare to the end
+    of the line - and a second spelling of it somewhere else is a second spelling that
+    is subtly wrong on a Tuesday.
+    """
+    return 'ServerChatToPlayer "%s" %s' % (str(player), str(text))
+
+
 async def rcon_with(host, port, password, command, timeout=6.0):
     """The same, with the password passed in.
 
@@ -391,7 +402,7 @@ class Relay:
             if not line:
                 continue
             try:
-                await rcon(hp[0], hp[1], f'ServerChatToPlayer "{player}" {line}')
+                await rcon(hp[0], hp[1], whisper_command(player, line))
             except Exception as e:
                 log.warning("whisper failed: %s", e)
 

@@ -80,6 +80,9 @@ tr:last-child td{border-bottom:none}
 .whonote{padding:6px 10px;margin:3px 0;font-size:12px;color:#8b94a3}
 .whorow.quiet{border-style:dashed;color:#8b94a3}
 .whoflag{font-size:11px;color:#8b94a3}
+.whoform{display:flex;gap:6px;align-items:center;margin:0}
+.whoform input{font-size:12px;padding:4px 8px;width:190px;margin:0}
+.whoform button{font-size:12px;padding:4px 10px}
 /* Three states, three colours. "Could not check" is deliberately not green and not
    quiet - the failure this panel answers was a checker that said "up to date" about a
    question it never asked, and an unknown that looks like a pass repeats it. */
@@ -1526,6 +1529,24 @@ NAME_UNREADABLE = ("this line of the server's answer could not be read as a name
                    "an id, so there is nothing here to act on")
 
 
+def _message_form(label, name):
+    """Say something to one player, from the row they are on.
+
+    The map travels with the name because that is what the command needs: a player is
+    on exactly one map, and the message goes to that map's server. Posting the map from
+    the page rather than looking it up again also means the server can tell that the
+    page was describing a state that has since changed - see the route, which refuses
+    rather than guessing.
+    """
+    return ('<form method=post action="/admin/player/message" class=whoform>'
+            '<input type=hidden name=map value="%s">'
+            '<input type=hidden name=name value="%s">'
+            '<input name=text maxlength=200 placeholder="say something to %s" '
+            'autocomplete=off>'
+            '<button class=ghost type=submit>Send</button></form>'
+            % (_e(label), _e(name), _e(name)))
+
+
 def render_whos_online(roster, maps=()):
     """Who is on, one row per player, under the map they are on.
 
@@ -1580,14 +1601,19 @@ def render_whos_online(roster, maps=()):
         for row in people:
             name = _e(row.get("name") or "?")
             if row.get("netid"):
-                flag = ""
+                flag, acts = "", _message_form(label, row.get("name") or "")
             else:
                 # The consequence, in text, not only in a tooltip - a title attribute
                 # is invisible on a touch screen, which is where half of this gets read.
+                #
+                # And no form. The "name" on one of these rows is a whole line the
+                # parser could not split, so sending a message to it would address
+                # nobody - a button that cannot work is worse than no button.
                 flag = ('<span class=whoflag title="%s">no id &mdash; nothing to act '
                         'on</span>' % _e(NAME_UNREADABLE))
+                acts = ""
             out.append('<div class=whorow><span class=whoname>%s</span>%s'
-                       '<span class=whoacts></span></div>' % (name, flag))
+                       '<span class=whoacts>%s</span></div>' % (name, flag, acts))
 
     if empty:
         # In the order the table above lists them, like everything else here.

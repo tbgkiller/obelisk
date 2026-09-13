@@ -2731,9 +2731,9 @@ check("listing the people, one row each",
       _cluster_r.count("<div class=whorow>") == 5,
       _cluster_r.count("<div class=whorow>"))
 check("with the comma'd name intact", "Cha,rlie" in _cluster_r, _cluster_r[-1600:])
-check("and every row has a slot for the buttons 2c will add",
-      _cluster_r.count("<span class=whoacts></span>") == 5,
-      _cluster_r.count("<span class=whoacts></span>"))
+check("and every row has an actions slot",
+      _cluster_r.count("<span class=whoacts>") == 5,
+      _cluster_r.count("<span class=whoacts>"))
 check("the unreadable row is shown and says what it costs",
       "unreadable row" in _cluster_r and "nothing to act on" in _cluster_r,
       _cluster_r[-1600:])
@@ -2827,6 +2827,186 @@ for _what, _frag in sorted({
         "the save-before-stop": "save=lambda: clusterctl.save_and_settle(",
 }.items()):
     check("%s is untouched by the display" % _what, _frag in _appsrc_2b, _frag)
+
+
+# ---- the message route: what it sends, and what it refuses to claim
+#
+# RCON can tell us the server took the command. It cannot tell us the player read it,
+# or was still standing there when it arrived. So every sentence here says "sent".
+_sent = []
+
+
+class _MsgRelay(_LiveRelay):
+    online_names = {"The Island": [{"name": "Bob", "netid": "1"},
+                                   {"name": "Cha,rlie", "netid": "2"}],
+                    "Ragnarok": [{"name": "Dana", "netid": "3"}]}
+
+
+def _msg_relay(quiet=()):
+    r = _MsgRelay()
+    r.online_by_map = {"The Island": 2, "Ragnarok": 1}
+    r.map_up = {m: (m not in quiet) for m in ("The Island", "Ragnarok")}
+    r.online_total = 3
+    r.last_refresh = _time_dead.time() - 10
+    return r
+
+
+_real_rw = _bot_s1.rcon_with
+
+
+async def _fake_rcon(host, port, password, command, timeout=6.0):
+    _sent.append({"host": host, "port": port, "command": command})
+    return "Server received, But no response!!"
+
+
+async def _boom_rcon(host, port, password, command, timeout=6.0):
+    _sent.append({"host": host, "port": port, "command": command})
+    raise TimeoutError("timed out after 10s")
+
+
+async def _post_message(relay, data, rcon=None):
+    _sent[:] = []
+    _bot_s1.LIVE = relay
+    _bot_s1.rcon_with = rcon or _fake_rcon
+    _appmod.clusterctl.status = lambda store: dict(
+        _lstatus, services=[dict(x) for x in _lstatus["services"]])
+    client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_lstore.get("admin_token"))})
+    body = await (await client.post("/admin/player/message", data=data)).text()
+    await client.close()
+    return body
+
+
+_t14 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _ok_body = _t14.run_until_complete(_post_message(
+        _msg_relay(), {"map": "The Island", "name": "Bob", "text": "dinner in 10"}))
+    _ok_ev = _drain2()
+
+    _comma_body = _t14.run_until_complete(_post_message(
+        _msg_relay(), {"map": "The Island", "name": "Cha,rlie", "text": "hello"}))
+    _comma_sent = list(_sent)
+    _drain2()
+
+    _blank_body = _t14.run_until_complete(_post_message(
+        _msg_relay(), {"map": "The Island", "name": "Bob", "text": "   "}))
+    _blank_sent = list(_sent)
+    _drain2()
+
+    _gone_body = _t14.run_until_complete(_post_message(
+        _msg_relay(), {"map": "The Island", "name": "Someone Else", "text": "hi"}))
+    _gone_sent = list(_sent)
+    _drain2()
+
+    _quiet_body = _t14.run_until_complete(_post_message(
+        _msg_relay(quiet=("Ragnarok",)),
+        {"map": "Ragnarok", "name": "Dana", "text": "hi"}))
+    _quiet_sent = list(_sent)
+    _drain2()
+
+    _fail_body = _t14.run_until_complete(_post_message(
+        _msg_relay(), {"map": "The Island", "name": "Bob", "text": "hi"},
+        rcon=_boom_rcon))
+    _fail_ev = _drain2()
+
+    _norelay_body = _t14.run_until_complete(_post_message(
+        None, {"map": "The Island", "name": "Bob", "text": "hi"}))
+    _norelay_sent = list(_sent)
+    _drain2()
+finally:
+    _t14.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+# it sends, to the right map, with the right words
+check("a message reaches RCON", len(_comma_sent) == 1, _comma_sent)
+check("as ServerChatToPlayer with the name quoted",
+      _comma_sent[0]["command"] == 'ServerChatToPlayer "Cha,rlie" hello',
+      _comma_sent[0]["command"])
+check("and the page says it was sent, naming who and where",
+      "Message sent to Bob on The Island." in _ok_body,
+      _ok_body[_ok_body.find("Message sent") - 60:][:200])
+check("as a note, because it worked",
+      "<div class=note>Message sent" in _ok_body, _ok_body[:400])
+check("it never claims the player read it",
+      "messaged" not in _ok_body.lower() and "delivered" not in _ok_body.lower(),
+      "the page claimed more than RCON can tell it")
+check("the send is announced, at info",
+      ("player.message_sent", "info") in [(i["event"], i["level"]) for i in _ok_ev],
+      [(i["event"], i["level"]) for i in _ok_ev])
+check("saying who, where and that it came from the web UI",
+      any("Bob" in (i.get("text") or "") and "The Island" in (i.get("text") or "")
+          and "web UI" in (i.get("text") or "") for i in _ok_ev),
+      [i.get("text") for i in _ok_ev])
+check("with the message itself in the detail, not the channel line",
+      any((i.get("detail") or "") == "dinner in 10" for i in _ok_ev),
+      [i.get("detail") for i in _ok_ev])
+
+# ---- the four refusals, none of which send anything
+check("blank text is refused", "Type a message first" in _blank_body,
+      _blank_body[_blank_body.find("Type a message") - 60:][:200])
+check("and nothing was sent", _blank_sent == [], _blank_sent)
+check("a player no longer listed is refused",
+      "no longer listed on The Island" in _gone_body,
+      _gone_body[_gone_body.find("no longer listed") - 80:][:200])
+check("without guessing at them", _gone_sent == [], _gone_sent)
+check("a map that has gone quiet is refused",
+      "did not answer the last check" in _quiet_body,
+      _quiet_body[_quiet_body.find("did not answer") - 80:][:200])
+check("rather than messaging into the dark", _quiet_sent == [], _quiet_sent)
+check("no relay at all is refused",
+      "chat relay is not running" in _norelay_body and "nothing was sent"
+      in _norelay_body, _norelay_body[_norelay_body.find("relay is not") - 60:][:200])
+check("and sends nothing", _norelay_sent == [], _norelay_sent)
+for _b in (_blank_body, _gone_body, _quiet_body, _norelay_body):
+    check("every refusal says plainly that nothing was sent",
+          "nothing was sent" in _b.lower(), _b[:200])
+
+# ---- a send that did not happen is never reported as one
+check("an RCON failure is reported as not sent",
+      "did NOT send" in _fail_body, _fail_body[_fail_body.find("did NOT") - 80:][:250])
+check("naming the reason", "timed out" in _fail_body, _fail_body[:400])
+check("and saying nothing reached the server",
+      "Nothing reached the server" in _fail_body, _fail_body[:400])
+check("in red", "<div class=problem>" in _fail_body, _fail_body[:400])
+check("it is announced as a failure, at error",
+      ("player.message_failed", "error")
+      in [(i["event"], i["level"]) for i in _fail_ev],
+      [(i["event"], i["level"]) for i in _fail_ev])
+check("and never announced as a send",
+      not any(i["event"] == "player.message_sent" for i in _fail_ev),
+      [i["event"] for i in _fail_ev])
+
+# "Server received, But no response!!" is the server taking the command, not refusing it
+check("the accepted-but-no-output reply counts as sent",
+      "Message sent to Bob" in _ok_body, "the usual ARK reply was read as a failure")
+
+for _tail, _want in (("message_sent", "✅"), ("message_failed", "❌")):
+    check("%s has an icon of its own" % _tail, _ann2.ICONS.get(_tail) == _want,
+          _ann2.ICONS.get(_tail))
+
+# ---- this added a chat write and nothing else
+_appsrc_2c = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
+                     encoding="utf-8").read()
+_msgsrc = _appsrc_2c.split("async def player_message")[1].split(
+    chr(10) + "    async def ")[0]
+check("the route only ever sends a chat line",
+      "whisper_command" in _msgsrc and "KickPlayer" not in _msgsrc
+      and "BanPlayer" not in _msgsrc, _msgsrc[:400])
+check("and checks the roster before it sends",
+      _msgsrc.index("_roster_now()") < _msgsrc.index("whisper_command"), _msgsrc[:600])
+for _what, _frag in sorted({
+        "the apply gate": "def verify_every_map(store):",
+        "the restore gate": "def verify_restored(store, key, note=None):",
+        "the stop guard": "ui.render_stop_warning(counts, silent)",
+        "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
+        "the save-before-stop": "save=lambda: clusterctl.save_and_settle(",
+        "the roster read": "def _roster_now():",
+}.items()):
+    check("%s is untouched" % _what, _frag in _appsrc_2c, _frag)
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
