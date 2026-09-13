@@ -1556,18 +1556,27 @@ def render_whos_online(roster, maps=()):
     order = [m for m in (maps or []) if m]
     order += [m for m in sorted(by_map) if m not in order]
 
-    out = []
+    # Three states, and only two of them are worth a line each. A map with players on
+    # it is where an action goes; a map that did not answer is what somebody needs to
+    # know before pressing Stop. A map that answered and is empty is neither - and on
+    # ten maps it was nine headings and nine "nobody on it" lines burying the two that
+    # matter, restating the 0 the count column already shows. So the empty ones become
+    # one line.
+    out, empty = [], []
     for label in order:
-        out.append('<div class=whomap>%s</div>' % _e(label))
         if label not in by_map:
-            out.append('<div class="whorow quiet"><span class=whoname>&mdash;</span>'
+            # Named in the row itself rather than under a heading of its own: this is
+            # the state a blackout produces on every map at once, and twenty lines of
+            # it is how the signal gets lost a second time.
+            out.append('<div class="whorow quiet"><span class=whoname>%s</span>'
                        '<span class=whoflag>did not answer the last poll, so who is on '
-                       'it is not known</span></div>')
+                       'it is not known</span></div>' % _e(label))
             continue
         people = by_map[label] or []
         if not people:
-            out.append('<div class=whonote>nobody on it</div>')
+            empty.append(label)
             continue
+        out.append('<div class=whomap>%s</div>' % _e(label))
         for row in people:
             name = _e(row.get("name") or "?")
             if row.get("netid"):
@@ -1579,6 +1588,12 @@ def render_whos_online(roster, maps=()):
                         'on</span>' % _e(NAME_UNREADABLE))
             out.append('<div class=whorow><span class=whoname>%s</span>%s'
                        '<span class=whoacts></span></div>' % (name, flag))
+
+    if empty:
+        # In the order the table above lists them, like everything else here.
+        out.append('<div class=whonote>Nobody on: %s <span class=help>(%d map%s)'
+                   '</span></div>'
+                   % (_e(", ".join(empty)), len(empty), "" if len(empty) == 1 else "s"))
 
     return ('<fieldset><legend>Who\u2019s online</legend>'
             '<div class=whoroster>%s</div></fieldset>' % "".join(out))

@@ -1142,6 +1142,18 @@ check("and it still shows the instance underneath",
 
 
 
+
+def _in_order(body, *needles):
+    """True when every needle is present in `body`, in this order.
+
+    str.index raises when a needle is missing, so an assertion built on it reports a
+    crash instead of a failure - and a crash names no check and stops the suite. This
+    is the ordering question asked in a way that can answer "no".
+    """
+    at = [body.find(n) for n in needles]
+    return all(i >= 0 for i in at) and at == sorted(at)
+
+
 # ---- who's online: one row per player, under the map they are on
 #
 # The names were always in the ListPlayers answer and were always discarded. Slice 2a
@@ -1161,8 +1173,7 @@ check("the section is on the page under its own heading",
 check("with its people named",
       ">Bob<" in _who and "Cha,rlie" in _who, _who[:600])
 check("under the map they are on",
-      _who.index("The Island") < _who.index("Bob") < _who.index("Valguero"),
-      [_who.index("The Island"), _who.index("Bob"), _who.index("Valguero")])
+      _in_order(_who, "The Island", "Bob", "Valguero"), _who[:600])
 
 # ---- every player is their own row, with somewhere for the buttons to go
 #
@@ -1202,15 +1213,16 @@ check("marked as the unknown it is, not as empty",
       '<div class="whorow quiet">' in _who, _who[:900])
 check("and it says what is not known",
       "who is on it is not known" in _who, _who[:900])
-check("a map that answered with nobody on it still says so",
-      "nobody on it" in _who, _who[:900])
-check("the two are not the same row",
-      _who.index("nobody on it") != _who.index("did not answer the last poll"))
+check("a map that answered with nobody on it is accounted for",
+      "Nobody on: Astraeos" in _who, _who[-400:])
+check("but does not get a heading and a line of its own",
+      "<div class=whomap>Astraeos</div>" not in _who, _who[:900])
+check("empty and unknown are not the same statement",
+      _in_order(_who, "did not answer the last poll", "Nobody on:"), _who[:900])
 
 # ---- the order the eye travels
 check("maps come in the order the status table lists them",
-      [_who.index(m) for m in _ORDER] == sorted(_who.index(m) for m in _ORDER),
-      [(m, _who.index(m)) for m in _ORDER])
+      _in_order(_who, *_ORDER), [(m, _who.find(m)) for m in _ORDER])
 check("a roster map the caller did not list is still shown, at the end",
       "Extra" in ui.render_whos_online(
           {"by_map": dict(_ROSTER["by_map"], Extra=[]), "age": 5}, maps=_ORDER),
@@ -1266,6 +1278,78 @@ _PAIRED = {"The Island": 2, "Valguero": 1, "Astraeos": 0}
 for _m, _n in sorted(_PAIRED.items()):
     check("%s lists as many names as it counts players" % _m,
           len(_ROSTER["by_map"].get(_m) or []) == _n, [_m, _n])
+
+# ---- ten maps, one person: the section is four lines, not twenty
+#
+# Per-player rows cost a heading and a "nobody on it" line for every empty map, so on
+# the real cluster the two states that matter - a map with people on it, and a map that
+# did not answer - were buried under nine repetitions of the 0 the count column was
+# already showing. The same duplication one level down.
+_TEN = ["The Island", "The Center", "Scorched Earth", "Ragnarok", "Aberration",
+        "Extinction", "Valguero", "Astraeos", "Lost Colony", "Genesis"]
+
+
+def _ten(populated=None, quiet=()):
+    by_map = {m: [] for m in _TEN if m not in quiet}
+    for m, people in (populated or {}).items():
+        by_map[m] = people
+    return {"by_map": by_map, "age": 20}
+
+
+_one_on = ui.render_whos_online(
+    _ten({"Ragnarok": [{"name": "Dana", "netid": "9"},
+                       {"name": "Eve", "netid": "8"}]}), maps=_TEN)
+
+check("the populated map keeps its heading",
+      "<div class=whomap>Ragnarok</div>" in _one_on, _one_on[:400])
+check("and a row per person on it",
+      _one_on.count("<div class=whorow>") == 2, _one_on.count("<div class=whorow>"))
+check("each still carrying an empty slot for 2c's buttons",
+      _one_on.count("<span class=whoacts></span>") == 2,
+      _one_on.count("<span class=whoacts></span>"))
+check("the nine empty maps take one line between them",
+      _one_on.count("Nobody on:") == 1, _one_on.count("Nobody on:"))
+check("naming them", "The Island, The Center, Scorched Earth" in _one_on,
+      _one_on[-500:])
+check("and counting them", "(9 maps)" in _one_on, _one_on[-300:])
+check("not one heading each",
+      _one_on.count("<div class=whomap>") == 1,
+      _one_on.count("<div class=whomap>"))
+check("nor one note each", _one_on.count("<div class=whonote>") == 1,
+      _one_on.count("<div class=whonote>"))
+check("the populated map is not swept into the empty line",
+      "Ragnarok" not in _one_on.split("Nobody on:")[1], _one_on[-500:])
+
+# the collapsed line keeps the table's order, like everything else here
+_listed = _one_on.split("Nobody on: ")[1].split(" <span")[0].split(", ")
+check("the empty maps are listed in the order the table above lists them",
+      _listed == [m for m in _TEN if m != "Ragnarok"], _listed)
+
+# ---- the state that must never be collapsed
+_with_quiet = ui.render_whos_online(
+    _ten({"Ragnarok": [{"name": "Dana", "netid": "9"}]}, quiet=("Valguero",)),
+    maps=_TEN)
+check("a map that did not answer still gets its own row",
+      '<div class="whorow quiet">' in _with_quiet, _with_quiet[:600])
+check("naming itself, since it has no heading to name it",
+      "<span class=whoname>Valguero</span>" in _with_quiet, _with_quiet[:800])
+check("and it is not in the Nobody-on line",
+      "Valguero" not in _with_quiet.split("Nobody on:")[1], _with_quiet[-400:])
+check("which now counts eight", "(8 maps)" in _with_quiet, _with_quiet[-300:])
+check("a blackout is ten of those rows, not twenty lines",
+      ui.render_whos_online({"by_map": {m: [] for m in _TEN[:1]}, "age": 5},
+                            maps=_TEN).count('<div class="whorow quiet">') == 9,
+      ui.render_whos_online({"by_map": {m: [] for m in _TEN[:1]}, "age": 5},
+                            maps=_TEN).count('<div class="whorow quiet">'))
+
+# ---- nobody anywhere is one line, and not a restated zero
+_none_on = ui.render_whos_online(_ten(), maps=_TEN)
+check("an empty cluster is a single line", _none_on.count("Nobody on:") == 1, _none_on)
+check("listing every map", "(10 maps)" in _none_on, _none_on)
+check("with no headings at all", "<div class=whomap>" not in _none_on, _none_on)
+check("and no player rows", "<div class=whorow>" not in _none_on, _none_on)
+check("and it does not restate the count section's zero",
+      "0 players" not in _none_on and "players online" not in _none_on, _none_on)
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
