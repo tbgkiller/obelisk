@@ -147,6 +147,25 @@ def _rclone(store, args, timeout=1800):
     return _run(["rclone", "--config", path] + list(args), timeout=timeout)
 
 
+def connect_refusal(provider, password, token=""):
+    """What the operator still has to fill in, or "" when nothing is missing.
+
+    Split out of connect() so a page can tell the two kinds of "no" apart. A blank
+    passphrase and an unreachable provider are both `(False, message)` from connect,
+    and rendering them the same way paints "you have not typed anything yet" in the red
+    that everywhere else in this manager means something broke.
+    """
+    if provider not in BY_KEY:
+        return "unknown provider %r" % provider
+    if not str(password).strip():
+        return ("an encryption passphrase is required - it is what keeps the "
+                "provider from reading your saves")
+    if BY_KEY[provider]["oauth"] and not str(token).strip():
+        return ("no token yet - run `%s` on a machine with a browser and paste "
+                "the result here" % authorize_command(provider))
+    return ""
+
+
 def connect(store, provider, password, path="obelisk-backups", token="", extra=None,
             password2=""):
     """Store credentials and prove they work. Returns (ok, message).
@@ -161,14 +180,9 @@ def connect(store, provider, password, path="obelisk-backups", token="", extra=N
     ok, why = available()
     if not ok:
         return False, why
-    if provider not in BY_KEY:
-        return False, "unknown provider %r" % provider
-    if not str(password).strip():
-        return False, ("an encryption passphrase is required - it is what keeps the "
-                       "provider from reading your saves")
-    if BY_KEY[provider]["oauth"] and not str(token).strip():
-        return False, ("no token yet - run `%s` on a machine with a browser and paste "
-                       "the result here" % authorize_command(provider))
+    refusal = connect_refusal(provider, password, token)
+    if refusal:
+        return False, refusal
 
     obscured, err = obscure(str(password))
     if obscured is None:

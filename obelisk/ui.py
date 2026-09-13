@@ -101,6 +101,13 @@ tr:last-child td{border-bottom:none}
 .maplink:visited{color:#e6e9ef}
 .maplink:hover{border-bottom-color:#8b94a3}
 .jump a:hover{color:#e6e9ef}
+/* Four pages became four sections and nothing on the page said so: eight
+   fieldsets in a row, no heading between them, and Mods reading as the tail of
+   Restore. The rule is the seam; the heading says which section you are in and
+   matches the jump link that brings you here. */
+.area{border-top:1px solid #232b36;margin-top:26px;padding-top:6px}
+.area:first-of-type{border-top:0;margin-top:0}
+.areah{margin:0 0 10px;font-size:13px;letter-spacing:.4px;text-transform:uppercase;color:#8b94a3;font-weight:600}
 .whoform.byid input{width:260px;flex:1 1 200px}
 /* Three actions, three weights. Talking to somebody and removing them should not
    be the same button, and Kick sitting beside Ban in identical grey is the
@@ -2106,6 +2113,18 @@ JUMPS = (("#run", "Running"), ("#who", "Players"), ("#bans", "Bans"),
          ("#cap", "Cap"), ("#maps", "Maps"), ("#connect", "Connect"))
 
 
+def render_area(anchor, title, body):
+    """One section of a page that used to be several pages.
+
+    The anchor is what the jump row and every redirect land on; the heading is what
+    tells somebody they have landed, and it is the same word the jump row used - a link
+    saying "Off-site" that arrives at a box headed "Connect a cloud" leaves the reader
+    to work out whether they went to the right place.
+    """
+    return ('<section id=%s class=area><h2 class=areah>%s</h2>%s</section>'
+            % (_e(anchor), _e(title), body))
+
+
 def render_jump_row(items):
     """A row of links to the sections of a long page.
 
@@ -2462,7 +2481,7 @@ def _add_a_mod(store, found=None, problem=""):
 # bytes actually read, and when there is no total to divide by it says so instead.
 BACKUP_PROGRESS = """
 <div id=bkwrap hidden>
-  <div class=note><strong id=bkphase>Working</strong> <span id=bkdetail></span></div>
+  <div class=note><strong id=bkphase>Backing up</strong> <span id=bkdetail></span></div>
   <div style="background:#2a2f36;border-radius:6px;height:10px;overflow:hidden;margin:8px 0">
     <div id=bkbar style="height:100%;width:0;background:#5b9;transition:width .4s"></div>
   </div>
@@ -2549,7 +2568,7 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
 
     if not archives:
         return (banner + '<fieldset><legend>Restore</legend><div class=help>No backups '
-                'on disk yet. Make one from the Backups tab first - there is nothing to '
+                'on disk yet. Make one under <b>Back up</b> above first - there is nothing to '
                 'restore from.</div></fieldset>')
 
     opts = "".join('<option value="%s"%s>%s &mdash; %s</option>'

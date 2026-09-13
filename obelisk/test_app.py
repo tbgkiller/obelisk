@@ -5178,12 +5178,19 @@ finally:
     _appmod.clusterctl.status = _real_status_s1
 
 # ---- one page, four sections, in the order the story runs
+def _area(page, name):
+    """One section of the Data page, bounded by the next one."""
+    return _from(page, '<section id=%s class=area>' % name).split("</section>")[0]
+
+
 for _sec in ("backups", "cloud", "restore", "mods"):
     check("the Data page has a %s section to land on" % _sec,
-          ('<div id=%s>' % _sec) in _data_pg4, _window(_data_pg4, "id=%s" % _sec, 120))
+          ('<section id=%s class=area>' % _sec) in _data_pg4,
+          _window(_data_pg4, "id=%s" % _sec, 140))
 check("in the order the work happens in",
-      _in_order(_data_pg4, "<div id=backups>", "<div id=cloud>", "<div id=restore>",
-                "<div id=mods>"), "the sections are out of order")
+      _in_order(_data_pg4, "<section id=backups", "<section id=cloud",
+                "<section id=restore", "<section id=mods"),
+      "the sections are out of order")
 check("each one still renders what its page rendered",
       _in_order(_data_pg4, "Back up now", "Off-site copies", "1. Choose an archive",
                 "Mods, in load order"), "a section lost its content")
@@ -5193,7 +5200,7 @@ check("with a row of links to them",
       _window(_data_pg4, "<div class=jump>", 300))
 check("and the archive it holds is listed under restore",
       "obelisk-2026-09-13.tar.zst" in _data_pg4,
-      _window(_data_pg4, "<div id=restore>", 600))
+      _area(_data_pg4, "restore")[:600])
 
 # ---- the old addresses still work
 for _old, _want in (("/admin/backups", "/admin/data#backups"),
@@ -5214,10 +5221,10 @@ for _action in ("/admin/backup", "/admin/mods", "/admin/mods/find", "/admin/mods
 # page together, which is why this one is checked against the other render.
 check("and the connect form still posts to /admin/cloud/connect",
       'action="/admin/cloud/connect"' in _data_off4,
-      _window(_data_off4, "<div id=cloud>", 600))
+      _area(_data_off4, "cloud")[:600])
 check("which is the only cloud form offered when none is connected",
       'action="/admin/cloud/disconnect"' not in _data_off4,
-      _window(_data_off4, "<div id=cloud>", 600))
+      _area(_data_off4, "cloud")[:600])
 check("no form posts to the page it happens to be rendered on",
       'action="/admin/data"' not in _data_pg4, "a form was re-addressed")
 
@@ -5239,8 +5246,8 @@ check("each id appears once on the page",
 
 # ---- the guards came across unchanged
 check("disconnecting a cloud still takes the typed word",
-      "DISCONNECT" in _from(_data_pg4, "<div id=cloud>"),
-      _window(_from(_data_pg4, "<div id=cloud>"), "disconnect", 400))
+      "DISCONNECT" in _area(_data_pg4, "cloud"),
+      _window(_area(_data_pg4, "cloud"), "disconnect", 400))
 _discsrc = _after(_s1src, "async def cloud_disconnect").split(
     chr(10) + "    async def ")[0]
 check("and the route still compares it rather than trusting a click",
@@ -5254,7 +5261,7 @@ check("and still needs the map's name typed",
       _window(_runsrc, "confirms", 200))
 # The secrets the connect form takes are typed in, never rendered back: the inputs are
 # password fields and neither carries a value= for the browser or a screenshot to keep.
-_cloud_off = _from(_data_off4, "<div id=cloud>").split("<div id=restore>")[0]
+_cloud_off = _area(_data_off4, "cloud")
 check("the passphrase field is a password field",
       "<input type=password name=password autocomplete=new-password>" in _cloud_off,
       _window(_cloud_off, "password", 200))
@@ -5274,6 +5281,143 @@ for _what, _frag in sorted({
         "the restore point action": 'add_post("/admin/restore/point", restore_point)',
 }.items()):
     check("%s is untouched" % _what, _frag in _s1src, _frag)
+
+# ---- a result lands where the work was, not at the top of a long page
+#
+# The redirecting actions already did. The ones that rendered their answer left the
+# operator at the top of the Data page with the answer half a screen down, and the
+# address bar sitting on /admin/restore/run.
+_t29 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _post_data(path, data, cloud_connected=False):
+        _appmod.clusterctl.status = lambda store: dict(
+            _lstatus, services=[dict(x) for x in _lstatus["services"]])
+        _real_cst9 = _appmod.cloudctl.status
+        _real_cls9 = _appmod.cloudctl.listing
+        _appmod.cloudctl.status = lambda store: {
+            "rclone_ok": True, "rclone_detail": "", "encryption_ok": True,
+            "connected": cloud_connected, "provider": "Backblaze B2",
+            "path": "obelisk/", "reachable": True, "reachable_detail": ""}
+        _appmod.cloudctl.listing = lambda store: (True, [])
+        try:
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            r = await client.post(path, data=data, allow_redirects=False)
+            where = r.headers.get("Location", "")
+            landed = again = ""
+            if r.status == 302 and where.startswith("/admin/data"):
+                landed = await (await client.get(where)).text()
+                again = await (await client.get(where)).text()
+            body = await r.text() if r.status == 200 else ""
+            await client.close()
+        finally:
+            _appmod.cloudctl.status = _real_cst9
+            _appmod.cloudctl.listing = _real_cls9
+        return r.status, where, body, landed, again
+
+    _cc_st, _cc_where, _cc_body, _cc_landed, _cc_again = _t29.run_until_complete(
+        _post_data("/admin/cloud/connect", {"provider": "s3", "password": ""}))
+    _ri_st, _ri_where, _, _ri_landed, _ri_again = _t29.run_until_complete(
+        _post_data("/admin/restore/inspect", {"archive": "nope.tar.zst"}))
+    # A real file, because _archive_path resolves against the backups folder and a
+    # name that is not there is refused before the guard this is about is reached.
+    _bdir = _appmod.backupctl.backups_dir(_lstore)
+    os.makedirs(_bdir, exist_ok=True)
+    _real_arc = os.path.join(_bdir, "obelisk-real.tar.zst")
+    io.open(_real_arc, "w", encoding="utf-8").write("not really an archive")
+    _rr_st, _rr_where, _, _rr_landed, _rr_again = _t29.run_until_complete(
+        _post_data("/admin/restore/run", {"archive": "obelisk-real.tar.zst",
+                                          "map": "island", "confirm": "The Island"}))
+finally:
+    _t29.close()
+    _appmod.clusterctl.status = _real_status_s1
+
+for _what, _st, _where, _landed, _again, _phrase, _sect in (
+        ("a cloud connect with nothing typed", _cc_st, _cc_where, _cc_landed,
+         _cc_again, "encryption passphrase is required", "cloud"),
+        ("an archive that is not there", _ri_st, _ri_where, _ri_landed, _ri_again,
+         "No such archive", "restore"),
+        ("a restore with nothing looked inside", _rr_st, _rr_where, _rr_landed,
+         _rr_again, "Look inside an archive first", "restore")):
+    check("%s redirects rather than rendering" % _what, _st == 302, [_what, _st])
+    check("carrying a one-shot result to its own section",
+          _where.startswith("/admin/data?said=") and _where.endswith("#" + _sect),
+          _where)
+    check("and the answer is in that section when it lands",
+          _phrase in _area(_landed, _sect), _area(_landed, _sect)[:400])
+    check("and said once - reloading that page does not repeat it",
+          _phrase not in _area(_again, _sect), _area(_again, _sect)[:300])
+
+check("no answer is left rendered at the top of the page",
+      _cc_body == "" and _cc_st != 200, [_cc_st, _cc_body[:80]])
+
+# The other three cloud actions go through one helper, so one of them proves the shape.
+_t30 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _dc_st, _dc_where, _dc_body, _dc_landed, _ = _t30.run_until_complete(
+        _post_data("/admin/cloud/disconnect", {"confirm": "nope"},
+                   cloud_connected=True))
+finally:
+    _t30.close()
+    _appmod.clusterctl.status = _real_status_s1
+
+check("a cloud disconnect answers with a redirect too", _dc_st == 302, _dc_st)
+check("to the cloud section, carrying its result",
+      _dc_where.startswith("/admin/data?said=") and _dc_where.endswith("#cloud"),
+      _dc_where)
+check("and nothing is rendered onto the POST", _dc_body == "", _dc_body[:120])
+check("the answer is in the cloud section when it lands",
+      "<div class=" in _area(_dc_landed, "cloud"), _area(_dc_landed, "cloud")[:300])
+
+# ---- and nothing still points at a tab that no longer exists
+check("no page sends anybody to one of the four tabs that were folded in",
+      "Backups tab" not in _uisrc_merge and "Cloud tab" not in _uisrc_merge
+      and "Restore tab" not in _uisrc_merge and "Mods tab" not in _uisrc_merge,
+      "a stale tab pointer survived the fold")
+
+# ---- the seams between four things that were four pages
+for _anchor, _title in (("backups", "Back up"), ("cloud", "Off-site"),
+                        ("restore", "Restore"), ("mods", "Mods")):
+    check("the %s section is headed %r" % (_anchor, _title),
+          ('<h2 class=areah>%s</h2>' % _title) in _area(_data_pg4, _anchor),
+          _area(_data_pg4, _anchor)[:200])
+    check("which is the word the jump row used to get here",
+          ('<a href="#%s">%s</a>' % (_anchor, _title)) in _data_pg4,
+          _window(_data_pg4, "<div class=jump>", 300))
+check("the headings come before the boxes they head",
+      _in_order(_data_pg4, "<h2 class=areah>Back up</h2>", "Back up now",
+                "<h2 class=areah>Off-site</h2>", "<h2 class=areah>Restore</h2>",
+                "1. Choose an archive", "<h2 class=areah>Mods</h2>",
+                "Mods, in load order"), "a heading is out of place")
+check("and the sections are drawn apart, not stacked",
+      ".area{border-top:" in _uisrc_merge, "no rule between sections")
+
+# ---- one colour for "you have not filled it in"
+check("a cloud refusal is amber, like every other refusal here",
+      "<div class=warn>" in _area(_cc_landed, "cloud")
+      and "<div class=problem>" not in _area(_cc_landed, "cloud"),
+      _area(_cc_landed, "cloud")[:400])
+check("and a real cloud failure is still red",
+      "problem=msg" in _after(_s1src, "async def cloud_connect"),
+      _window(_s1src, "async def cloud_connect", 900))
+check("the two are told apart before anything is attempted",
+      _in_order(_after(_s1src, "async def cloud_connect"), "connect_refusal",
+                "cloudctl.connect("),
+      _window(_s1src, "async def cloud_connect", 900))
+check("by asking the module that owns the rule, not by reading its wording",
+      "def connect_refusal(" in io.open(
+          os.path.join(os.path.dirname(__file__), "cloud.py"),
+          encoding="utf-8").read(), "no shared refusal check")
+
+# ---- two jobs, two names
+check("the backup panel says which job it is",
+      "Backing up" in _data_pg4, _window(_data_pg4, "bkphase", 160))
+check("not the word the other one could be showing at the same time",
+      ">Working</strong>" not in _data_pg4, _window(_data_pg4, "bkphase", 160))
+check("and the restore panel still says its own",
+      "Restoring" in _data_pg4, _window(_data_pg4, "rswrap", 200))
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

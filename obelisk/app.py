@@ -1695,25 +1695,49 @@ def build_app(store, docker=None):
         the answer has to come back where they are looking.
         """
         b, c, r, m = (backups or {}), (cloud or {}), (restore or {}), (mods or {})
+        titles = dict((a.lstrip("#"), t) for a, t in DATA_SECTIONS)
         return (ui.render_jump_row(DATA_SECTIONS)
-                + '<div id=backups>%s</div>' % ui.render_backups(
+                + ui.render_area("backups", titles["backups"], ui.render_backups(
                     store, backupctl.listing(store),
-                    message=b.get("message", ""), problem=b.get("problem", ""))
-                + '<div id=cloud>%s</div>' % _cloud_section(
+                    message=b.get("message", ""), problem=b.get("problem", "")))
+                + ui.render_area("cloud", titles["cloud"], _cloud_section(
                     msg=c.get("message", ""), problem=c.get("problem", ""),
-                    warning=c.get("warning", ""))
-                + '<div id=restore>%s</div>' % _restore_body(
+                    warning=c.get("warning", "") or c.get("refusal", "")))
+                + ui.render_area("restore", titles["restore"], _restore_body(
                     message=r.get("message", ""), problem=r.get("problem", ""),
-                    refusal=r.get("refusal", ""))
-                + '<div id=mods>%s</div>' % _mods_section(problem=m.get("problem", "")))
+                    refusal=r.get("refusal", "")))
+                + ui.render_area("mods", titles["mods"],
+                                 _mods_section(problem=m.get("problem", ""))))
 
     def _data(**kw):
         return chrome(_data_body(**kw), "Data", "/admin/data")
 
+    def _data_next(where, **kw):
+        """Park a result for one section and send the browser to that section.
+
+        The redirect-style actions already landed where they belonged; the ones that
+        rendered their answer left the operator at the top of a long page with the
+        answer half a screen down, and the address bar on /admin/restore/run. Same
+        one-shot slot the cluster page's actions use, same reason.
+        """
+        return web.HTTPFound("/admin/data?said=%s#%s"
+                             % (_say_next(where=where, **kw), where))
+
+    def _said_section(request):
+        """A parked result, if this request carries its token, as _data_body kwargs."""
+        token = str((getattr(request, "query", None) or {}).get("said") or "")
+        said = _said.pop(token, None) if token else None
+        where = (said or {}).get("where") or ""
+        if where not in ("backups", "cloud", "restore", "mods"):
+            return {}
+        return {where: {"message": said.get("message", ""),
+                        "problem": said.get("problem", ""),
+                        "refusal": said.get("refusal", "")}}
+
     async def data_page(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        return _data()
+        return _data(**_said_section(request))
 
     async def backups_page(request):
         if not authed(request):
@@ -1922,14 +1946,15 @@ def build_app(store, docker=None):
         form = await request.post()
         path = _archive_path(form.get("archive"))
         if not path:
-            return _data(restore={"problem": "No such archive."})
+            return _data_next("restore", problem="No such archive.")
         # Off the loop regardless: an archive written before the manifest carried a map
         # list still has to be decompressed to describe it, and the relay, Discord and
         # this page all live on the thread that would be doing it.
         info = await asyncio.to_thread(restorectl.inspect, path)
         _looked.update(archive=os.path.basename(path), info=info if info["ok"] else None,
                        notes=restorectl.compare(store, info) if info["ok"] else [])
-        return _data(restore={"problem": "" if info["ok"] else info["problem"]})
+        return _data_next("restore",
+                          problem="" if info["ok"] else info["problem"])
 
     async def restore_run(request):
         if not authed(request):
@@ -1941,7 +1966,7 @@ def build_app(store, docker=None):
         confirm = str(form.get("confirm") or "")
         force = bool(form.get("force"))
         if not path:
-            return _data(restore={"problem": "No such archive."})
+            return _data_next("restore", problem="No such archive.")
 
         # The archive that was looked inside is the only archive this will restore.
         # The page has two forms - one to inspect, one to run - and the run form used
@@ -1956,19 +1981,21 @@ def build_app(store, docker=None):
                          "Restore refused: no archive has been looked inside yet, so "
                          "there is nothing proven to restore from. Nothing has been "
                          "changed.", level="warning", map=map_key)
-            return _data(restore={
-                "refusal": "Look inside an archive first - nothing is restored from an "
-                           "archive that has not been opened and checked."})
+            return _data_next(
+                "restore",
+                refusal="Look inside an archive first - nothing is restored from an "
+                        "archive that has not been opened and checked.")
         if posted != looked:
             announce.say("restore.refused",
                          "Restore refused: the page asked to restore %s but %s is the "
                          "archive that was looked inside. Nothing has been changed."
                          % (posted, looked), level="warning", map=map_key)
-            return _data(restore={
-                "refusal": "The archive shown is not the one that was looked inside: "
-                           "you asked for %s, and %s is what was opened and checked. "
-                           "Look inside %s again before restoring from it."
-                           % (posted, looked, posted)})
+            return _data_next(
+                "restore",
+                refusal="The archive shown is not the one that was looked inside: you "
+                        "asked for %s, and %s is what was opened and checked. Look "
+                        "inside %s again before restoring from it."
+                        % (posted, looked, posted))
 
         # Typed, not clicked, and it is the map's own name rather than a fixed word:
         # this replaces one map's entire world, and the mistake worth preventing is
@@ -1982,16 +2009,17 @@ def build_app(store, docker=None):
                          "Restore of %s refused: the confirmation did not match. "
                          "Nothing has been changed." % (want or "that map"),
                          level="warning", map=map_key, archive=posted)
-            return _data(restore={
-                "refusal": "Type %s to confirm. This replaces that map's whole world "
-                           "with the one in the archive, and there is no undo - so the "
-                           "name is typed rather than clicked."
-                           % (want or "the map's name")})
+            return _data_next(
+                "restore",
+                refusal="Type %s to confirm. This replaces that map's whole world with "
+                        "the one in the archive, and there is no undo - so the name is "
+                        "typed rather than clicked." % (want or "the map's name"))
 
         if cluster_busy.locked():
-            return _data(restore={
-                "problem": "Something else is already working on the cluster - this "
-                           "was ignored rather than run alongside it."})
+            return _data_next(
+                "restore",
+                problem="Something else is already working on the cluster - this was "
+                        "ignored rather than run alongside it.")
 
         if rjob["state"] == "running":
             raise web.HTTPFound("/admin/data#restore")
@@ -2123,20 +2151,31 @@ def build_app(store, docker=None):
         raise web.HTTPFound("/admin/data#cloud")
 
     def _cloud_chrome(msg="", problem="", warning=""):
-        return _data(cloud={"message": msg, "problem": problem, "warning": warning})
+        """Park what happened and go to the section it happened in."""
+        return _data_next("cloud", message=msg, problem=problem, refusal=warning)
 
     async def cloud_connect(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
         f = await request.post()
         extra = {k: f.get(k, "") for k in ("access_key_id", "secret_access_key")}
+        # Asked before anything is attempted, so "you have not typed a passphrase"
+        # arrives in the amber that means nothing happened rather than the red that
+        # means something broke. Both used to be red, side by side with a restore
+        # refusal in amber saying the same kind of thing.
+        refusal = cloudctl.connect_refusal(f.get("provider", ""),
+                                           f.get("password", ""), f.get("token", ""))
+        if refusal:
+            raise _data_next("cloud", refusal=refusal)
         ok, msg = cloudctl.connect(store,
                                    provider=f.get("provider", ""),
                                    password=f.get("password", ""),
                                    path=f.get("path", "obelisk-backups"),
                                    token=f.get("token", ""),
                                    extra=extra)
-        return _cloud_chrome(msg if ok else "", "" if ok else msg)
+        if ok:
+            raise _data_next("cloud", message=msg)
+        raise _data_next("cloud", problem=msg)
 
     async def cloud_disconnect(request):
         if not authed(request):
