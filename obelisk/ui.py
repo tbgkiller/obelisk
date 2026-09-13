@@ -1258,7 +1258,7 @@ def render_stop_warning(counts, silent=()):
             % "<br>".join(lines))
 
 
-def render_stop_job(job):
+def render_stop_panel(job):
     """Where the stop has got to, and - when it is over - how it went.
 
     The request used to be held open across the whole thing - minutes, on ten maps - so
@@ -1277,9 +1277,10 @@ def render_stop_job(job):
     commentary and is overwritten with a bare "failed" on the way out; the sentence
     worth reading is the one the stop returned.
 
-    Always wrapped in #stopwrap, whatever the state, so the poller has one thing to
-    replace. It used to render inline *and* be injected, which stacked two identical
-    panels on the page for the length of the stop.
+    The panel only, with no wrapper of its own - render_stop_job puts it inside the one
+    element the poller owns, and the poller replaces what is inside that element. It
+    used to render inline *and* be injected, which stacked two identical panels on the
+    page for the length of the stop.
     """
     job = job or {}
     state = job.get("state")
@@ -1295,7 +1296,19 @@ def render_stop_job(job):
                  % ("note" if job.get("ok") else "problem", _e(text))) if text else ""
     else:
         inner = ""
-    return '<div id=stopwrap>%s</div>' % inner
+    return inner
+
+
+def render_stop_job(job):
+    """render_stop_panel inside the element the poller replaces the contents of.
+
+    The id is emitted here and nowhere else. It used to be emitted by the panel itself,
+    which the poller then dropped *inside* the wrapper - so the running page ended up
+    with a #stopwrap nested in a #stopwrap. Harmless in practice, because
+    getElementById takes the outer one, and invalid all the same: two elements with one
+    id is the kind of thing that stays harmless right up until something queries it.
+    """
+    return '<div id=stopwrap>%s</div>' % render_stop_panel(job)
 
 
 # Shaped like RESTORE_JS, and for the same reason: a long job on a page that would

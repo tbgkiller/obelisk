@@ -2022,6 +2022,120 @@ check("neither page stacks two stop panels",
       [_page_ok.count("id=stopwrap"), _page_bad.count("id=stopwrap")])
 
 
+
+# ---- one #stopwrap in the DOM, during the poll as well as at first paint
+#
+# The committed test measured the server paint only, so it proved the operator does not
+# see two panels and missed that the poller was nesting one wrapper inside the other:
+# render_stop_job's html carried the id, and STOP_JS dropped that html *inside* the
+# element with the same id. getElementById takes the outer one, so nothing broke -
+# which is exactly how a duplicate id survives, right up until something queries it.
+#
+# So this models what the browser actually ends up holding: the wrapper the page
+# rendered, with the polled html assigned into it, the way `wrap.innerHTML = j.html`
+# does.
+import re as _re_nest                                            # noqa: E402
+
+
+def _dom_after_poll(job):
+    """The page's wrapper with the poller's html inside it, as innerHTML would leave it."""
+    page = ui.render_stop_job(job)
+    polled = ui.render_stop_panel(job)
+    opening = _re_nest.match(r"<div id=stopwrap>", page)
+    assert opening, page[:80]
+    return "<div id=stopwrap>%s</div>" % polled
+
+
+for _label, _job in (
+        ("at rest", {"state": "idle"}),
+        ("on the first paint", {"state": "running", "step": "starting", "elapsed": 0}),
+        ("mid-stop", {"state": "running", "elapsed": 42,
+                      "step": "Ragnarok saved its world and closed (3 of 10)."}),
+        ("when it worked", {"state": "done", "ok": True, "step": "done",
+                            "message": _STOPPED_MSG}),
+        ("when it failed", {"state": "done", "ok": False, "step": "failed",
+                            "message": _FAILED_MSG})):
+    check("exactly one #stopwrap %s, server-rendered" % _label,
+          ui.render_stop_job(_job).count("id=stopwrap") == 1,
+          ui.render_stop_job(_job)[:120])
+    check("and the polled html brings none of its own %s" % _label,
+          ui.render_stop_panel(_job).count("id=stopwrap") == 0,
+          ui.render_stop_panel(_job)[:120])
+    check("so the DOM holds exactly one after the poll lands %s" % _label,
+          _dom_after_poll(_job).count("id=stopwrap") == 1,
+          _dom_after_poll(_job)[:160])
+    check("with no wrapper nested inside a wrapper %s" % _label,
+          "<div id=stopwrap><div id=stopwrap>" not in _dom_after_poll(_job),
+          _dom_after_poll(_job)[:160])
+
+check("the id is emitted by one function and not the other",
+      "id=stopwrap" in _insp_dead.getsource(ui.render_stop_job)
+      and "id=stopwrap" not in _insp_dead.getsource(ui.render_stop_panel),
+      "both or neither emit the id")
+check("and the script still carries none",
+      "id=stopwrap" not in ui.STOP_JS, ui.STOP_JS[:120])
+
+# and the endpoint the poller actually calls hands back the unwrapped panel
+_real_players3, _real_stop3 = _appmod.clusterctl.players_online, _appmod.clusterctl.stop
+
+
+async def _poll_mid_stop():
+    _appmod.clusterctl.players_online = lambda store, **k: (0, {}, [])
+
+    def _slow(store, **kw):
+        say = kw.get("say") or (lambda *a, **k: None)
+        say("cluster.closing",
+            "Stopping the cluster. Each map is being asked to save and close its own "
+            "world first, which takes a few minutes on a big map - nothing is shut "
+            "down until its world is written.",
+            slot=_appmod.clusterctl.STOP_SLOT)
+        _time_dead.sleep(0.5)
+        return True, _STOPPED_MSG
+
+    _appmod.clusterctl.stop = _slow
+    client = TestClient(TestServer(build_app(_sstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_sstore.get("admin_token"))})
+    page = await (await client.post("/admin/stop", allow_redirects=True)).text()
+    mid = await (await client.get("/admin/cluster/status")).json()
+    for _ in range(60):
+        j = await (await client.get("/admin/cluster/status")).json()
+        if j.get("state") != "running":
+            break
+        await _aio2.sleep(0.05)
+    after = await (await client.get("/admin/cluster")).text()
+    await client.close()
+    return page, mid, j, after
+
+
+_t9 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _page_mid, _mid_js, _end_js, _page_after = _t9.run_until_complete(_poll_mid_stop())
+    _drain2()
+finally:
+    _t9.close()
+    _appmod.clusterctl.players_online = _real_players3
+    _appmod.clusterctl.stop = _real_stop3
+
+check("the live page has one wrapper while a stop is running",
+      _page_mid.count("id=stopwrap") == 1, _page_mid.count("id=stopwrap"))
+check("the status endpoint hands back the panel without a wrapper",
+      "id=stopwrap" not in (_mid_js.get("html") or ""), _mid_js.get("html"))
+check("but it is still a panel, not nothing",
+      "Stopping the cluster" in (_mid_js.get("html") or ""), _mid_js.get("html"))
+check("dropping it into the live page leaves one wrapper",
+      ("<div id=stopwrap>%s</div>" % (_mid_js.get("html") or "")).count(
+          "id=stopwrap") == 1,
+      _mid_js.get("html"))
+check("the finished status is unwrapped too",
+      "id=stopwrap" not in (_end_js.get("html") or ""), _end_js.get("html"))
+check("and still carries the result",
+      _STOPPED_MSG in (_end_js.get("html") or ""), _end_js.get("html"))
+check("the page after it still has exactly one wrapper",
+      _page_after.count("id=stopwrap") == 1, _page_after.count("id=stopwrap"))
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

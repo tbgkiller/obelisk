@@ -779,7 +779,9 @@ def build_app(store, docker=None):
         if not authed(request):
             return web.json_response({"state": "denied"}, status=403)
         live = _sjob_live()
-        live["html"] = ui.render_stop_job(live)
+        # The panel, not the wrapper. The poller puts this inside #stopwrap, so
+        # handing it the wrapper as well nested one inside the other.
+        live["html"] = ui.render_stop_panel(live)
         return web.json_response(live)
 
     def _connect_panel():
