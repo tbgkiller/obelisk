@@ -102,7 +102,7 @@ SETTINGS = [
     dict(key="max_players", label="Players per map", group="Access",
          type="int", default=70, min=1, max=255, target="env:MAX_PLAYERS",
          apply="recreate",
-         help="Per map, not cluster-wide. Higher values need more RAM per container."),
+         help="The cluster default, applied to every map that does not set its own. A map can differ - that is set on that map's page, not here. Higher values need more RAM per container."),
 
     dict(key="server_password", label="Join password", group="Access",
          type="password", default="", target="env:SERVER_PASSWORD", apply="recreate",
@@ -278,8 +278,9 @@ SETTINGS = [
          per_map=True,
          help="A cap, not a reservation - unused headroom costs nothing. If a map is "
               "OOM-killed you'll see it restart repeatedly with the container itself "
-              "reporting a clean exit, because only the game process is killed. "
-              "Override per map for the heavy ones."),
+              "reporting a clean exit, because only the game process is killed. This is "
+              "the cluster default; a heavy map can be given more on that map's own "
+              "page."),
     dict(key="discord_admin_role_id", label="Admin role ID", group="Discord",
          type="text", default="", target="env:DISCORD_ADMIN_ROLE_ID", apply="reload",
          pattern=r"^\d{0,20}$",

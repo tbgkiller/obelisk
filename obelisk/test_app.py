@@ -5022,9 +5022,16 @@ check("and points at the one page that keeps that up to date",
 check("without restating the count, which has one home",
       "players online" not in _mp_body and "players</b>" not in _mp_body,
       _window(_mp_body, "Docker says", 300))
-check("a map that is not running says so instead",
-      "This map is not running" in _mp_down_body,
-      _window(_mp_down_body, "not running", 200))
+# That fixture has compose_exists False - a cluster that has never been launched, which
+# is a different sentence from a map that is down on a cluster that is up, and a
+# different link because #run is not on that page to point at.
+check("a cluster that has never been launched says that instead",
+      "never been launched" in _mp_down_body,
+      _window(_mp_down_body, "never been", 200))
+check("and points at something that page actually has",
+      'href="/admin/cluster#maps"' in _mp_down_body
+      and "/admin/cluster#run" not in _mp_down_body,
+      _window(_mp_down_body, "cluster#", 200))
 check("and the two pages are not the same page",
       ("Docker says" in _mp_body) != ("Docker says" in _mp_down_body),
       [("Docker says" in _mp_body), ("Docker says" in _mp_down_body)])
@@ -5591,6 +5598,129 @@ for _bad in ("https://evil.example/x", "//evil.example",
              "/admin/cluster/map/island/../../../etc", ""):
     check("%r is not somewhere this form gets to send anybody" % _bad,
           _backs[_bad] == "/admin", [_bad, _backs[_bad]])
+
+# ---- every anchor this manager offers has to land on something
+#
+# Four pages became four sections and a page grew a jump row, and an anchor that scrolls
+# nowhere is the kind of thing nobody reports and everybody stops trusting. So it is
+# crawled rather than eyeballed: every href="#x" on a page must have an id=x on that
+# same page, in both the states the cluster can be in.
+import re as _re5                                                     # noqa: E402
+
+
+def _anchors_resolve(page):
+    """(unresolved, offered) - the fragments this page links to that it does not have."""
+    ids = set(_re5.findall(r'id=([a-zA-Z][-\w]*)', page))
+    ids |= set(_re5.findall(r'id="([^"]+)"', page))
+    offered = set(_re5.findall(r'href="#([^"]+)"', page))
+    return sorted(offered - ids), sorted(offered)
+
+
+_t32 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _both_states():
+        _real_st32 = _appmod.clusterctl.status
+        try:
+            _appmod.clusterctl.status = lambda store: dict(
+                _lstatus, services=[dict(x) for x in _lstatus["services"]])
+            _bot_s1.LIVE = _kick_relay()
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            up = await (await client.get("/admin/cluster")).text()
+            up_map = await (await client.get("/admin/cluster/map/island")).text()
+            data = await (await client.get("/admin/data")).text()
+            settings = await (await client.get("/admin")).text()
+            _appmod.clusterctl.status = lambda store: {
+                "docker_ok": True, "compose_exists": False, "running": 0,
+                "services": []}
+            fresh = await (await client.get("/admin/cluster")).text()
+            fresh_map = await (await client.get("/admin/cluster/map/island")).text()
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st32
+            _bot_s1.LIVE = _real_live
+        return up, up_map, data, settings, fresh, fresh_map
+
+    (_up5, _upmap5, _data5, _set5, _fresh5,
+     _freshmap5) = _t32.run_until_complete(_both_states())
+finally:
+    _t32.close()
+
+# A map page's own links are cross-page (/admin/cluster#run), which this crawl does not
+# resolve - those are pinned one by one below, against the page they point at.
+for _what, _page, _jumps in (("the cluster page, launched", _up5, True),
+                             ("the cluster page, never launched", _fresh5, True),
+                             ("a map page, launched", _upmap5, False),
+                             ("a map page, never launched", _freshmap5, False),
+                             ("the Data page", _data5, True),
+                             ("the Settings page", _set5, True)):
+    _unresolved, _offered = _anchors_resolve(_page)
+    check("%s offers no anchor it does not have" % _what, not _unresolved,
+          _unresolved)
+    if _jumps:
+        check("and it does offer some, so the crawl had something to check",
+              len(_offered) >= 3, [_what, _offered])
+
+# ---- #4 the running table is not on a cluster that has never run
+check("a launched cluster offers its running table",
+      'href="#run"' in _up5 and "<fieldset id=run>" in _up5,
+      _window(_up5, "class=jump", 300))
+check("a cluster that has never launched offers no chip for it",
+      'href="#run"' not in _fresh5, _window(_fresh5, "class=jump", 300))
+check("because it does not draw one",
+      "<fieldset id=run>" not in _fresh5, "a run table appeared")
+check("and its jump row is in the order the page draws them",
+      _in_order(_window(_fresh5, "class=jump", 400), "#maps", "#who", "#bans", "#cap",
+                "#connect"), _window(_fresh5, "class=jump", 400))
+check("which is Maps first, where the page starts",
+      _in_order(_fresh5, "<fieldset id=maps>", "<fieldset id=who>"),
+      "the fresh page does not lead with Maps")
+check("a launched page still leads with the table",
+      _in_order(_window(_up5, "class=jump", 400), "#run", "#who"),
+      _window(_up5, "class=jump", 400))
+
+# ---- the way back from a map page resolves in both states
+check("the map page's way back points at the running table when there is one",
+      'href="/admin/cluster#run"' in _upmap5, _window(_upmap5, "Back to the", 160))
+check("and at the maps form when there is not",
+      'href="/admin/cluster#maps"' in _freshmap5
+      and "/admin/cluster#run" not in _freshmap5,
+      _window(_freshmap5, "Back to the", 160))
+check("both of which the cluster page actually has in that state",
+      "<fieldset id=run>" in _up5 and "<fieldset id=maps>" in _fresh5,
+      "a back-link target is missing")
+
+# ---- #1 the schedule is on this page, not two tabs away
+_bk5 = _area(_data5, "backups")
+check("the no-schedule hint points at this page's own field",
+      'href="#schedule"' in _bk5, _window(_bk5, "No schedule", 300))
+check("and no longer sends anybody to Settings for it",
+      "in Settings" not in _window(_bk5, "No schedule", 300),
+      _window(_bk5, "No schedule", 300))
+check("the field it points at is on the page",
+      "<fieldset id=schedule>" in _bk5, _window(_bk5, "id=schedule", 200))
+check("below the hint, which is where it says it is",
+      _in_order(_bk5, "No schedule", "id=schedule"), "the hint points upwards")
+
+# ---- #2 and #3 the two helps that described what this page can no longer do
+check("the player cap is described as the cluster default",
+      "cluster default" in _set5 and "Players per map" in _set5,
+      _window(_set5, "Players per map", 400))
+check("and says where a map that differs sets it",
+      "that map" in _window(_set5, "Players per map", 400)
+      or "map's page" in _window(_set5, "Players per map", 400),
+      _window(_set5, "Players per map", 400))
+check("the RAM cap says the same",
+      "own page" in _window(_set5, "RAM cap per map", 600),
+      _window(_set5, "RAM cap per map", 600))
+check("neither still claims this page can set it per map",
+      "Per map, not cluster-wide" not in _set5
+      and "Override per map for the heavy ones" not in _set5,
+      "a help string still describes the old page")
+check("and the page carries a route to where per-map values live",
+      'href="/admin/cluster#maps"' in _set5, _window(_set5, "Per-map overrides", 400))
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

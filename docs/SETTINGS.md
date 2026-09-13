@@ -84,7 +84,7 @@ web UI after it is running.
 | Admin / RCON password | `admin_password` | password | `` | UI | recreate |
 | Require BattlEye | `battleye` | bool | `True` | UI | recreate |
 
-**Players per map** - Per map, not cluster-wide. Higher values need more RAM per container.
+**Players per map** - The cluster default, applied to every map that does not set its own. A map can differ - that is set on that map's page, not here. Higher values need more RAM per container.
 
 **Join password** - Leave blank for an open server. Anyone with this can join.
 
@@ -306,7 +306,7 @@ web UI after it is running.
 | Staging server RAM cap | `staging_memory` | memory | `10g` | UI | recreate |
 | RAM budget for this host | `host_ram_gb` | int | `0` | UI | none |
 
-**RAM cap per map** - A cap, not a reservation - unused headroom costs nothing. If a map is OOM-killed you'll see it restart repeatedly with the container itself reporting a clean exit, because only the game process is killed. Override per map for the heavy ones.
+**RAM cap per map** - A cap, not a reservation - unused headroom costs nothing. If a map is OOM-killed you'll see it restart repeatedly with the container itself reporting a clean exit, because only the game process is killed. This is the cluster default; a heavy map can be given more on that map's own page.
 
 **Game install folder** - Where the ~20 GB ARK server files live. Deliberately outside the data folder: it is re-downloadable, and keeping it out is what makes a backup small enough to move. Blank puts it beside the data folder.
 

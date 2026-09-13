@@ -1167,11 +1167,12 @@ DATA_PAGE_KEYS = ("backup_times", "backup_keep", "backup_flush",
                   "cloud_enabled", "cloud_keep")
 
 
-def render_data_settings(store, keys, back, queued=None):
+def render_data_settings(store, keys, back, queued=None, legend="", anchor=""):
     """A handful of settings, on the page about the thing they control.
 
     The same controls the settings page draws and the same form target - this is where
-    they are rendered, not a second way to write them.
+    they are rendered, not a second way to write them. The anchor belongs here too, so
+    the sentence above that points at this box and the box itself cannot drift apart.
     """
     from .schema import BY_KEY, INSTALL_KEYS
     queued = queued or {}
@@ -1182,11 +1183,15 @@ def render_data_settings(store, keys, back, queued=None):
         _field(s, store.get(s["key"]), s["key"] in INSTALL_KEYS,
                pending_value=(queued[s["key"]] if s["key"] in queued else _UNSET))
         for s in rows)
-    return ('<form method=post action="/admin/save">'
+    form = ('<form method=post action="/admin/save">'
             '<input type=hidden name=back value="%s">%s'
             '<div style="margin-top:10px">'
             '<button type=submit class=ghost>Save</button></div></form>'
             % (_e(back), fields))
+    if not legend:
+        return form
+    return ('<fieldset%s><legend>%s</legend>%s</fieldset>'
+            % ((" id=%s" % _e(anchor)) if anchor else "", _e(legend), form))
 
 
 def render_settings(store):
@@ -1236,6 +1241,17 @@ def render_settings(store):
                  '<span class=count>5</span></a>')
     blocks.append(render_row_arrays(store))
     index.append('<a href="#g-engrams">Engrams &amp; lists</a>')
+    # Where the per-map values went. This page holds the cluster defaults now, and two
+    # of them still describe themselves as things a map can differ on - which is true,
+    # and was true here until this slice. Without this line there is no route from the
+    # page that says "a map can differ" to the page where that is done.
+    blocks.append(
+        '<fieldset id="g-per-map-moved"><legend>Per-map overrides</legend>'
+        '<div class=help>Everything here is the cluster default. A map that needs to '
+        'differ - more RAM, a different player cap, its own message of the day - sets '
+        'that on its own page: open it from <a href="/admin/cluster#maps">Maps</a> on '
+        'the Cluster page.</div></fieldset>')
+    index.append('<a href="#g-per-map-moved">Per-map overrides</a>')
 
     todo = store.readiness()
     banner = ""
@@ -2155,8 +2171,13 @@ def render_cap(entries, notice=None, pending=None, now=None, total=None):
 # already there for the redirects to land on; this is the only thing that offers them to
 # the person reading, which costs one line and saves a scroll through the roster to
 # reach the maps.
+# Two orders, because the page draws two: a cluster that has never been launched
+# has no running-maps table to point at, and its maps form comes first. A chip that
+# scrolls nowhere is worse than one that is missing.
 JUMPS = (("#run", "Running"), ("#who", "Players"), ("#bans", "Bans"),
          ("#cap", "Cap"), ("#maps", "Maps"), ("#connect", "Connect"))
+JUMPS_FRESH = (("#maps", "Maps"), ("#who", "Players"), ("#bans", "Bans"),
+               ("#cap", "Cap"), ("#connect", "Connect"))
 
 
 def render_area(anchor, title, body):
@@ -2182,12 +2203,13 @@ def render_jump_row(items):
             % " ".join('<a href="%s">%s</a>' % (_e(h), _e(t)) for h, t in items))
 
 
-def render_jump():
-    return render_jump_row(JUMPS)
+def render_jump(launched=True):
+    return render_jump_row(JUMPS if launched else JUMPS_FRESH)
 
 
 def render_map(name, key, row=None, address="", host_known=True, points=None,
-               job=None, state=None, overrides="", notice=""):
+               job=None, state=None, overrides="", notice="",
+               launched=True):
     """One map, in detail, for the things that are only true of that map.
 
     The overview answers "is it up, who is on, is anything broken" for a cluster. Ports,
@@ -2199,11 +2221,13 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
     overview's row to state, and stating it here too would be a second copy that can
     disagree with the first - which is the duplication this whole consolidation is for.
     """
+    # Back to something that is actually on that page. #run is the running-maps
+    # table, which a cluster that has never been launched does not have.
+    back_to = "/admin/cluster#run" if launched else "/admin/cluster#maps"
     if not row:
-        return ('<div class=jump><a href="/admin/cluster#run">Back to the '
-                'cluster</a></div>'
+        return ('<div class=jump><a href="%s">Back to the cluster</a></div>'
                 '<div class=warn>%s is not in this cluster\u2019s plan. Tick it under '
-                '<b>Maps</b> to add it.</div>' % _e(name))
+                '<b>Maps</b> to add it.</div>' % (back_to, _e(name)))
     facts = (("Game port", str(row.get("game_port") or "")),
              ("RCON port", str(row.get("rcon_port") or "")),
              ("RAM", "%s \u2014 %s" % (row.get("memory") or "",
@@ -2243,13 +2267,17 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
     # arrived somewhere that did not confirm it.
     if state and state.get("says"):
         where = ('<div class=help>Docker says <b>%s</b> for this map. '
-                 '<a class=maplink href="/admin/cluster#run">Running now</a> on the '
-                 'cluster page is what keeps that up to date.</div>' % _e(state["says"]))
-    else:
+                 '<a class=maplink href="%s">Running now</a> on the cluster page is '
+                 'what keeps that up to date.</div>' % (_e(state["says"]), back_to))
+    elif launched:
         where = ('<div class=help>This map is not running. '
-                 '<a class=maplink href="/admin/cluster#run">Running now</a> on the '
-                 'cluster page shows what is.</div>')
-    return ('<div class=jump><a href="/admin/cluster#run">Back to the cluster</a></div>'
+                 '<a class=maplink href="%s">Running now</a> on the cluster page shows '
+                 'what is.</div>' % back_to)
+    else:
+        where = ('<div class=help>This cluster has never been launched. '
+                 '<a class=maplink href="%s">Maps</a> on the cluster page is where it '
+                 'starts.</div>' % back_to)
+    return ('<div class=jump><a href="%s">Back to the cluster</a></div>' % back_to
             + (notice or "") + here + where + connect + saves + (overrides or ""))
 
 
@@ -2911,8 +2939,9 @@ def render_backups(store, rows, message="", problem=""):
     keep = store.get("backup_keep")
     when = ("Scheduled for %s each day, keeping the newest %s." % (_e(times), _e(keep))
             if times else
-            "No schedule - backups happen when you press the button. Set a time in "
-            "Settings to run them nightly.")
+            "No schedule - backups happen when you press the button. Set a time "
+            "under <a href=\"#schedule\">When backups happen</a> below to run them "
+            "nightly.")
 
     body = []
     for r in rows:

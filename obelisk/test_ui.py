@@ -273,8 +273,14 @@ _stm.patch({"max_players": 20}, map_name="ragnarok")
 # tables in one collapsed block and the operator had to find theirs in the stack.
 _hm = render_map_overrides(_stm, "ragnarok")
 _hi = render_map_overrides(_stm, "island")
-check("the settings page no longer has a per-map section",
-      "g-per-map" not in render_settings(_stm), "the block survived the move")
+_set_pm = render_settings(_stm)
+check("the settings page no longer edits per-map values",
+      'name="map:' not in _set_pm and 'data-k="map-' not in _set_pm,
+      "the per-map editor survived the move")
+check("but it says where they went, which is the only route there from here",
+      _in_order(_set_pm, "Per-map overrides", "own page",
+                'href="/admin/cluster#maps"'),
+      _window(_set_pm, "g-per-map-moved", 400))
 check("a map has its overrides on its own page", "<fieldset id=overrides>" in _hm, _hm[:200])
 check("an override is marked as one", _hm.count(">override</span>") == 1,
       _hm.count(">override</span>"))

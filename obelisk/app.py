@@ -490,7 +490,8 @@ def build_app(store, docker=None):
         # One panel. render_stop_job owns #stopwrap and the poller replaces what is
         # inside it, so the server-rendered paint and the polled one are the same
         # element rather than two of them stacked.
-        return (banner + ui.render_jump() + _summary_band(st)
+        launched = bool((st or {}).get("compose_exists"))
+        return (banner + ui.render_jump(launched) + _summary_band(st)
                 + _pending_panel() + _update_panel() +
                 ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
                 ui.render_cluster(store, plan, status=_label_services(st),
@@ -1570,11 +1571,15 @@ def build_app(store, docker=None):
             notice = ('<div class=note>%s</div>' % ui._e(said["message"])
                       if said.get("message") else
                       ui.warn_block(said.get("problem") or said.get("refusal") or ""))
+        try:
+            launched = bool(clusterctl.status(store).get("compose_exists"))
+        except Exception:                            # noqa: BLE001 - never a blank page
+            launched = False
         return chrome(ui.render_map(name, key, row=row, address=address,
                                     host_known=host != "<this-host>",
                                     points=_points_for(key) if row else [],
                                     job=rjob, state=state, overrides=overrides,
-                                    notice=notice),
+                                    notice=notice, launched=launched),
                       name, "/admin/cluster")
 
     async def cluster_launch(request):
@@ -1765,10 +1770,9 @@ def build_app(store, docker=None):
             q = pendingctl.queued(store)["cluster"]
         except Exception:                            # noqa: BLE001 - never a blank page
             q = {}
-        body = ui.render_data_settings(store, keys, "/admin/data#" + section, queued=q)
-        if not body:
-            return ""
-        return ('<fieldset><legend>%s</legend>%s</fieldset>' % (ui._e(legend), body))
+        return ui.render_data_settings(store, keys, "/admin/data#" + section,
+                                       queued=q, legend=legend,
+                                       anchor="schedule" if section == "backups" else "")
 
     def _schedule_after(body, keys, section, legend):
         return body + _schedule_fields(keys, section, legend)
