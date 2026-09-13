@@ -1508,14 +1508,85 @@ check("and that nothing they own is touched",
       "nothing they own is affected" in _confirm, _confirm)
 check("it says nothing has happened yet",
       "Nothing has been done yet" in _confirm, _confirm)
-check("in amber, because this is a question rather than a fault",
-      "<div class=warn>" in _confirm, _confirm[:120])
+check("the question is the row's own, not a banner",
+      "<div class=warn>" not in _confirm and "class=whoflag" in _confirm,
+      _confirm[:200])
+check("and it is styled as a question rather than a fault",
+      ".whorow.asking{border-color:#7d642f" in ui.CSS,
+      "asking rows are not marked")
 check("the way through carries the same three fields back",
       all(('name=%s value=' % f) in _confirm for f in ("map", "name", "netid")),
       _confirm)
 check("and says it is confirmed", 'name=confirm value="1"' in _confirm, _confirm)
 check("it is not a typed-name gate - that is what a ban is for",
       "type" not in _confirm.lower().split("<form")[0], _confirm[:400])
+
+# ---- three actions, three weights
+#
+# Send and Kick were the same .ghost button, and Ban lands next - three identical grey
+# buttons in a nowrap row, with Kick sitting beside Ban. The adjacency is the thing to
+# design against before Ban exists rather than after.
+check("talking to somebody and removing them are not the same button",
+      '<button class="whoact talk" type=submit>Send' in _kick_who
+      and '<button class="whoact bite" type=submit>Kick' in _kick_who,
+      _kick_who[:900])
+check("neither is a plain ghost button any more",
+      "class=ghost" not in _from(_kick_who, "<div class=whoroster>"),
+      _from(_kick_who, "<div class=whoroster>")[:400])
+for _cls, _mark in (("whoact", "border:1px solid #303845"),
+                    ("whoact.bite", "border-color:#7d642f"),
+                    ("whoact.worst", "border-color:#7d2f2f")):
+    check(".%s is styled deliberately" % _cls, (".%s{" % _cls) in ui.CSS, _cls)
+check("kick is not the same colour as send",
+      ".whoact.bite{border-color:#7d642f" in ui.CSS, "bite is not amber")
+check("and the heaviest weight is defined and waiting for Ban",
+      ".whoact.worst{border-color:#7d2f2f" in ui.CSS, "no weight left for ban")
+check("which is the three-colour rule the rest of the page keeps",
+      _in_order(ui.CSS, ".whoact{", ".whoact.bite{", ".whoact.worst{"), "out of order")
+
+# ---- the row has give
+#
+# Every other multi-item flex row on this page wraps. These did not, and a long name
+# beside a 190px field and three buttons has nowhere to go.
+for _sel in (".whorow{", ".whoacts{", ".whoform{"):
+    _rule = _after(ui.CSS, _sel).split("}")[0]
+    check("%s wraps rather than squashing" % _sel.strip("{."),
+          "flex-wrap:wrap" in _rule, _rule)
+check("and the message field can give up width rather than overflow",
+      "flex:1 1 120px" in _after(ui.CSS, ".whoform input{").split("}")[0],
+      _after(ui.CSS, ".whoform input{").split("}")[0])
+
+# ---- the question replaces the row rather than floating above it
+_pending = {"map": "Ragnarok", "netid": "76561198000000001",
+            "html": ui.render_kick_confirm("Ragnarok", "Dana", "76561198000000001")}
+_asking = ui.render_whos_online(_KICK, maps=["Ragnarok"], pending=_pending)
+check("the player being asked about has an asking row",
+      '<div class="whorow asking">' in _asking, _asking[:600])
+check("naming them", _in_order(_asking, "whorow asking", "Dana"), _asking[:600])
+check("and carrying the question",
+      "Kick Dana from Ragnarok?" in _asking, _asking[:800])
+_asked_row = _after(_asking, '<div class="whorow asking">').split("</div>")[0]
+check("that row offers only the confirmed way through",
+      _asked_row.count("/admin/player/kick") == 1, _asked_row)
+check("and no message box while the question is open",
+      "/admin/player/message" not in _asked_row, _asked_row)
+check("other players keep their buttons",
+      _in_order(_after(_asking, 'Bad&quot; Name'), "/admin/player/kick"),
+      _after(_asking, 'Bad&quot; Name')[:400])
+check("a cancel that goes back to the roster",
+      'href="/admin/cluster#who"' in _asking, _asking[:900])
+
+# ---- the section can be landed on, and can carry its own result
+check("the section has an anchor to land on",
+      "<fieldset id=who>" in _kick_who, _kick_who[:120])
+check("even when there is nothing to show",
+      "<fieldset id=who>" in ui.render_whos_online(None, maps=["Ragnarok"]),
+      ui.render_whos_online(None, maps=["Ragnarok"]))
+_noticed = ui.render_whos_online(_KICK, maps=["Ragnarok"],
+                                 notice="<div class=note>Kick sent for Dana.</div>")
+check("a result can be shown in the section itself",
+      _in_order(_noticed, "id=who", "Kick sent for Dana", "<div class=whoroster>"),
+      _noticed[:400])
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

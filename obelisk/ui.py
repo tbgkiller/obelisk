@@ -74,15 +74,30 @@ tr:last-child td{border-bottom:none}
 .whoroster{margin:2px 0 4px}
 .whomap{margin:12px 0 4px;font-size:12px;color:#8b94a3;letter-spacing:.3px;text-transform:uppercase}
 .whomap:first-child{margin-top:2px}
-.whorow{display:flex;align-items:center;gap:10px;padding:6px 10px;margin:3px 0;background:#12151a;border:1px solid #232b36;border-radius:8px}
+/* Every other multi-item flex row on this page wraps - the presets, the stepper,
+   the mod chips, the toolbar. These did not, and a long name beside a text field
+   and three buttons has no give at all. */
+.whorow{display:flex;flex-wrap:wrap;align-items:center;gap:10px;padding:6px 10px;margin:3px 0;background:#12151a;border:1px solid #232b36;border-radius:8px}
 .whoname{font-weight:500;color:#e6e9ef}
-.whoacts{margin-left:auto;display:flex;gap:6px;align-items:center}
+.whoacts{margin-left:auto;display:flex;flex-wrap:wrap;gap:6px;align-items:center;justify-content:flex-end}
 .whonote{padding:6px 10px;margin:3px 0;font-size:12px;color:#8b94a3}
 .whorow.quiet{border-style:dashed;color:#8b94a3}
+.whorow.asking{border-color:#7d642f;background:#1b1710}
 .whoflag{font-size:11px;color:#8b94a3}
-.whoform{display:flex;gap:6px;align-items:center;margin:0}
-.whoform input{font-size:12px;padding:4px 8px;width:190px;margin:0}
-.whoform button{font-size:12px;padding:4px 10px}
+.whoform{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0}
+.whoform input{font-size:12px;padding:4px 8px;width:170px;min-width:120px;flex:1 1 120px;margin:0}
+/* Three actions, three weights. Talking to somebody and removing them should not
+   be the same button, and Kick sitting beside Ban in identical grey is the
+   adjacency worth designing against before Ban exists. Same three-colour rule the
+   version panel and the banners keep: neutral, amber, red. */
+.whoact{font-size:12px;padding:4px 10px;border-radius:6px;cursor:pointer;
+  border:1px solid #303845;background:#12151a;color:#a9b4c4}
+.whoact:hover{border-color:#3d4757}
+.whoact.talk{}
+.whoact.bite{border-color:#7d642f;color:#ffc46b}
+.whoact.bite:hover{border-color:#a1812f;background:#1b1710}
+.whoact.worst{border-color:#7d2f2f;color:#ff9d94}
+.whoact.worst:hover{border-color:#a13a3a;background:#1d1214}
 /* Three states, three colours. "Could not check" is deliberately not green and not
    quiet - the failure this panel answers was a checker that said "up to date" about a
    question it never asked, and an unknown that looks like a pass repeats it. */
@@ -1554,7 +1569,7 @@ def _message_form(label, name):
             '<input type=hidden name=name value="%s">'
             '<input name=text maxlength=200 placeholder="say something to %s" '
             'autocomplete=off>'
-            '<button class=ghost type=submit>Send</button></form>'
+            '<button class="whoact talk" type=submit>Send</button></form>'
             % (_e(label), _e(name), _e(name)))
 
 
@@ -1572,35 +1587,41 @@ def _kick_form(label, name, netid):
             '<input type=hidden name=map value="%s">'
             '<input type=hidden name=name value="%s">'
             '<input type=hidden name=netid value="%s">'
-            '<button class=ghost type=submit>Kick</button></form>'
+            '<button class="whoact bite" type=submit>Kick</button></form>'
             % (_e(label), _e(name), _e(netid)))
 
 
 def render_kick_confirm(label, name, netid):
-    """Ask before disconnecting somebody, on a page rather than in a dialog.
+    """Ask before disconnecting somebody, on the row they are standing on.
 
-    The same shape the stop guard uses: the answer comes back as a page, so it is the
-    server that decided, it survives a second tab, and it can be tested without a
-    browser.
+    The answer comes back as a page rather than from a dialog, the way the stop guard
+    works: it is the server that decided, it survives a second tab, and it can be
+    tested without a browser.
+
+    Asked in place, which is the part that took two goes. Rendered at the top of the
+    page it bounced the operator away from the row they were reading, and left that row
+    below still offering a live Kick - two routes to the same act, one of them
+    unconfirmed. Here it replaces that row's buttons instead.
 
     Lighter than the restore guard on purpose. A kick costs somebody the walk back from
     the spawn point; it does not cost them anything they built. Making the operator
     type a name for this and for a ban both would teach them to type it without
     reading, which is what the ban guard is for.
     """
-    return ('<div class=warn><b>Kick %s from %s?</b> They are disconnected now and can '
-            'rejoin immediately - nothing they own is affected. Nothing has been done '
-            'yet.</div>'
-            '<form method=post action="/admin/player/kick" style="margin:-4px 0 14px">'
+    return ('<span class=whoflag><b>Kick %s from %s?</b> They are disconnected now and '
+            'can rejoin immediately - nothing they own is affected. Nothing has been '
+            'done yet.</span>'
+            '<form method=post action="/admin/player/kick" class=whoform>'
             '<input type=hidden name=map value="%s">'
             '<input type=hidden name=name value="%s">'
             '<input type=hidden name=netid value="%s">'
             '<input type=hidden name=confirm value="1">'
-            '<button class=ghost type=submit>Yes, kick %s</button></form>'
+            '<button class="whoact bite" type=submit>Yes, kick %s</button> '
+            '<a class=help href="/admin/cluster#who">Cancel</a></form>'
             % (_e(name), _e(label), _e(label), _e(name), _e(netid), _e(name)))
 
 
-def render_whos_online(roster, maps=()):
+def render_whos_online(roster, maps=(), pending=None, notice=None):
     """Who is on, one row per player, under the map they are on.
 
     **No header.** The count section six lines above already says how many people are
@@ -1614,17 +1635,23 @@ def render_whos_online(roster, maps=()):
     disappears from a list of who is online is the "we cannot tell who is on Ragnarok"
     signal going missing exactly where somebody is about to press Stop.
 
-    One row per player rather than a line of chips, because every one of these rows is
-    about to grow Message, Kick and Ban buttons. Thirty-odd controls wrapped inside one
+    One row per player rather than a line of chips, because every one of these rows
+    carries Message and Kick and will carry Ban. Thirty-odd controls wrapped inside one
     table cell is not a thing to build and then fix.
+
+    `pending` is a player this page is currently asking about - their row shows the
+    question instead of its buttons, so there is never a second unconfirmed route to
+    the same act sitting live underneath it. `notice` is what the last action here
+    said, shown in this section rather than at the top of the page, because this is
+    where the operator is looking and where the answer changes something.
     """
     if roster is None or not (roster.get("by_map") or {}):
         # Slice 1 has already printed the full explanation immediately above - why
         # there is no count is exactly why there are no names. Saying all thirty words
         # again eight lines later is how people learn to skip both.
-        return ('<fieldset><legend>Who\u2019s online</legend>'
+        return ('<fieldset id=who><legend>Who\u2019s online</legend>%s'
                 '<div class=help>No names to show \u2014 for the same reason there is '
-                'no player count above.</div></fieldset>')
+                'no player count above.</div></fieldset>' % (notice or ""))
 
     by_map = roster.get("by_map") or {}
     order = [m for m in (maps or []) if m]
@@ -1653,6 +1680,13 @@ def render_whos_online(roster, maps=()):
         out.append('<div class=whomap>%s</div>' % _e(label))
         for row in people:
             name = _e(row.get("name") or "?")
+            if ((pending or {}).get("netid")
+                    and pending.get("netid") == (row.get("netid") or "")
+                    and pending.get("map") == label):
+                out.append('<div class="whorow asking">'
+                           '<span class=whoname>%s</span>%s</div>'
+                           % (name, pending.get("html") or ""))
+                continue
             from .bot import can_whisper
             netid = row.get("netid") or ""
             if netid and can_whisper(row.get("name")):
@@ -1690,11 +1724,13 @@ def render_whos_online(roster, maps=()):
                    '</span></div>'
                    % (_e(", ".join(empty)), len(empty), "" if len(empty) == 1 else "s"))
 
-    return ('<fieldset><legend>Who\u2019s online</legend>'
-            '<div class=whoroster>%s</div></fieldset>' % "".join(out))
+    return ('<fieldset id=who><legend>Who\u2019s online</legend>%s'
+            '<div class=whoroster>%s</div></fieldset>'
+            % (notice or "", "".join(out)))
 
 
-def render_cluster(store, plan, status=None, players=None, roster=None):
+def render_cluster(store, plan, status=None, players=None, roster=None,
+                   pending=None, notice=None):
     selected = set(str(store.get("maps")).split(","))
     presets = "".join(
         '<button class=ghost type=button name=preset value="%s" title="%s">%s</button>'
@@ -1731,7 +1767,8 @@ def render_cluster(store, plan, status=None, players=None, roster=None):
     running = [x.get("label") or x.get("service") or ""
                for x in ((status or {}).get("services") or [])]
     return (render_status(status, players=players) +
-            render_whos_online(roster, maps=[m for m in running if m]) +
+            render_whos_online(roster, maps=[m for m in running if m],
+                               pending=pending, notice=notice) +
             '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '

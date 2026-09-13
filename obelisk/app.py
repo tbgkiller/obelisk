@@ -386,14 +386,22 @@ def build_app(store, docker=None):
         _said[token] = dict({"message": "", "problem": "", "refusal": ""}, at=now, **kw)
         return token
 
-    def _cluster_body(request, message="", problem="", refusal=""):
+    def _cluster_body(request, message="", problem="", refusal="", pending=None):
+        # A result about a player is shown in the who's-online section rather than at
+        # the top of the page: that is where the operator is looking when they press
+        # the button, and where the answer changes something.
+        notice = ""
         if not (message or problem or refusal):
             token = str((getattr(request, "query", None) or {}).get("said") or "")
             said = _said.pop(token, None) if token else None
             if said:
-                message = said["message"]
-                problem = said["problem"]
-                refusal = said["refusal"]
+                if said.get("where") == "who":
+                    notice = ui.warn_block(said["problem"]) if said["problem"] else (
+                        '<div class=note>%s</div>' % ui._e(said["message"]))
+                else:
+                    message = said["message"]
+                    problem = said["problem"]
+                    refusal = said["refusal"]
         try:
             in_use = clusterctl.other_ports_in_use(store)
         except Exception:
@@ -434,7 +442,8 @@ def build_app(store, docker=None):
         return (banner + _pending_panel() + _update_panel() +
                 ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
                 ui.render_cluster(store, plan, status=_label_services(st),
-                                  players=_players_now(), roster=_roster_now()))
+                                  players=_players_now(), roster=_roster_now(),
+                                  pending=pending, notice=notice))
 
     # The last poll, so opening the page does not go to the network before it renders.
     # A panel that takes two round trips to CurseForge to appear is a panel people
@@ -870,8 +879,9 @@ def build_app(store, docker=None):
         # means a refresh re-posts it - and a re-sent message is a second line of chat
         # the player sees, from somebody who pressed F5.
         raise web.HTTPFound(
-            "/admin/cluster?said=%s"
-            % _say_next(message="Message sent to %s on %s." % (name, label)))
+            "/admin/cluster?said=%s#who"
+            % _say_next(where="who",
+                        message="Message sent to %s on %s." % (name, label)))
 
     # ---- disconnecting one player
     #
@@ -929,9 +939,13 @@ def build_app(store, docker=None):
             return refuse(why_not)
 
         if not confirmed:
+            # Asked on the row itself. At the top of the page it bounced the operator
+            # away from what they were reading and left a live Kick underneath - two
+            # routes to the same act, one of them unconfirmed.
             return chrome(
-                _cluster_body(request,
-                              refusal=ui.render_kick_confirm(label, name, netid)),
+                _cluster_body(request, pending={
+                    "map": label, "netid": netid,
+                    "html": ui.render_kick_confirm(label, name, netid)}),
                 "Cluster", "/admin/cluster")
 
         target = None
@@ -962,10 +976,16 @@ def build_app(store, docker=None):
         announce.say("player.kick_sent",
                      "Kick sent for %s on %s from the web UI." % (name, label),
                      map=label, player=name)
+        # "The next check will show" promised an update this section does not make on
+        # its own - the roster is drawn from whatever the last poll left, and nothing
+        # here refreshes it. Reload is the honest instruction, and the list already
+        # says how old it is.
         raise web.HTTPFound(
-            "/admin/cluster?said=%s"
-            % _say_next(message="Kick sent for %s on %s. The next check will show "
-                                "whether they are off." % (name, label)))
+            "/admin/cluster?said=%s#who"
+            % _say_next(where="who",
+                        message="Kick sent for %s on %s. This list is from the last "
+                                "check - reload to see whether they are off."
+                                % (name, label)))
 
     async def cluster_launch(request):
         if not authed(request):

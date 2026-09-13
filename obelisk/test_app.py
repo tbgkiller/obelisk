@@ -3393,8 +3393,14 @@ check("naming the player and the map",
       _in_order(_ask_body, "Kick Bob from The Island?"), _after(_ask_body, "class=warn")[:200])
 check("nothing was sent while it was asking", _ask_sent == [], _ask_sent)
 check("and nothing was announced either", _ask_ev == [], [i["event"] for i in _ask_ev])
-check("the question is amber, not red",
-      "<div class=warn><b>Kick Bob" in _ask_body, _after(_ask_body, "class=warn")[:120])
+check("the question is asked on the player's own row",
+      '<div class="whorow asking">' in _ask_body,
+      _after(_ask_body, "whorow asking")[:220])
+check("and that row no longer offers a live Kick underneath it",
+      "/admin/player/kick" not in
+      _after(_ask_body, '<div class="whorow asking">').split("</div>")[0]
+      .split("<form")[0] + "",
+      _after(_ask_body, "whorow asking")[:300])
 
 # ---- the confirmed press sends, once, to that map only
 check("confirming sends the kick", len(_go_sent) == 1, _go_sent)
@@ -3412,8 +3418,10 @@ check("the result lands on the page it redirects to",
       _after(_go_landed, "Kick sent")[:160] or _go_landed[:200])
 check("it says sent, never kicked",
       "kicked" not in _go_landed.lower().split("Who")[0], "the page claimed the effect")
-check("and says the next check will show whether they are off",
-      "next check will show" in _go_landed, _after(_go_landed, "Kick sent")[:200])
+check("and says how to find out, without promising an update it does not make",
+      "reload to see whether they are off" in _go_landed
+      and "next check will show" not in _go_landed,
+      _after(_go_landed, "Kick sent")[:220])
 _go_names = [(i["event"], i["level"]) for i in _go_ev]
 check("the kick is announced at info", ("player.kick_sent", "info") in _go_names,
       _go_names)
@@ -3480,6 +3488,62 @@ for _what, _frag in sorted({
         "the message action": "async def player_message",
 }.items()):
     check("%s is untouched" % _what, _frag in _appsrc_2d, _frag)
+
+# ---- the operator stays where they were looking
+#
+# The question and the result both rendered at the top of the page, bouncing the
+# operator away from the row twice per kick - and while the question was pending, that
+# row below still offered a live Kick.
+check("the question lands on the row, not in a banner at the top",
+      '<div class="whorow asking">' in _ask_body
+      and "<div class=warn>" not in _after(_ask_body, "<fieldset id=who>"),
+      _after(_ask_body, "whorow asking")[:250])
+check("and the page can be landed on at the roster",
+      "<fieldset id=who>" in _ask_body, "no anchor")
+
+_t20 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _where_does_it_land():
+        _kicked[:] = []
+        _bot_s1.LIVE = _kick_relay()
+        _bot_s1.rcon_with = _fake_kick
+        _appmod.clusterctl.status = lambda store: dict(
+            _lstatus, services=[dict(x) for x in _lstatus["services"]])
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        r = await client.post("/admin/player/kick", data=dict(_ISLAND, confirm="1"),
+                              allow_redirects=False)
+        where = r.headers.get("Location", "")
+        landed = await (await client.get(where)).text()
+        m = await client.post("/admin/player/message",
+                              data={"map": "The Island", "name": "Bob", "text": "hi"},
+                              allow_redirects=False)
+        await client.close()
+        return where, landed, m.headers.get("Location", "")
+
+    _kick_where, _kick_landed, _msg_where = _t20.run_until_complete(
+        _where_does_it_land())
+finally:
+    _t20.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+check("the kick redirect points at the roster, not the page top",
+      _kick_where.endswith("#who") and "said=" in _kick_where, _kick_where)
+check("and so does the message redirect",
+      _msg_where.endswith("#who") and "said=" in _msg_where, _msg_where)
+check("the result is shown inside the section it is about",
+      _in_order(_kick_landed, "<fieldset id=who>", "Kick sent for Bob on The Island."),
+      _after(_kick_landed, "<fieldset id=who>")[:300])
+check("and not repeated at the top of the page",
+      "Kick sent for Bob" not in _kick_landed.split("<fieldset id=who>")[0],
+      _kick_landed.split("<fieldset id=who>")[0][-300:])
+check("it says reload rather than promising a refresh nothing performs",
+      "reload to see whether they are off" in _kick_landed,
+      _after(_kick_landed, "Kick sent")[:220])
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
