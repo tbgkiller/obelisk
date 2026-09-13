@@ -370,6 +370,7 @@ _status = {
 }
 from . import ui
 from . import bot as _bot_ui
+from . import bans as _bans
 
 _p = ui.render_ark_update(_ps, _status)
 check("the panel shows the running build and the newer one",
@@ -1587,6 +1588,145 @@ _noticed = ui.render_whos_online(_KICK, maps=["Ragnarok"],
 check("a result can be shown in the section itself",
       _in_order(_noticed, "id=who", "Kick sent for Dana", "<div class=whoroster>"),
       _noticed[:400])
+
+# ---- banning somebody from the whole cluster
+#
+# The heaviest control on the page. It keys on the netid like the kick, but that id is
+# written into ten ban lists rather than handed to one command, so it is checked against
+# what an id can be before it goes anywhere.
+_BAN = {"by_map": {
+    "Ragnarok": [{"name": "Dana", "netid": "76561198000000001"},
+                 {"name": 'Bad" Name', "netid": "0002a1b2"},
+                 {"name": "some raw line we could not split", "netid": ""}],
+    "The Island": []}, "age": 20}
+_ban_who = ui.render_whos_online(_BAN, maps=["Ragnarok", "The Island", "Valguero"])
+
+check("a clean player row has a Ban control",
+      '<form method=post action="/admin/player/ban"' in _ban_who, _ban_who[:1200])
+check("styled as the heaviest of the three",
+      '<button class="whoact worst" type=submit>Ban</button>' in _ban_who,
+      _ban_who[:1200])
+check("carrying the netid it will write to the ban lists",
+      'name=netid value="76561198000000001"' in
+      _after(_ban_who, "/admin/player/ban")[:250],
+      _after(_ban_who, "/admin/player/ban")[:300])
+check("the three actions read lightest to heaviest",
+      _in_order(_ban_who, "/admin/player/message", "/admin/player/kick",
+                "/admin/player/ban"), _ban_who[:1200])
+check("and they are three different weights, not three grey buttons",
+      _in_order(_ban_who, 'class="whoact talk"', 'class="whoact bite"',
+                'class="whoact worst"'), _ban_who[:1200])
+
+# a player who cannot be messaged can still be removed
+_bad = _after(_ban_who, 'Bad&quot; Name</span>')
+check("a name that cannot be quoted can still be banned",
+      "/admin/player/ban" in _from(_bad, "<span class=whoacts>")[:600], _bad[:600])
+
+# ---- and nothing without an id is offered one
+check("a row with no id gets no Ban",
+      "/admin/player/ban" not in
+      _after(_ban_who, "some raw line we could not split").split("</div>")[0],
+      _after(_ban_who, "some raw line we could not split")[:300])
+check("a map that did not answer gets no Ban",
+      "/admin/player/ban" not in _from(_ban_who, '<div class="whorow quiet">'),
+      _from(_ban_who, '<div class="whorow quiet">')[:300])
+check("nor the collapsed empty-maps line",
+      "/admin/player/ban" not in _from(_ban_who, "Nobody on:"),
+      _from(_ban_who, "Nobody on:"))
+check("and no relay means no Ban",
+      "/admin/player/ban" not in ui.render_whos_online(None, maps=["Ragnarok"]),
+      ui.render_whos_online(None, maps=["Ragnarok"]))
+check("one Ban per real player", _ban_who.count("/admin/player/ban") == 2,
+      _ban_who.count("/admin/player/ban"))
+
+# ---- the confirmation asks for the name, and says what a ban actually does
+_bconf = ui.render_ban_confirm("Ragnarok", "Dana", "76561198000000001")
+check("the ban confirmation asks for the name to be typed",
+      "name=confirm" in _bconf and 'placeholder="type Dana to confirm"' in _bconf,
+      _bconf)
+# the kick has a confirm field too, but it is a hidden "1" - one click. the
+# difference that matters is that the ban makes somebody write the name out.
+check("where the kick only needs the one click",
+      '<input type=hidden name=confirm value="1">' in
+      ui.render_kick_confirm("Ragnarok", "Dana", "9")
+      and "placeholder=" not in ui.render_kick_confirm("Ragnarok", "Dana", "9"),
+      ui.render_kick_confirm("Ragnarok", "Dana", "9"))
+check("and the ban's box is not a hidden field wearing a placeholder",
+      "type=hidden name=confirm" not in _bconf, _bconf)
+check("it says the whole cluster, not the one map",
+      "from the whole cluster" in _bconf and "every map, not just Ragnarok" in _bconf,
+      _bconf)
+check("and that it lasts until somebody undoes it",
+      "until somebody unbans them" in _bconf, _bconf)
+check("while saying what is not destroyed",
+      "Nothing they built is deleted" in _bconf, _bconf)
+check("it says nothing has happened yet",
+      "Nothing has been done yet" in _bconf, _bconf)
+check("the way through is the heaviest button",
+      '<button class="whoact worst" type=submit>Ban Dana</button>' in _bconf, _bconf)
+check("with a way out that returns to the roster",
+      'href="/admin/cluster#who"' in _bconf, _bconf)
+check("a wrong name comes back with the box still there and a reason",
+      "That is not their name" in
+      ui.render_ban_confirm("Ragnarok", "Dana", "9", "That is not their name.")
+      and "name=confirm" in
+      ui.render_ban_confirm("Ragnarok", "Dana", "9", "That is not their name."),
+      ui.render_ban_confirm("Ragnarok", "Dana", "9", "That is not their name."))
+
+# ---- what may be written to a ban list
+for _bad_id in ("", "   ", "has space", 'has"quote', "has'quote", "back\slash",
+                "x" * 65, "line\nbreak", "tab\there"):
+    check("%r is not something to write to a ban list" % _bad_id,
+          not _bans.valid_netid(_bad_id), _bad_id)
+for _ok_id in ("76561198000000001", "19000000000000001", "0002a1b2c3d4e5f6", "x" * 64):
+    check("%s... is a usable id" % _ok_id[:12], _bans.valid_netid(_ok_id), _ok_id)
+check("the bound is a real bound, not a coincidence",
+      _bans.MAX_NETID >= 32 and not _bans.valid_netid("y" * (_bans.MAX_NETID + 1)),
+      _bans.MAX_NETID)
+
+# ---- the ledger itself
+#
+# Nothing on an ARK server will tell us later what is banned - there is no RCON command
+# that lists a ban list, and the files are on ten filesystems this container cannot see.
+# So this is the only record there is, which is the argument for it holding its shape.
+class _LedgerStore:
+    def __init__(self):
+        self.data = {}
+        self.saves = 0
+
+    def save(self):
+        self.saves += 1
+
+
+_ls = _LedgerStore()
+_entry = _bans.record(_ls, "Bob", "76561198000000001",
+                      {"The Island": "", "Ragnarok": "timed out"},
+                      kick="", when=1700000000)
+check("a ban is written down", _ls.data.get("bans") == [_entry], _ls.data)
+check("and persisted, not just held in memory", _ls.saves == 1, _ls.saves)
+check("with the map results kept per map",
+      _bans.sent_to(_entry) == ["The Island"]
+      and _bans.missed(_entry) == [("Ragnarok", "timed out")], _entry)
+check("the time is a number, not whatever was passed",
+      isinstance(_entry.get("when"), int) and _entry["when"] == 1700000000, _entry)
+check("a missing name does not make a hole in the record",
+      _bans.record(_ls, None, "1", None).get("name") == "", _ls.data["bans"][-1])
+
+for _i in range(_bans.KEEP + 25):
+    _bans.record(_ls, "P%d" % _i, "%d" % _i, {"The Island": ""})
+check("the ledger is capped, so a busy month cannot grow the settings file for ever",
+      len(_ls.data["bans"]) == _bans.KEEP, len(_ls.data["bans"]))
+check("and it is the oldest that fall off the end",
+      _ls.data["bans"][-1]["name"] == "P%d" % (_bans.KEEP + 24),
+      _ls.data["bans"][-1])
+check("recent() reads newest first, which is the order anybody wants them",
+      [e["name"] for e in _bans.recent(_ls, limit=3)] ==
+      ["P%d" % (_bans.KEEP + 24 - _n) for _n in range(3)],
+      [e["name"] for e in _bans.recent(_ls, limit=3)])
+check("and it asks for no more than it was asked for",
+      len(_bans.recent(_ls, limit=3)) == 3, len(_bans.recent(_ls, limit=3)))
+check("an empty ledger is an empty list, not a crash",
+      _bans.recent(_LedgerStore()) == [], "recent() on a fresh store")
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

@@ -27,6 +27,7 @@ from . import curseforge as cfctl
 from . import staging as stagingctl
 from . import updates as updatesctl
 from . import arkupdate
+from . import bans as bansctl
 from . import pending as pendingctl
 from . import savepoints as pointsctl
 from . import maps as mapsmod
@@ -987,6 +988,150 @@ def build_app(store, docker=None):
                                 "check - reload to see whether they are off."
                                 % (name, label)))
 
+    # ---- banning somebody from the whole cluster
+    #
+    # The heaviest thing on this page, and the one place the per-map shape of ARK
+    # actually bites. A ban is not a cluster fact: every server keeps its own
+    # BanList.txt, so banning on The Island bans from The Island and the player walks
+    # over to Ragnarok. It has to be sent to every map, and what happened on each of
+    # them has to be said out loud, because "banned on eight of ten maps" is the answer
+    # that looks most like success and is least like it.
+    #
+    # And the ban list only refuses the NEXT connection. Somebody already standing on a
+    # map stays there until they log off, so the ban is followed by a kick - without it
+    # "banned" is false for as long as they care to keep playing.
+    async def player_ban(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        label = str(form.get("map") or "").strip()
+        name = str(form.get("name") or "").strip()
+        netid = str(form.get("netid") or "").strip()
+        typed = str(form.get("confirm") or "")
+
+        def refuse(text_):
+            return chrome(_cluster_body(request, refusal=ui.warn_block(text_)),
+                          "Cluster", "/admin/cluster")
+
+        def broke(text_):
+            return chrome(_cluster_body(request, problem=text_),
+                          "Cluster", "/admin/cluster")
+
+        def ask(problem=""):
+            return chrome(
+                _cluster_body(request, pending={
+                    "map": label, "netid": netid,
+                    "html": ui.render_ban_confirm(label, name, netid, problem)}),
+                "Cluster", "/admin/cluster")
+
+        if not (name and label and netid):
+            return refuse("That row did not say who to ban. Reload the page and try "
+                          "again - nothing has been done.")
+
+        # Checked before anything else touches it. For a kick a malformed id is a
+        # command the server declines; for a ban it is a line written into ten files
+        # that the game re-reads on every connection for ever.
+        if not bansctl.valid_netid(netid):
+            return refuse("%s cannot be banned: the id the server gave for them is not "
+                          "one that can be written to a ban list safely. Nothing has "
+                          "been done." % name)
+
+        snap = _roster_now()
+        if snap is None:
+            return refuse("The chat relay is not running, so there is nobody to ban - "
+                          "nothing has been done.")
+        on_map = (snap.get("by_map") or {}).get(label)
+        if on_map is None:
+            return refuse("%s did not answer the last check, so who is on it is not "
+                          "known - %s has not been banned." % (label, name))
+        if not any(p.get("netid") == netid for p in on_map):
+            return refuse("%s is no longer listed on %s - nothing has been done."
+                          % (name, label))
+
+        if not typed.strip():
+            return ask()
+        if not restorectl.typed_matches(name, typed):
+            return ask("That is not their name. Nothing has been done.")
+
+        # Every map at once rather than one after another: ten maps at ten seconds each
+        # is a page that looks hung, and they have nothing to do with each other.
+        from . import bot
+        password = str(store.get("admin_password") or "")
+        targets = clusterctl.rcon_targets(store)
+
+        async def ban_one(lbl, host, port):
+            try:
+                await bot.rcon_with(host, port, password, "BanPlayer %s" % netid,
+                                    timeout=10)
+                return lbl, ""
+            except Exception as e:                   # noqa: BLE001 - the reason is data
+                return lbl, (str(e).strip() or e.__class__.__name__)
+
+        results = dict(await asyncio.gather(
+            *(ban_one(l, h, p) for l, h, p in targets)))
+        took = sorted(l for l, why in results.items() if not why)
+        missed = sorted((l, why) for l, why in results.items() if why)
+
+        # Then the kick, on the map they are standing on. Only worth attempting if the
+        # ban reached that map - kicking somebody off a server that did not take the
+        # ban just sends them back through a door that is still open.
+        kick_why = ""
+        if label in took:
+            here = [(h, p) for l, h, p in targets if l == label]
+            if here:
+                try:
+                    await bot.rcon_with(here[0][0], here[0][1], password,
+                                        "KickPlayer %s" % netid, timeout=10)
+                except Exception as e:               # noqa: BLE001 - reported, not fatal
+                    kick_why = str(e).strip() or e.__class__.__name__
+        else:
+            kick_why = "%s did not take the ban, so no kick was sent there" % label
+
+        if not took:
+            announce.say("player.ban_failed",
+                         "A ban for %s did NOT send to any map: %s"
+                         % (name, "; ".join("%s (%s)" % (l, w) for l, w in missed[:4])),
+                         level="error", player=name, netid=netid)
+            return broke("The ban did NOT send to any of the %d maps: %s. Nothing was "
+                         "written and %s is still able to play."
+                         % (len(results),
+                            "; ".join("%s (%s)" % (l, w) for l, w in missed[:4]), name))
+
+        # Recorded whatever the spread, because the ledger is what Obelisk did rather
+        # than what worked - and the maps it missed are precisely what somebody has to
+        # deal with afterwards.
+        bansctl.record(store, name, netid, results, kick=kick_why)
+
+        kick_note = (" The kick did not send (%s), so they stay on %s until they log "
+                     "off." % (kick_why, label)) if kick_why else ""
+        if missed:
+            announce.say(
+                "player.ban_partial",
+                "Ban sent for %s on %d of %d maps. NOT sent on %s - they can still "
+                "join those." % (name, len(took), len(results),
+                                 clusterctl._and([l for l, _w in missed])),
+                level="warning", player=name, netid=netid,
+                detail="\n".join("%-14s %s" % (l, w or "sent")
+                                  for l, w in sorted(results.items())))
+            return chrome(_cluster_body(request, refusal=ui.warn_block(
+                "Ban sent for %s on %d of %d maps - NOT on %s, and they can still join "
+                "those.%s" % (name, len(took), len(results),
+                              clusterctl._and([l for l, _w in missed]), kick_note))),
+                "Cluster", "/admin/cluster")
+
+        announce.say("player.ban_sent",
+                     "Ban sent for %s on all %d maps from the web UI.%s"
+                     % (name, len(results),
+                        " The kick did not send: %s" % kick_why if kick_why else ""),
+                     level="info", player=name, netid=netid,
+                     detail="\n".join("%-14s sent" % l for l in took))
+        raise web.HTTPFound(
+            "/admin/cluster?said=%s#who"
+            % _say_next(where="who",
+                        message="Ban sent for %s on all %d maps.%s This list is from "
+                                "the last check - reload to see it."
+                                % (name, len(results), kick_note)))
+
     async def cluster_launch(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
@@ -1660,6 +1805,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/stop", cluster_stop)
     app.router.add_post("/admin/player/message", player_message)
     app.router.add_post("/admin/player/kick", player_kick)
+    app.router.add_post("/admin/player/ban", player_ban)
     app.router.add_get("/admin/cluster/status", cluster_status)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)

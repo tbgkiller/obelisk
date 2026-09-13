@@ -1591,6 +1591,44 @@ def _kick_form(label, name, netid):
             % (_e(label), _e(name), _e(netid)))
 
 
+def _ban_form(label, name, netid):
+    """Remove somebody from the whole cluster, from the row they are standing on."""
+    return ('<form method=post action="/admin/player/ban" class=whoform>'
+            '<input type=hidden name=map value="%s">'
+            '<input type=hidden name=name value="%s">'
+            '<input type=hidden name=netid value="%s">'
+            '<button class="whoact worst" type=submit>Ban</button></form>'
+            % (_e(label), _e(name), _e(netid)))
+
+
+def render_ban_confirm(label, name, netid, problem=""):
+    """Ask, and make them type the name.
+
+    The heavy guard, matched to what it does. A kick costs the walk back from a spawn
+    point and a click-through is proportionate to that. A ban removes somebody from
+    every map in the cluster and stays in ten files until an admin takes it out - so
+    the operator types the name, which is the only guard that also defends against
+    doing it to the wrong person off a list of ten.
+
+    Asked on the row, like the kick, so there is no live Ban still sitting underneath
+    an unanswered question.
+    """
+    warn = ('<span class=whoflag style="color:#ff9d94">%s</span>' % _e(problem)
+            if problem else "")
+    return ('<span class=whoflag><b>Ban %s from the whole cluster?</b> They are removed '
+            'from every map, not just %s, and stay out until somebody unbans them. '
+            'Nothing they built is deleted. Nothing has been done yet.</span>%s'
+            '<form method=post action="/admin/player/ban" class=whoform>'
+            '<input type=hidden name=map value="%s">'
+            '<input type=hidden name=name value="%s">'
+            '<input type=hidden name=netid value="%s">'
+            '<input name=confirm autocomplete=off placeholder="type %s to confirm">'
+            '<button class="whoact worst" type=submit>Ban %s</button> '
+            '<a class=help href="/admin/cluster#who">Cancel</a></form>'
+            % (_e(name), _e(label), warn, _e(label), _e(name), _e(netid),
+               _e(name), _e(name)))
+
+
 def render_kick_confirm(label, name, netid):
     """Ask before disconnecting somebody, on the row they are standing on.
 
@@ -1692,12 +1730,15 @@ def render_whos_online(roster, maps=(), pending=None, notice=None):
             if netid and can_whisper(row.get("name")):
                 flag = ""
                 acts = (_message_form(label, row.get("name") or "")
-                        + _kick_form(label, row.get("name") or "", netid))
+                        + _kick_form(label, row.get("name") or "", netid)
+                        + _ban_form(label, row.get("name") or "", netid))
             elif netid:
-                # No message box - the name cannot go inside a quoted argument - but a
-                # kick keys on the id, which has no such problem. The row keeps the one
-                # action it can actually take.
-                acts = _kick_form(label, row.get("name") or "", netid)
+                # No message box - the name cannot go inside a quoted argument - but
+                # kicking and banning key on the id, which has no such problem. The row
+                # keeps the actions it can actually take, and drops only the one it
+                # cannot.
+                acts = (_kick_form(label, row.get("name") or "", netid)
+                        + _ban_form(label, row.get("name") or "", netid))
                 # A name with a quote or a line break in it cannot be put inside a
                 # ServerChatToPlayer line - see can_whisper. The row is real and the
                 # player is real; the message box is the thing that cannot work.

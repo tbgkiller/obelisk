@@ -303,6 +303,18 @@ def preflight(store, path, map_key):
 
 
 # --------------------------------------------------------------------------- doing it
+def typed_matches(want, typed):
+    """Did they type this, give or take case and the spaces round it?
+
+    Forgiving about how it was typed and unforgiving about what: the point of a typed
+    confirmation is that the operator had to read the thing they are acting on, and
+    "the island" proves that as well as "The Island" does. Shared, because the ban
+    guard asks the same question about a player's name that this one asks about a map's.
+    """
+    want = str(want or "").strip()
+    return bool(want) and str(typed or "").strip().casefold() == want.casefold()
+
+
 def confirms(map_key, typed):
     """Did the operator type this map's name? Case and spacing are not the point.
 
@@ -312,7 +324,7 @@ def confirms(map_key, typed):
     map the page happens to be showing; a name cannot.
     """
     want = mapcat.BY_KEY[map_key]["name"] if map_key in mapcat.BY_KEY else ""
-    return bool(want) and str(typed or "").strip().casefold() == want.casefold()
+    return typed_matches(want, typed)
 
 
 def restore_map(store, path, map_key, stop=None, start=None, verify=None,

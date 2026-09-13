@@ -44,6 +44,12 @@ def _from(body, anchor):
 
 
 
+def _window(body, anchor, size):
+    """`size` characters of `body` from `anchor`, or "" when it is not there."""
+    i = body.find(anchor)
+    return body[i:i + size] if i >= 0 else ""
+
+
 def _after(body, anchor):
     """`body.split(anchor)[1]`, but "" instead of IndexError when it is not there.
 
@@ -796,7 +802,8 @@ check("and the re-count runs whenever the apply is not forced",
 # is the part worth pinning: no stop, no start, no move, no delete, no restore.
 import asyncio as _aio2                                          # noqa: E402
 from . import app as _appmod                                     # noqa: E402
-from . import announce as _ann2                                  # noqa: E402
+from . import announce as _ann2
+from . import bans as _bans_app                                  # noqa: E402
 from . import cluster as _cl2                                    # noqa: E402
 from . import restore as _re2                                    # noqa: E402
 
@@ -3544,6 +3551,296 @@ check("and not repeated at the top of the page",
 check("it says reload rather than promising a refresh nothing performs",
       "reload to see whether they are off" in _kick_landed,
       _after(_kick_landed, "Kick sent")[:220])
+
+# ---- the ban route: the heaviest control, and the only one that fans out
+#
+# A ban is not one command on one map. Every server keeps its own BanList.txt, so a ban
+# that reached one map of two looks more like success than anything else on this page
+# and is less like it - which is why the partial case gets as many pins here as the
+# happy one.
+_bansent = []
+
+
+def _ban_rcon(fail=()):
+    async def go(host, port, password, command, timeout=6.0):
+        _bansent.append({"host": host, "command": command})
+        if any(f in host for f in fail):
+            raise TimeoutError("timed out after 10s")
+        return "Server received, But no response!!"
+    return go
+
+
+async def _post_ban(data, rcon=None, relay="default", follow=True):
+    _bansent[:] = []
+    _bot_s1.LIVE = _kick_relay() if relay == "default" else relay
+    _bot_s1.rcon_with = rcon or _ban_rcon()
+    _appmod.clusterctl.status = lambda store: dict(
+        _lstatus, services=[dict(x) for x in _lstatus["services"]])
+    client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_lstore.get("admin_token"))})
+    r = await client.post("/admin/player/ban", data=data, allow_redirects=False)
+    body = await r.text()
+    landed = ""
+    if follow and r.status == 302:
+        landed = await (await client.get(r.headers.get("Location",
+                                                       "/admin/cluster"))).text()
+    await client.close()
+    return r.status, body, landed
+
+
+def _ledger():
+    return list(_lstore.data.get("bans") or [])
+
+
+def _verbs(sent):
+    return [x["command"].split(" ")[0] for x in sent]
+
+
+_BOB = {"map": "The Island", "name": "Bob", "netid": "76561198000000001"}
+_t21 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _lstore.data["bans"] = []
+    _bask_st, _bask_body, _ = _t21.run_until_complete(_post_ban(dict(_BOB)))
+    _bask_sent, _bask_ledger, _bask_ev = list(_bansent), _ledger(), _drain2()
+
+    _bwrong_st, _bwrong_body, _ = _t21.run_until_complete(
+        _post_ban(dict(_BOB, confirm="Bobby")))
+    _bwrong_sent, _bwrong_ledger = list(_bansent), _ledger()
+    _drain2()
+
+    _bgo_st, _bgo_body, _bgo_landed = _t21.run_until_complete(
+        _post_ban(dict(_BOB, confirm="  bob ")))
+    _bgo_sent, _bgo_ev = list(_bansent), _drain2()
+    _bgo_entry = (_ledger() or [None])[-1]
+
+    _lstore.data["bans"] = []
+    _bpart_st, _bpart_body, _ = _t21.run_until_complete(
+        _post_ban(dict(_BOB, confirm="Bob"), rcon=_ban_rcon(fail=("ragnarok",))))
+    _bpart_sent, _bpart_ev = list(_bansent), _drain2()
+    _bpart_entry = (_ledger() or [None])[-1]
+
+    _lstore.data["bans"] = []
+    _bnone_st, _bnone_body, _ = _t21.run_until_complete(
+        _post_ban(dict(_BOB, confirm="Bob"), rcon=_ban_rcon(fail=("asa-",))))
+    _bnone_sent, _bnone_ev, _bnone_ledger = list(_bansent), _drain2(), _ledger()
+
+    _lstore.data["bans"] = []
+    _bshape_st, _bshape_body, _ = _t21.run_until_complete(
+        _post_ban({"map": "The Island", "name": "Bob", "netid": "76561 198",
+                   "confirm": "Bob"}))
+    _bshape_sent, _bshape_ledger = list(_bansent), _ledger()
+    _drain2()
+
+    _bgone_st, _bgone_body, _ = _t21.run_until_complete(
+        _post_ban({"map": "The Island", "name": "Ghost", "netid": "99999",
+                   "confirm": "Ghost"}))
+    _bgone_sent = list(_bansent)
+    _drain2()
+
+    _bquiet_st, _bquiet_body, _ = _t21.run_until_complete(
+        _post_ban({"map": "Ragnarok", "name": "Dana", "netid": "19000000000000001",
+                   "confirm": "Dana"}, relay=_kick_relay(quiet=("Ragnarok",))))
+    _bquiet_sent = list(_bansent)
+    _drain2()
+
+    _bdead_st, _bdead_body, _ = _t21.run_until_complete(
+        _post_ban(dict(_BOB, confirm="Bob"), relay=None))
+    _bdead_sent = list(_bansent)
+    _drain2()
+finally:
+    _t21.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+# ---- pressing Ban asks for the name, and does nothing at all
+check("pressing Ban asks before it acts", _bask_st == 200, _bask_st)
+check("saying it is the whole cluster, not the one map",
+      "Ban Bob from the whole cluster?" in _bask_body,
+      _window(_bask_body, "whorow asking", 400))
+check("on the player's own row", '<div class="whorow asking">' in _bask_body,
+      _bask_body[:200])
+check("and that row stops offering a one-press Ban",
+      '<button class="whoact worst" type=submit>Ban</button>' not in
+      _from(_bask_body, '<div class="whorow asking">').split("</div>")[0],
+      _from(_bask_body, '<div class="whorow asking">')[:500])
+check("nothing was sent while it was asking", _bask_sent == [], _bask_sent)
+check("nothing was announced", _bask_ev == [], [i["event"] for i in _bask_ev])
+check("and nothing was written down", _bask_ledger == [], _bask_ledger)
+check("the first press does not accuse them of mistyping a name they never typed",
+      "That is not their name" not in _bask_body,
+      _window(_bask_body, "whorow asking", 400))
+
+# ---- the wrong name is not a near miss
+check("a name that is not theirs comes back asking", _bwrong_st == 200, _bwrong_st)
+check("saying so", "That is not their name" in _bwrong_body,
+      _window(_bwrong_body, "whorow asking", 500))
+check("in amber, because nothing is broken",
+      "<div class=problem>" not in _bwrong_body, _bwrong_body[:400])
+check("with the box still there to type in",
+      "name=confirm" in _from(_bwrong_body, '<div class="whorow asking">'),
+      _from(_bwrong_body, '<div class="whorow asking">')[:500])
+check("nothing was sent for a wrong name", _bwrong_sent == [], _bwrong_sent)
+check("and nothing was written down", _bwrong_ledger == [], _bwrong_ledger)
+
+# ---- typed correctly: every map, then the door they are standing in
+check("the ban goes to every map, not just theirs",
+      sorted(x["command"] for x in _bgo_sent
+             if x["command"].startswith("BanPlayer")) ==
+      ["BanPlayer 76561198000000001"] * 2,
+      [x["command"] for x in _bgo_sent])
+check("two maps, two hosts",
+      len({x["host"] for x in _bgo_sent
+           if x["command"].startswith("BanPlayer")}) == 2,
+      [x["host"] for x in _bgo_sent])
+check("keyed on the id the server gave, not the name",
+      all("Bob" not in x["command"] for x in _bgo_sent),
+      [x["command"] for x in _bgo_sent])
+check("and they are kicked, because a ban list only stops the next connection",
+      _verbs(_bgo_sent).count("KickPlayer") == 1, [x["command"] for x in _bgo_sent])
+check("on the map they are standing on",
+      [x["host"] for x in _bgo_sent
+       if x["command"].startswith("KickPlayer")] == ["asa-labeltest-island"],
+      [(x["host"], x["command"]) for x in _bgo_sent])
+check("kicked after the ban landed, not before",
+      _verbs(_bgo_sent) == ["BanPlayer", "BanPlayer", "KickPlayer"],
+      _verbs(_bgo_sent))
+check("the operator is redirected, so a refresh cannot ban twice", _bgo_st == 302,
+      _bgo_st)
+check("the result is shown in the section it is about",
+      _in_order(_bgo_landed, "<fieldset id=who>", "Ban sent for Bob on all 2 maps."),
+      _after(_bgo_landed, "<fieldset id=who>")[:300])
+check("it says sent, not banned",
+      "banned" not in _window(_bgo_landed, "Ban sent for Bob", 300).lower(),
+      _window(_bgo_landed, "Ban sent for Bob", 300))
+check("and says the list on screen is the old one",
+      "reload to see it" in _window(_bgo_landed, "Ban sent for Bob", 300),
+      _window(_bgo_landed, "Ban sent for Bob", 300))
+check("announced at info", ("player.ban_sent", "info") in
+      [(i["event"], i["level"]) for i in _bgo_ev],
+      [(i["event"], i["level"]) for i in _bgo_ev])
+
+# ---- and written down, because nothing on the server will tell us later
+check("a real ban is recorded", _bgo_entry is not None, _bgo_entry)
+check("with who it was", (_bgo_entry or {}).get("name") == "Bob", _bgo_entry)
+check("which id was written to the lists",
+      (_bgo_entry or {}).get("netid") == "76561198000000001", _bgo_entry)
+check("when it happened",
+      abs((_bgo_entry or {}).get("when", 0) - _time_dead.time()) < 300, _bgo_entry)
+check("and what each map did with it",
+      _bans_app.sent_to(_bgo_entry or {}) == ["Ragnarok", "The Island"]
+      and _bans_app.missed(_bgo_entry or {}) == [],
+      (_bgo_entry or {}).get("maps"))
+
+# ---- one map short is not success
+check("a partial fan-out does not redirect as though it worked", _bpart_st == 200,
+      _bpart_st)
+check("it names the map that did not take it",
+      "NOT on Ragnarok" in _bpart_body, _after(_bpart_body, "Ban sent for Bob")[:300])
+check("and says they can still get in there",
+      "can still join those" in _bpart_body,
+      _after(_bpart_body, "Ban sent for Bob")[:300])
+check("in amber - something was done, and something was not",
+      "<div class=warn>" in _bpart_body and "<div class=problem>" not in _bpart_body,
+      _bpart_body[:400])
+check("announced as a partial, at warning",
+      ("player.ban_partial", "warning") in
+      [(i["event"], i["level"]) for i in _bpart_ev],
+      [(i["event"], i["level"]) for i in _bpart_ev])
+check("never announced as a clean ban",
+      not any(i["event"] == "player.ban_sent" for i in _bpart_ev),
+      [i["event"] for i in _bpart_ev])
+check("the map that did take it still kicked them",
+      "KickPlayer" in _verbs(_bpart_sent), _verbs(_bpart_sent))
+check("a partial is recorded too, since those maps are somebody's problem now",
+      _bans_app.sent_to(_bpart_entry or {}) == ["The Island"]
+      and [l for l, _w in _bans_app.missed(_bpart_entry or {})] == ["Ragnarok"],
+      (_bpart_entry or {}).get("maps"))
+check("with the reason the map gave",
+      "timed out" in dict(_bans_app.missed(_bpart_entry or {})).get("Ragnarok", ""),
+      (_bpart_entry or {}).get("maps"))
+
+# ---- nothing took it: that is a failure, in red, and nothing is claimed
+check("a ban that reached no map is not a redirect", _bnone_st == 200, _bnone_st)
+check("it says it did NOT send",
+      "did NOT send to any of the 2 maps" in _bnone_body,
+      _after(_bnone_body, "did NOT")[:260])
+check("and that the player is unaffected",
+      "still able to play" in _bnone_body, _after(_bnone_body, "did NOT")[:260])
+check("in red", "<div class=problem>" in _bnone_body, _bnone_body[:400])
+check("announced as a failure, at error",
+      ("player.ban_failed", "error") in
+      [(i["event"], i["level"]) for i in _bnone_ev],
+      [(i["event"], i["level"]) for i in _bnone_ev])
+check("and never as one that was sent",
+      not any(i["event"] in ("player.ban_sent", "player.ban_partial")
+              for i in _bnone_ev), [i["event"] for i in _bnone_ev])
+check("nobody is kicked off a server that never took the ban",
+      "KickPlayer" not in _verbs(_bnone_sent), _verbs(_bnone_sent))
+check("and the ledger is left empty, which is what the page claims",
+      _bnone_ledger == [], _bnone_ledger)
+
+for _tail, _want in (("ban_sent", "✅"), ("ban_partial", "⚠"),
+                     ("ban_failed", "❌")):
+    check("%s has an icon of its own" % _tail, _ann2.ICONS.get(_tail) == _want,
+          _ann2.ICONS.get(_tail))
+
+# ---- an id that is not an id never reaches a ban list
+#
+# The one guard here that is not about the operator. A kick with a malformed id is a
+# command the server declines; a ban with one is a line written into every BanList.txt
+# on the cluster, which the game re-reads for ever and nothing here can take back.
+check("an id with whitespace in it is refused", _bshape_st == 200, _bshape_st)
+check("saying it cannot be written to a ban list safely",
+      "not one that can be written to a ban list safely" in _bshape_body,
+      _after(_bshape_body, "class=warn")[:260])
+check("in amber", "<div class=problem>" not in _bshape_body, _bshape_body[:400])
+check("and NOTHING was sent - not even to the first map", _bshape_sent == [],
+      _bshape_sent)
+check("nor written down", _bshape_ledger == [], _bshape_ledger)
+
+# ---- and the roster is re-read before any of it
+for _label_b, _st_b, _body_b, _sent_b, _phrase_b in (
+        ("somebody who has left", _bgone_st, _bgone_body, _bgone_sent,
+         "no longer listed on The Island"),
+        ("a map that went quiet", _bquiet_st, _bquiet_body, _bquiet_sent,
+         "did not answer the last check"),
+        ("a dead relay", _bdead_st, _bdead_body, _bdead_sent,
+         "chat relay is not running")):
+    check("%s is refused" % _label_b, _st_b == 200 and _phrase_b in _body_b,
+          [_st_b, _after(_body_b, "class=warn")[:200]])
+    check("in amber, because nothing is broken",
+          "<div class=warn>" in _body_b and "<div class=problem>" not in _body_b,
+          _after(_body_b, "class=warn")[:200])
+    check("and nothing was sent", _sent_b == [], _sent_b)
+
+# ---- the shape of the route, and what it did not disturb
+_bansrc = _after(_appsrc_2d, "async def player_ban").split(
+    chr(10) + "    async def ")[0]
+check("the id is checked before the roster and long before any command",
+      _in_order(_bansrc, "valid_netid", "_roster_now()", "typed_matches", "BanPlayer"),
+      _bansrc[:1400])
+check("every map is a target, not just the one posted",
+      "rcon_targets(store)" in _bansrc, _window(_bansrc, "rcon_targets", 200))
+check("sent to all of them at once, so ten maps is not ten waits",
+      "asyncio.gather" in _bansrc, _window(_bansrc, "gather", 200))
+check("keyed on the id", 'BanPlayer %s" % netid' in _bansrc,
+      _window(_bansrc, "BanPlayer", 140))
+check("the kick is only attempted where the ban actually landed",
+      "if label in took:" in _bansrc, _window(_bansrc, "if label in took", 200))
+check("and the ledger is the module, not a dict written here",
+      "bansctl.record(" in _bansrc, _window(_bansrc, "bansctl", 140))
+for _what_b, _frag_b in sorted({
+        "the apply gate": "def verify_every_map(store):",
+        "the restore gate": "def verify_restored(store, key, note=None):",
+        "the stop guard": "ui.render_stop_warning(counts, silent)",
+        "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
+        "the message action": "async def player_message",
+        "the kick action": "async def player_kick",
+}.items()):
+    check("%s is untouched by the ban" % _what_b, _frag_b in _appsrc_2d, _frag_b)
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

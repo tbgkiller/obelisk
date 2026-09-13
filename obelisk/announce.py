@@ -226,6 +226,7 @@ ICONS = {
     "map_settled": "✅",
     "message_sent": "✅",
     "kick_sent": "✅",
+    "ban_sent": "✅",
     "offsite_done": "✅", "push_done": "✅",
     "up": "✅",
     # Failures
@@ -235,6 +236,7 @@ ICONS = {
     "map_looping": "❌",
     "message_failed": "❌",
     "kick_failed": "❌",
+    "ban_failed": "❌",
     "offsite_failed": "❌", "push_failed": "❌",
     # world.damaged is the periodic sweep's; ark.world_damaged is the apply gate's.
     "damaged": "❌",
@@ -242,6 +244,7 @@ ICONS = {
     "warning": "⚠", "degraded": "⚠", "closed_partly": "⚠",
     "world_unreachable": "⚠", "deferred": "⚠",
     "offsite_unconfigured": "⚠", "push_unconfigured": "⚠",
+    "ban_partial": "⚠",
     "refused": "⚠",
     "stop_refused": "⚠",
     # In progress
