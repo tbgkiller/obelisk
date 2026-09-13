@@ -874,17 +874,31 @@ LIVE = None
 
 
 def online_snapshot():
-    """What the relay last saw. (by_map, total, age_seconds), or None if it is not up.
+    """What the relay measured on its last pass. (by_map, total, age), or None.
 
-    None and 0 are different answers and the difference matters on a status page: one
-    means nobody is playing, the other means nobody asked. The age travels with the
-    numbers for the same reason - a count with no age silently becomes a claim about
-    now, and this one can be a minute old.
+    **Only maps that answered that pass.** online_by_map deliberately keeps a map's
+    last-known count when it goes quiet - the relay wants that, because the in-game
+    population summary is better off saying something slightly old than nothing. A
+    status page is not, and the difference is not cosmetic: a map that had nobody on
+    it, gained players, then stopped answering would show a confident "0" next to an
+    age of "just now". That is the exact mistake this whole feature exists to prevent,
+    dressed as the feature working.
+
+    The relay already knows which is which - map_up is set on the same line that keeps
+    the old number - so the snapshot drops the ones that did not answer and adds up
+    only what it kept. A caller then cannot tell a remembered number from a measured
+    one, because it is never given a remembered one.
+
+    A label with no map_up entry is treated as not measured. Nothing writes one without
+    the other today, and "I have no record of asking" is not evidence of an answer.
     """
     relay = LIVE
     if relay is None or not relay.last_refresh:
         return None
-    return (dict(relay.online_by_map), int(relay.online_total),
+    up = getattr(relay, "map_up", None) or {}
+    by_map = {label: int(n) for label, n in relay.online_by_map.items()
+              if up.get(label)}
+    return (by_map, sum(by_map.values()),
             max(0.0, time.time() - relay.last_refresh))
 
 

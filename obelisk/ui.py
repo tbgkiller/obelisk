@@ -1230,11 +1230,16 @@ def render_status(status, players=None):
     head = ""
     if players is not None:
         total = int(players.get("total") or 0)
-        up = sum(1 for s in status.get("services", [])
-                 if (s.get("level") or "") == "ok")
+        # The maps the count actually covers, not the maps that look healthy. They were
+        # two different populations: the numerator came from every map that answered
+        # and the denominator from every map reporting "ok", so a cluster with players
+        # on an unhealthy map read "5 players online across 0 maps". N and M have to
+        # describe the same set of maps or the sentence is not about anything.
+        covered = len(seen)
         head = ('<div class=note><b>%d player%s online</b> across %d map%s '
                 '<span class=help>&middot; %s</span></div>'
-                % (total, "" if total == 1 else "s", up, "" if up == 1 else "s",
+                % (total, "" if total == 1 else "s",
+                   covered, "" if covered == 1 else "s",
                    _e(_ago(players.get("age")))))
     else:
         head = ('<div class=note>Player counts are not available &mdash; the chat relay '

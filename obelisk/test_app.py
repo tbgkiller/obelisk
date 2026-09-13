@@ -2312,6 +2312,7 @@ try:
 
     class _FakeRelay:
         online_by_map = {"The Island": 3, "Ragnarok": 7}
+        map_up = {"The Island": True, "Ragnarok": True}
         online_total = 10
         last_refresh = 0.0
 
@@ -2389,6 +2390,7 @@ _lstatus = {"docker_ok": True, "compose_exists": True, "running": 2, "services":
 
 class _LiveRelay:
     online_by_map = {"The Island": 4, "Ragnarok": 1}
+    map_up = {"The Island": True, "Ragnarok": True}
     online_total = 5
     last_refresh = 0.0
 
@@ -2438,6 +2440,112 @@ for _name, _body in (("the front page", _front_off), ("the cluster page", _clust
           _body[_body.find("Running now"):][:300])
     check("%s still names its maps without a relay" % _name,
           "<td>The Island</td>" in _body, _body[_body.find("Running now"):][:300])
+
+# ---- a remembered number must never be served as a measured one
+#
+# refresh_online deliberately keeps a map's last-known count when it stops answering -
+# the relay wants that, because the in-game population summary is better off slightly
+# old than silent. A status page is not. A map that had nobody on it, gained players,
+# then went quiet would show a confident "0" beside an age of "just now": the exact
+# mistake the dash exists to prevent, wearing the feature's own clothes.
+class _Flaky:
+    """A relay whose second pass loses a map, the way refresh_online leaves it."""
+
+    def __init__(self):
+        self.online_by_map = {"The Island": 4, "Ragnarok": 1}
+        self.map_up = {"The Island": True, "Ragnarok": True}
+        self.online_total = 5
+        self.last_refresh = _time_dead.time() - 15
+
+    def goes_quiet(self, label):
+        # exactly what the real poll does: keep the old number, flip map_up
+        self.map_up[label] = False
+        self.last_refresh = _time_dead.time() - 5
+
+
+_real_live2 = _bot_s1.LIVE
+try:
+    _fl = _Flaky()
+    _bot_s1.LIVE = _fl
+    _b1, _t1, _a1 = _bot_s1.online_snapshot()
+    check("both maps are measured to start with",
+          _b1 == {"The Island": 4, "Ragnarok": 1}, _b1)
+    check("and the total is both of them", _t1 == 5, _t1)
+
+    _fl.goes_quiet("Ragnarok")
+    _b2, _t2, _a2 = _bot_s1.online_snapshot()
+    check("a map that stopped answering is left out of the snapshot",
+          "Ragnarok" not in _b2, _b2)
+    check("rather than served as a fresh number", _b2 == {"The Island": 4}, _b2)
+    check("the relay still remembers it, for the in-game summary",
+          _fl.online_by_map.get("Ragnarok") == 1, _fl.online_by_map)
+    check("but the total counts only what was measured this pass", _t2 == 4, _t2)
+    check("not the relay's own running total, which includes the ghost",
+          _t2 != _fl.online_total, [_t2, _fl.online_total])
+
+    # the nastiest shape: a map whose remembered number is 0
+    _fl0 = _Flaky()
+    _fl0.online_by_map = {"The Island": 4, "Valguero": 0}
+    _fl0.map_up = {"The Island": True, "Valguero": True}
+    _bot_s1.LIVE = _fl0
+    check("a measured zero is still a zero",
+          _bot_s1.online_snapshot()[0].get("Valguero") == 0,
+          _bot_s1.online_snapshot()[0])
+    _fl0.goes_quiet("Valguero")
+    check("a remembered zero is not, because it is the one that looks fine",
+          "Valguero" not in _bot_s1.online_snapshot()[0],
+          _bot_s1.online_snapshot()[0])
+
+    # a label nothing has a verdict for is not evidence of an answer
+    _fl0.map_up.pop("Valguero")
+    check("a map with no up/down record at all is left out too",
+          "Valguero" not in _bot_s1.online_snapshot()[0],
+          _bot_s1.online_snapshot()[0])
+finally:
+    _bot_s1.LIVE = _real_live2
+
+
+# ---- and it reaches the page as a dash, with the header agreeing
+_t11 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _quiet = _LiveRelay()
+    _quiet.map_up = {"The Island": True, "Ragnarok": False}
+    _quiet.last_refresh = _time_dead.time() - 10
+    _page_q, _cluster_q = _t11.run_until_complete(_page_with(_quiet))
+
+    # an unhealthy map with players on it used to give "across 0 maps"
+    _unwell = _LiveRelay()
+    _unwell.last_refresh = _time_dead.time() - 10
+    _real_status_q = _appmod.clusterctl.status
+    _appmod.clusterctl.status = lambda store: dict(_lstatus, services=[
+        dict(x, level="bad", says="Failing to start") for x in _lstatus["services"]])
+    try:
+        _page_u, _cluster_u = _t11.run_until_complete(_page_with(_unwell))
+    finally:
+        _appmod.clusterctl.status = _real_status_q
+finally:
+    _t11.close()
+    _appmod.clusterctl.status = _real_status_s1
+    _bot_s1.LIVE = _real_live
+
+for _name, _body in (("the front page", _page_q), ("the cluster page", _cluster_q)):
+    _tbl = _body[_body.find("Running now"):][:600]
+    check("%s shows the map that answered" % _name, ">4</td>" in _tbl, _tbl)
+    check("%s shows a dash for the one that went quiet" % _name,
+          "&mdash;" in _tbl and ">1</td>" not in _tbl, _tbl)
+    check("%s totals only the map it could measure" % _name,
+          "<b>4 players online</b>" in _body, _body[_body.find("players online") - 40:][:160])
+    check("%s counts one map, because one is what it covered" % _name,
+          "across 1 map " in _body and "across 1 maps" not in _body,
+          _body[_body.find("players online") - 40:][:200])
+
+for _name, _body in (("the front page", _page_u), ("the cluster page", _cluster_u)):
+    check("%s never says players are online across no maps" % _name,
+          "across 0 maps" not in _body,
+          _body[_body.find("players online") - 40:][:200])
+    check("%s counts the maps the players are actually on" % _name,
+          "<b>5 players online</b>" in _body and "across 2 maps" in _body,
+          _body[_body.find("players online") - 40:][:200])
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
