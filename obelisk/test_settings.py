@@ -3,6 +3,7 @@
 # timezone belong in a public repo. The one exception is mod id 929110: the product
 # checks that specific public id to enforce stacking-mod load order, so a test of
 # that rule has to use the real one.
+import io
 import json, os, sys, tempfile
 
 from .settings import Store, Invalid, validate, generate_env
@@ -38,6 +39,19 @@ check("every group is declared", all(s["group"] in GROUPS for s in SETTINGS),
       [s["key"] for s in SETTINGS if s["group"] not in GROUPS])
 check("every setting has help text", all(s.get("help") for s in SETTINGS))
 check("markdown docs generate", "## Identity" in markdown())
+
+# docs/SETTINGS.md says "Generated from the schema - do not edit by hand", and nothing
+# regenerated or checked it: the committed copy had drifted to a third of the schema and
+# was missing the three settings that decide who restarts the cluster and when.
+import os as _os_md
+_md_path = _os_md.path.join(_os_md.path.dirname(_os_md.path.dirname(
+    _os_md.path.abspath(__file__))), "docs", "SETTINGS.md")
+_committed = io.open(_md_path, encoding="utf-8").read()
+check("the committed settings doc still matches the schema it is generated from",
+      _committed.strip() == markdown().strip(),
+      "docs/SETTINGS.md is stale - regenerate it from schema.markdown()")
+for _k in ("apply_when_empty", "update_apply_in_window", "ark_update_mode"):
+    check("and it documents %s" % _k, _k in _committed)
 
 # ---- the hard-won rules, encoded
 rejects("rejects a leading # in the name prefix", "session_prefix", "#ACME")
