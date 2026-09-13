@@ -455,7 +455,8 @@ def build_app(store, docker=None):
                                   pending=_asking(pending, "who"), notice=notice,
                                   bans=bansctl.recent(store),
                                   bans_pending=_asking(pending, "bans"),
-                                  bans_notice=bans_notice))
+                                  bans_notice=bans_notice,
+                                  bans_total=bansctl.count(store)))
 
     # The last poll, so opening the page does not go to the network before it renders.
     # A panel that takes two round trips to CurseForge to appear is a panel people

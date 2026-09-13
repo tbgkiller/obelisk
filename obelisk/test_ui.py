@@ -1918,8 +1918,89 @@ check("a second unban marks nothing twice", _again == [], _again)
 check("and does not rewrite when the first one happened",
       all(e["unbanned"] == 400 for e in _bans.entries_for(_ms, "765")),
       _bans.entries_for(_ms, "765"))
+# The number the page needs is what is HELD, not what a page of it holds - those are
+# the same until the day they are not, which is the day the line matters.
+_cs = _LedgerStore()
+for _i in range(60):
+    _bans.record(_cs, "P%d" % _i, "%d" % _i, {"The Island": ""}, when=_i)
+check("the ledger can say how much it is holding",
+      _bans.count(_cs) == 60, _bans.count(_cs))
+check("which is more than a page of it",
+      len(_bans.recent(_cs)) == 50, len(_bans.recent(_cs)))
+check("and an empty one holds nothing rather than raising",
+      _bans.count(_LedgerStore()) == 0, "count() on a fresh store")
+
 check("an id nobody banned is not an error, just nothing to mark",
       _bans.mark_unbanned(_ms, "nobody", when=600) == [], _ms.data["bans"])
+
+# ---- an undone ban is a different kind of row, and has to look like one
+#
+# Both states rendered as the same <div class=whorow> and differed only by what sat in
+# the last cell, so "is this person banned right now?" meant reading the end of every
+# line. The case is not hypothetical: the same name and id appear twice - once undone,
+# once live - as soon as somebody is banned again, and those two rows can be far apart.
+_B4 = {"name": "Bob", "netid": "76561198000000001", "when": _NOW - 400000,
+       "maps": {"The Island": "", "Ragnarok": "timed out"}, "unbanned": _NOW - 100000}
+_mixed = ui.render_bans([_B1, _B3, _B4], now=_NOW)
+_live_row = _window(_mixed, '<div class="whorow">', 400)
+
+check("an undone ban is rendered in the quiet vocabulary",
+      _mixed.count('<div class="whorow quiet">') == 2,
+      _mixed.count('<div class="whorow quiet">'))
+check("and a live one is not",
+      _mixed.count('<div class="whorow">') == 1, _mixed.count('<div class="whorow">'))
+check("so the two are told apart by the row, not by its last cell",
+      'class="whorow quiet"' not in _live_row, _live_row)
+check("the quiet style is the one this page already uses for a line that is not live",
+      ".whorow.quiet{border-style:dashed" in ui.CSS, "the class has no style")
+
+# ---- and it stops describing a lifted ban in the present tense
+_undone = _window(_from(_mixed, '<div class="whorow quiet">'), "unbanned", 300)
+check("an undone row leads with the state it is in",
+      _in_order(_from(_mixed, '<div class="whorow quiet">'), "unbanned ", "that ban"),
+      _undone)
+check("saying when it was lifted", "unbanned 2d ago" in _mixed, _undone)
+check("and putting the ban itself in the past",
+      "that ban had reached all 2 maps" in _mixed, _undone)
+check("it does not say a lifted ban is sent to anything",
+      "sent to" not in _from(_mixed, '<div class="whorow quiet">'),
+      _from(_mixed, '<div class="whorow quiet">')[:600])
+check("a lifted partial reads as a partial that is over",
+      "had reached 1 of 2 — missed Ragnarok" in _mixed,
+      _window(_from(_mixed, "missed"), "unbanned", 300))
+check("while a live ban still reads in the present",
+      "1 of 2 — missing Ragnarok" in _live_row, _live_row)
+check("and only a live ban offers the way out",
+      _mixed.count(">Unban</button>") == 1, _mixed.count(">Unban</button>"))
+
+# ---- the list stops at a page, and says so
+#
+# It capped at 50 silently: 59 records showed 50 and looked like the whole history, so
+# "was this person ever banned?" had an answer the page was hiding.
+_capped = ui.render_bans([_B1, _B2], now=_NOW, total=59)
+check("a list that is not all of it says how much it is showing",
+      "Showing 2 of 59" in _capped, _window(_capped, "Showing", 200))
+check("and says the rest is kept rather than gone",
+      "older bans are kept but not listed" in _capped, _window(_capped, "Showing", 200))
+check("in the quiet style, because it is not a problem",
+      "<div class=whonote>Showing 2 of 59" in _capped, _window(_capped, "Showing", 200))
+check("a list that IS all of it says nothing",
+      "Showing" not in ui.render_bans([_B1, _B2], now=_NOW, total=2),
+      ui.render_bans([_B1, _B2], now=_NOW, total=2))
+check("nor does one that was never told the total",
+      "Showing" not in ui.render_bans([_B1, _B2], now=_NOW),
+      ui.render_bans([_B1, _B2], now=_NOW))
+check("an empty list does not claim to be hiding anything",
+      "Showing" not in ui.render_bans([], now=_NOW, total=0),
+      ui.render_bans([], now=_NOW, total=0))
+check("and an empty list with records behind it says so",
+      "Showing 0 of 7" in ui.render_bans([], now=_NOW, total=7),
+      ui.render_bans([], now=_NOW, total=7))
+
+# ---- and the typed-id field says what it is for
+check("the by-id field says why somebody would use it",
+      "for bans made in-game or by hand" in _banlist,
+      _from(_banlist, 'class="whoform byid"'))
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

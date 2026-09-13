@@ -4250,6 +4250,32 @@ for _what_u, _frag_u in sorted({
 }.items()):
     check("%s is untouched by the unban" % _what_u, _frag_u in _appsrc_2d, _frag_u)
 
+# ---- the page is told how much the list is NOT showing
+#
+# The renderer can say "showing 50 of 59" all it likes; this is the pin that the page
+# hands it the number. Without it the section reads as the whole history of the
+# cluster while quietly holding four times as much.
+_t23 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _seed_bans([dict(_UB3, when=1789000000 + _i) for _i in range(51)])
+    _ucap_st, _, _ucap_body, _, _ = _t23.run_until_complete(_post_unban({"netid": ""}))
+    _drain2()
+finally:
+    _t23.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+    _seed_bans([])
+
+_ucap_who = _from(_ucap_body, "<fieldset id=bans>")
+check("a list holding more than it shows says so on the page",
+      "Showing 50 of 51" in _ucap_who, _window(_ucap_who, "Showing", 200))
+check("and says the rest is kept",
+      "older bans are kept but not listed" in _ucap_who,
+      _window(_ucap_who, "Showing", 200))
+check("it still only draws the page it said it was drawing",
+      _ucap_who.count(">Unban</button>") == 50, _ucap_who.count(">Unban</button>"))
+
 # ---- and the ban now points at the list it writes to
 check("the ban result names where the record went",
       "Recorded - see Banned players below" in _bgo_says, _bgo_says)

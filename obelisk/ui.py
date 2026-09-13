@@ -1793,17 +1793,24 @@ def _when_title(when):
         return ""
 
 
-def _spread(entry):
-    """How far a ban actually got, in the words the ban banner used."""
+def _spread(entry, past=False):
+    """How far a ban actually got, in the words the ban banner used.
+
+    Past tense for a ban somebody has already undone. "Sent to all 10 maps" beside
+    "unbanned 8 days ago" reads as a statement about now, and the row it is on is the
+    row where "is this person banned?" has to be answerable at a glance.
+    """
     maps = entry.get("maps") or {}
     took, gone = bansctl.sent_to(entry), bansctl.missed(entry)
     if not maps:
         return "no maps recorded"
     if not gone:
-        return "sent to all %d maps" % len(maps)
+        return ("had reached all %d maps" if past else "sent to all %d maps") % len(maps)
     if not took:
-        return "sent to none of the %d maps" % len(maps)
-    return ("%d of %d \u2014 missing %s"
+        return (("had reached none of the %d maps" if past
+                 else "sent to none of the %d maps") % len(maps))
+    return (("had reached %d of %d \u2014 missed %s" if past
+             else "%d of %d \u2014 missing %s")
             % (len(took), len(maps), ", ".join(l for l, _w in gone)))
 
 
@@ -1850,13 +1857,15 @@ def _unban_by_id_form():
     server's list from - so the only way back in through this page is to type the id.
     """
     return ('<form method=post action="/admin/player/unban" class="whoform byid">'
-            '<label class=help for=unbanid>Unban an id this list does not have:</label>'
+            '<label class=help for=unbanid>Unban an id this list does not have '
+            '— for bans made in-game or by hand:</label>'
             '<input id=unbanid name=netid autocomplete=off '
             'placeholder="platform id (Steam, Epic or EOS)">'
             '<button class="whoact talk" type=submit>Unban by ID</button></form>')
 
 
-def render_bans(entries, notice=None, pending=None, now=None):
+def render_bans(entries, notice=None, pending=None, now=None,
+                total=None):
     """What Obelisk banned, newest first, and the way to undo it.
 
     Its own section rather than a column of the roster above: these are the people who
@@ -1882,25 +1891,40 @@ def render_bans(entries, notice=None, pending=None, now=None):
             out.append('<div class="whorow asking"><span class=whoname>%s</span>%s</div>'
                        % (name, pending.get("html") or ""))
             continue
+        # An undone ban is a different kind of row, so it is a different-looking row.
+        # Both states rendered identically meant "is this person banned right now?"
+        # was a question about the last cell of every line - and the same name and id
+        # can legitimately appear twice, once undone and once live, rows apart. The
+        # dashed, dimmed vocabulary is the one who's-online already uses for a line
+        # that is not live.
         if gone:
-            act = ('<span class=whoflag>unbanned %s</span>'
-                   % _e(_ago(now - int(entry.get("unbanned") or 0))))
-        elif mine:
             act = ""
+            state = ("unbanned %s \u00b7 that ban %s"
+                     % (_ago(now - int(entry.get("unbanned") or 0)),
+                        _spread(entry, past=True)))
         else:
-            act = _unban_form(entry)
-        out.append('<div class=whorow><span class=whoname>%s</span>'
+            act = "" if mine else _unban_form(entry)
+            state = _spread(entry)
+        out.append('<div class="whorow%s"><span class=whoname>%s</span>'
                    '<span class=whoflag title="%s">%s</span>'
                    '<span class=whoflag title="%s">%s</span>'
                    '<span class=whoflag>%s</span>'
                    '<span class=whoacts>%s</span></div>'
-                   % (name, _e(netid), _e(_shorten_id(netid)),
+                   % (" quiet" if gone else "", name,
+                      _e(netid), _e(_shorten_id(netid)),
                       _e(_when_title(when)), _e(_ago(now - int(when))),
-                      _e(_spread(entry)), act))
+                      _e(state), act))
     if not held:
         # Not a warning. An empty ban list is the state this cluster is in most of the
         # time, and a manager that paints it amber teaches people to ignore amber.
         out.append('<div class=whonote>No bans recorded.</div>')
+    # The list stops at a page's worth, and said nothing about it: a manager holding 59
+    # records showed 50 and looked complete, so "was this person ever banned?" had an
+    # answer the page was quietly hiding. The cap stays - the alternative is a section
+    # that grows without limit - but it says so.
+    if total is not None and int(total) > len(held):
+        out.append('<div class=whonote>Showing %d of %d — older bans are kept '
+                   'but not listed.</div>' % (len(held), int(total)))
     # A question about a typed id replaces the field it was typed into, for the same
     # reason a question about a row replaces that row's buttons.
     if asking and not str((pending or {}).get("when") or ""):
@@ -1927,7 +1951,8 @@ def _shorten_id(netid):
 
 def render_cluster(store, plan, status=None, players=None, roster=None,
                    pending=None, notice=None, bans=None,
-                   bans_pending=None, bans_notice=None):
+                   bans_pending=None, bans_notice=None,
+                   bans_total=None):
     selected = set(str(store.get("maps")).split(","))
     presets = "".join(
         '<button class=ghost type=button name=preset value="%s" title="%s">%s</button>'
@@ -1966,7 +1991,8 @@ def render_cluster(store, plan, status=None, players=None, roster=None,
     return (render_status(status, players=players) +
             render_whos_online(roster, maps=[m for m in running if m],
                                pending=pending, notice=notice) +
-            render_bans(bans, notice=bans_notice, pending=bans_pending) +
+            render_bans(bans, notice=bans_notice, pending=bans_pending,
+                        total=bans_total) +
             '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '

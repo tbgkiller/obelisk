@@ -74,6 +74,11 @@ def record(store, name, netid, results, kick=None, when=None):
     return entry
 
 
+def count(store):
+    """How many records are held - which is not how many a page shows."""
+    return len(store.data.get("bans") or [])
+
+
 def recent(store, limit=50):
     """Newest first, for the page that will show them."""
     held = list(store.data.get("bans") or [])
