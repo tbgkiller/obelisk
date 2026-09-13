@@ -1544,6 +1544,102 @@ check("it fails safe when the elements are not there",
       "if(!pick||!btn) return;" in _b3body, "listener is not defensive")
 
 
+
+# ---- a guard saying no must not look like a restore that broke
+#
+# The channel already told these apart - restore.refused at warning, restore.failed at
+# error - and the page did not. "Type the map's name to confirm" arrived in the same
+# red box as "the world was restored but the map did not start again". One of those
+# means nothing happened; the other means something is half done and a world is sitting
+# in a .superseded folder. The operator is standing in front of this screen.
+_ARCS = [{"name": _ARC_A, "bytes": 1024, "mtime": 1, "when": "now"}]
+
+_refused_job = {"state": "done", "ok": False, "step": "done",
+                "message": "3 players are on The Island and this replaces the world "
+                           "they are standing in. Nothing has been changed.",
+                "detail": {"refused": "players"}}
+_failed_job = {"state": "done", "ok": False, "step": "done",
+               "message": "The world was restored but TheIsland_WP did not start "
+                          "again: the container exited.",
+               "detail": {"steps": ["swapped in"], "superseded": "x"}}
+_done_job = {"state": "done", "ok": True, "step": "done",
+             "message": "Restored The Island from %s." % _ARC_A,
+             "detail": {"steps": ["swapped in"]}}
+
+
+def _restore_page(**kw):
+    return ui.render_restore(_b3store, _ARCS, chosen=_ARC_A, info=dict(_INFO),
+                             notes=[], savepoints_by_map=[], **kw)
+
+
+_ref_body = _restore_page(job=_refused_job)
+_fail_body = _restore_page(job=_failed_job)
+_done_body = _restore_page(job=_done_job)
+
+check("a refusal is rendered amber, not red",
+      ('<div class="warn">' + ui._e(_refused_job["message"])) in _ref_body,
+      _ref_body[:200])
+check("and never in the problem class",
+      ('<div class="problem">' + ui._e(_refused_job["message"])) not in _ref_body)
+check("a restore that actually broke is still red",
+      ('<div class="problem">' + ui._e(_failed_job["message"])) in _fail_body,
+      _fail_body[:200])
+check("and is not softened to a warning",
+      ('<div class="warn">' + ui._e(_failed_job["message"])) not in _fail_body)
+check("a restore that worked is still a note",
+      ('<div class="note">' + ui._e(_done_job["message"])) in _done_body,
+      _done_body[:200])
+
+# the route's own refusals are the same kind of answer, and were the same red
+_route_ref = _restore_page(refusal="Type The Island to confirm.")
+check("a refusal from the page's own guards is amber too",
+      "<div class=warn>Type The Island to confirm." in _route_ref, _route_ref[:200])
+check("while a real problem passed to the same page is still red",
+      "<div class=problem>" in _restore_page(problem="No such archive."),
+      "problem slot lost")
+
+# ---- the way back is written down before somebody needs it
+#
+# The page said what to do if the restore went well and nothing about the other case -
+# on the one screen whose own warning says there is no undo button. The folder it
+# already lists IS the undo; it just has to be moved.
+_sup_dir = os.path.join(os.environ["OBELISK_ARK"], "shared", "SavedArks",
+                        "TheIsland_WP.superseded-20260913T090000Z")
+os.makedirs(_sup_dir, exist_ok=True)
+with open(os.path.join(_sup_dir, "TheIsland_WP.ark"), "wb") as _fh:
+    _fh.write(bytes(2048))
+_sup_body = _restore_page()
+check("the replaced world is listed at all", "Replaced worlds" in _sup_body,
+      "no superseded block")
+check("and offered as the way back, not only as clutter",
+      "the way back" in _sup_body, "no way back offered")
+check("saying what to actually do with it",
+      "superseded" in _sup_body and "start it again" in _sup_body,
+      "no instructions for the folder")
+check("without pretending there is a button for it",
+      "no undo button" in _sup_body, "the honesty is gone")
+check("the reclaim-the-space advice survives",
+      "delete them by hand" in _sup_body.lower(), "cleanup advice lost")
+
+# ---- an archive with nothing of yours in it
+#
+# Every map option disabled, the run button still live, and the placeholder degraded to
+# the literal words "the map's name" - so pressing it answered "type the map's name to
+# confirm", which is advice with nothing to do about it.
+_FOREIGN = dict(_INFO, maps=["Aberration_WP", "Fjordur_WP"])
+_foreign_body = ui.render_restore(_b3store, _ARCS, chosen=_ARC_A, info=_FOREIGN,
+                                  notes=[], savepoints_by_map=[])
+check("an archive holding none of your maps says so",
+      "holds no world for any map this cluster runs" in _foreign_body,
+      _foreign_body[:400])
+check("naming what it does hold", "Aberration_WP" in _foreign_body, "archive maps")
+check("and what you run", "The Island" in _foreign_body, "cluster maps")
+check("the run button is not left looking actionable",
+      "id=runbtn disabled" in _foreign_body, "run button is still live")
+check("an archive that does hold one of your maps still offers the button",
+      "id=runbtn disabled" not in _restore_page(), "usable archive was disabled")
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

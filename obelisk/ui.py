@@ -1521,7 +1521,8 @@ BACKUP_PROGRESS = """
 
 
 def render_restore(store, archives, chosen=None, info=None, notes=(),
-                   message="", problem="", job=None, savepoints_by_map=None):
+                   message="", problem="", job=None, savepoints_by_map=None,
+                   refusal=""):
     """Restore one map from one archive, with what is in it shown before committing.
 
     The order on the page is the order of the decision: which archive, what is in it,
@@ -1541,16 +1542,28 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
     elif message:
         banner = '<div class=note>%s</div>' % _e(message)
 
+    # A refusal is amber, a failure is red, a success is a note. The channel already
+    # tells these apart - restore.refused at warning, restore.failed at error - and
+    # this page did not: "type the map's name to confirm" arrived in the same red box
+    # as "the world was restored but the map did not start again". One of those means
+    # nothing happened and the other means something is half done, and the operator is
+    # standing in front of this screen rather than in front of Discord.
+    if refusal and not problem:
+        banner = '<div class=warn>%s</div>' % _e(refusal)
+
     job = job or {}
     running = job.get("state") == "running"
-    if job.get("state") == "done" and not message and not problem:
+    if job.get("state") == "done" and not message and not problem and not refusal:
+        refused = bool((job.get("detail") or {}).get("refused"))
         if job.get("ok"):
             message = job.get("message", "")
+        elif refused:
+            refusal = job.get("message", "")
         else:
             problem = job.get("message", "")
         banner = ('<div class="%s">%s</div>'
-                  % ("note" if job.get("ok") else "problem", _e(
-                      job.get("message", ""))))
+                  % ("note" if job.get("ok") else ("warn" if refused else "problem"),
+                     _e(job.get("message", ""))))
 
     if not archives:
         return (banner + '<fieldset><legend>Restore</legend><div class=help>No backups '
@@ -1592,6 +1605,11 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
     usable = [k for k in keys if k in mapcat.BY_KEY
               and (not info or mapcat.BY_KEY[k]["map_id"] in inside)]
     first_name = mapcat.BY_KEY[usable[0]]["name"] if usable else "the map's name"
+    # An archive from another cluster has every map greyed out, and the button next to
+    # them stayed live with a placeholder that had degraded to the literal words "the
+    # map's name". Pressing it answered "type the map's name to confirm" - advice with
+    # nothing to do about it. There is no map here to restore, so say that instead.
+    nothing_here = bool(info) and not usable
     picks = "".join(
         '<option value="%s"%s>%s%s</option>'
         % (_e(k), "" if (not info or mapcat.BY_KEY[k]["map_id"] in inside) else " disabled",
@@ -1605,7 +1623,15 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
     # something the screen was not showing, over a live world, with nothing to read.
     taken = (info or {}).get("created") or "unknown date"
     naming = ""
-    if chosen:
+    if nothing_here:
+        naming = ('<div class=warn>%s holds no world for any map this cluster runs. '
+                  'It has %s; you run %s. There is nothing here to restore - pick a '
+                  'different archive.</div>'
+                  % (_e(chosen or "That archive"),
+                     _e(", ".join((info or {}).get("maps") or []) or "nothing"),
+                     _e(", ".join(mapcat.BY_KEY[k]["name"] for k in keys
+                                  if k in mapcat.BY_KEY) or "no maps")))
+    elif chosen:
         naming = ('<div class=warn><b>This replaces the chosen map’s entire world '
                   'with the one in %s</b> (taken %s). Everything built on that map '
                   'since then is gone from the world - and there is no undo button '
@@ -1638,7 +1664,8 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
             '</div></fieldset></form>'
             '%s%s%s%s'
             % (_e(chosen or ""), opts, detail, _e(chosen or ""), naming, picks,
-               _e(first_name), " disabled" if (not info or running) else "",
+               _e(first_name),
+               " disabled" if (not info or running or nothing_here) else "",
                RESTORE_PICK_JS, RESTORE_JS, points_block, _superseded_block(store)))
 
 
@@ -1753,8 +1780,12 @@ def _superseded_block(store):
     return ('<fieldset><legend>Replaced worlds still on disk</legend>'
             '<table><tr><th>Folder</th><th class=num>Size</th></tr>%s</table>'
             '<div class=help>Kept by earlier restores so nothing you replaced is ever '
-            'gone. Delete them by hand once you are happy with the restore - Obelisk '
-            'will not remove a world for you.</div></fieldset>'
+            'gone. <b>If the restore was not what you wanted, this folder is the way '
+            'back:</b> stop that map, rename the folder to the map id with the '
+            '<code>.superseded-…</code> part removed, and start it again. There is no '
+            'undo button here, so that move is the undo. Once you are happy with the '
+            'restore, delete them by hand - Obelisk will not remove a world for '
+            'you.</div></fieldset>'
             % "".join('<tr><td><code>%s</code></td><td class=num>%s</td></tr>'
                       % (_e(r["name"]), _e(r["human"])) for r in rows))
 

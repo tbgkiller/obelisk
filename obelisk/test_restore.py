@@ -591,5 +591,27 @@ check("as a string, not a tuple", isinstance(msg_ns, str), type(msg_ns).__name__
 check("that names the world kept on disk", "still on disk" in msg_ns, msg_ns)
 
 
+
+# ---- the success line speaks the operator's language
+#
+# It said "Restored TheIsland_WP", which is the folder on disk. Every other sentence in
+# this flow - the dropdown, the confirmation, the refusals, the announcements - says
+# The Island, which is what somebody picked.
+st_fn, ark_fn = fresh()
+worlds(ark_fn, "before")
+_okfn, _mfn, arc_fn = backup.create(st_fn)
+ok_fn, msg_fn, det_fn = restore.restore_map(
+    st_fn, arc_fn, "island", confirm=named("island"),
+    stop=lambda k: (True, ""), start=lambda k: (True, ""),
+    verify=lambda k: (True, []))
+check("the restore for the naming check succeeds", ok_fn, msg_fn)
+check("the success line names the map the way the rest of the flow does",
+      "Restored The Island from" in msg_fn, msg_fn)
+check("not the folder name nobody picked from a dropdown",
+      not msg_fn.startswith("Restored TheIsland_WP"), msg_fn)
+check("while the folder it kept stays a real path somebody can go and find",
+      "TheIsland_WP.superseded-" in msg_fn, msg_fn)
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall restore tests passed")
 sys.exit(1 if fails else 0)

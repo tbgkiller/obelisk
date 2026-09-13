@@ -919,11 +919,12 @@ def build_app(store, docker=None):
                 out.append((_MAPS[key]["name"], found))
         return out
 
-    def _restore_body(message="", problem=""):
+    def _restore_body(message="", problem="", refusal=""):
         return ui.render_restore(store, backupctl.listing(store),
                                  chosen=_looked["archive"], info=_looked["info"],
                                  notes=_looked["notes"], message=message, problem=problem,
-                                 job=rjob, savepoints_by_map=_points_by_map())
+                                 refusal=refusal, job=rjob,
+                                 savepoints_by_map=_points_by_map())
 
     async def restore_page(request):
         if not authed(request):
@@ -974,7 +975,7 @@ def build_app(store, docker=None):
                          "there is nothing proven to restore from. Nothing has been "
                          "changed.", level="warning", map=map_key)
             return chrome(_restore_body(
-                problem="Look inside an archive first - nothing is restored from an "
+                refusal="Look inside an archive first - nothing is restored from an "
                         "archive that has not been opened and checked."),
                 "Restore", "/admin/restore")
         if posted != looked:
@@ -983,7 +984,7 @@ def build_app(store, docker=None):
                          "archive that was looked inside. Nothing has been changed."
                          % (posted, looked), level="warning", map=map_key)
             return chrome(_restore_body(
-                problem="The archive shown is not the one that was looked inside: you "
+                refusal="The archive shown is not the one that was looked inside: you "
                         "asked for %s, and %s is what was opened and checked. Look "
                         "inside %s again before restoring from it."
                         % (posted, looked, posted)),
@@ -1002,7 +1003,7 @@ def build_app(store, docker=None):
                          "Nothing has been changed." % (want or "that map"),
                          level="warning", map=map_key, archive=posted)
             return chrome(_restore_body(
-                problem="Type %s to confirm. This replaces that map's whole world with "
+                refusal="Type %s to confirm. This replaces that map's whole world with "
                         "the one in the archive, and there is no undo - so the name is "
                         "typed rather than clicked." % (want or "the map's name")),
                 "Restore", "/admin/restore")

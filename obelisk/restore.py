@@ -494,7 +494,7 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
         step("all checks passed")
 
     return True, ("Restored %s from %s. The world it replaced is kept as %s until you "
-                  "remove it." % (map_id, os.path.basename(path),
+                  "remove it." % (name, os.path.basename(path),
                                   os.path.basename(superseded or "-"))), detail
 
 
