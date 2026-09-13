@@ -505,11 +505,7 @@ def build_app(store, docker=None):
 
         def verify_all():
             """The six gates, per map, after waiting for each to actually be serving."""
-            results = {}
-            for key in clusterctl._map_keys(store):
-                ok_h, _why = clusterctl.wait_healthy(store, key)
-                results[key] = bool(ok_h) and clusterctl.verify_instance(store, key)[0]
-            return all(results.values()), results
+            return verify_every_map(store)
 
         def _start_some(keys):
             """Start just these maps, and say which actually came up.
@@ -1403,6 +1399,36 @@ async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
             log.info("world sweep skipped: %s", e)
 
 
+def verify_every_map(store):
+    """The six gates on every map, whatever the map before it did. (ok, per_map, why).
+
+    It used to read `bool(ok_h) and verify_instance(...)`, which is a short circuit:
+    a map that did not report healthy was never asked whether its world was intact,
+    whether its mods loaded, or whether RCON answered. The one map most likely to be
+    damaged after a build swap was the one map that got no integrity check at all, and
+    the batch reported it as a bare FAILED with nothing to act on.
+
+    So every map is asked every question, and the reasons are kept. "island FAILED" and
+    "island FAILED: the world on disk does not verify" are the difference between
+    knowing something is wrong and knowing what to do about it - and with ten maps, the
+    second and third reasons matter as much as the first, because they are what says
+    whether this is one broken map or a broken swap.
+
+    A health timeout is a reason like any other, not a reason to stop asking.
+    """
+    results, why = {}, {}
+    for key in clusterctl._map_keys(store):
+        ok_h, why_h = clusterctl.wait_healthy(store, key)
+        reasons = [] if ok_h else ["did not report healthy: %s" % why_h]
+        try:
+            ok_v, reasons_v = clusterctl.verify_instance(store, key)
+        except Exception as e:                    # noqa: BLE001 - a failure is a result
+            ok_v, reasons_v = False, ["the check itself failed: %s" % e]
+        results[key] = bool(ok_h) and bool(ok_v)
+        why[key] = reasons + list(reasons_v or [])
+    return all(results.values()), results, why
+
+
 async def loop_watch(store, interval=120, status=None, sleep_first=True):
     """A map that keeps restarting, said once, where somebody will see it.
 
@@ -1632,11 +1658,7 @@ def _scheduled_apply(store, force=False):
         return clusterctl.stop(store)
 
     def verify_all():
-        results = {}
-        for key in clusterctl._map_keys(store):
-            ok_h, _why = clusterctl.wait_healthy(store, key)
-            results[key] = bool(ok_h) and clusterctl.verify_instance(store, key)[0]
-        return all(results.values()), results
+        return verify_every_map(store)
 
     def start_some(keys):
         up = []

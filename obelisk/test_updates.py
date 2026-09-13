@@ -1208,6 +1208,56 @@ check("reported as a failure, not a success", "ark.update_failed" in events, eve
 check("and the operator is told the previous build is still on disk",
       any("ServerFiles.staging" in (i.get("text") or "") for i in []) or True)
 
+# ...and the reasons travel with it. "island FAILED" and "island FAILED: the world on
+# disk does not verify" are the difference between knowing something is wrong and
+# knowing what to do about it. A three-part verdict carries them; the two-part one that
+# everything else still returns is accepted unchanged.
+drain()
+s = FakeStore()
+updates.remember(s, primed=ready)
+c = Cluster(gates=False)
+_, rename = moved_nothing()
+
+
+def verify_with_reasons():
+    return (False, {"island": False, "center": True},
+            {"island": ["the world on disk does not verify: it is 0 bytes",
+                        "the log says a mod did not load"],
+             "center": []})
+
+
+ok, msg, detail = updates.apply_update(
+    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=verify_with_reasons, players=lambda: (0, {}, []), rename=rename,
+    exists=tree_exists(), now=lambda: 1000)
+_fail = [i for i in drain() if i["event"] == "ark.update_failed"]
+check("a three-part verdict still fails the apply", not ok, msg)
+check("and every reason the gate found reaches the operator",
+      _fail and "0 bytes" in (_fail[0].get("detail") or "")
+      and "mod did not load" in (_fail[0].get("detail") or ""),
+      _fail[0].get("detail") if _fail else None)
+check("the map that passed is still reported as passed",
+      _fail and "center" in (_fail[0].get("detail") or "")
+      and "passed" in (_fail[0].get("detail") or ""),
+      _fail[0].get("detail") if _fail else None)
+
+# a two-part verdict is not a crash and does not invent reasons it was not given.
+drain()
+s = FakeStore()
+updates.remember(s, primed=ready)
+c = Cluster(gates=False)
+_, rename = moved_nothing()
+ok, msg, detail = updates.apply_update(
+    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    exists=tree_exists(), now=lambda: 1000)
+_fail2 = [i for i in drain() if i["event"] == "ark.update_failed"]
+check("a two-part verdict is still accepted", not ok and _fail2, msg)
+check("and says so rather than inventing a reason",
+      _fail2 and "no reason given" in (_fail2[0].get("detail") or ""),
+      _fail2[0].get("detail") if _fail2 else None)
+
+
 # ---- prime never touches the cluster
 drain()
 s = FakeStore()

@@ -959,6 +959,84 @@ check("the restart-loop watch is started with the other background watches",
       "loop_watch(store)" in _ba_src, "loop_watch" in _ba_src)
 
 
+
+# ---- the post-swap gates: every map gets asked every question
+#
+# It used to read `bool(ok_h) and verify_instance(...)`, so a map that did not report
+# healthy was never asked whether its world was intact. The one map most likely to be
+# damaged by a build swap was the one map that got no integrity check at all - and the
+# batch reported it as a bare FAILED with nothing in it to act on.
+
+_va_store = Store(os.path.join(tempfile.mkdtemp(), "settings.json")).load()
+_va_store.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
+_va_store.patch({"maps": "island,center,ragnarok", "admin_password": "pw",
+                 "cluster_id": "vatest", "host_ram_gb": 256})
+
+_health = {"island": (False, "the container exited while starting"),
+           "center": (True, "healthy"), "ragnarok": (True, "healthy")}
+_gates = {"island": (False, ["the world on disk does not verify: it is 0 bytes"]),
+          "center": (False, ["RCON is not answering", "the log says a mod did not load"]),
+          "ragnarok": (True, [])}
+_asked = []
+
+_real_wh, _real_vi = _cl2.wait_healthy, _cl2.verify_instance
+_cl2.wait_healthy = lambda store, key, **k: _health[key]
+_cl2.verify_instance = lambda store, key, **k: (_asked.append(key) or _gates[key])
+try:
+    _ok_all, _per, _why = _appmod.verify_every_map(_va_store)
+finally:
+    _cl2.wait_healthy, _cl2.verify_instance = _real_wh, _real_vi
+
+check("an unhealthy map is still asked about its world",
+      "island" in _asked, _asked)
+check("and so is every other map, whatever the ones before it did",
+      sorted(_asked) == ["center", "island", "ragnarok"], _asked)
+check("the batch as a whole fails", _ok_all is False, _ok_all)
+check("every map that failed is named, not just the first",
+      sorted(k for k, v in _per.items() if not v) == ["center", "island"], _per)
+check("the map that passed is not dragged down with them",
+      _per.get("ragnarok") is True, _per)
+check("the unhealthy map's integrity reason survives",
+      any("0 bytes" in r for r in _why.get("island") or []), _why.get("island"))
+check("and its health timeout is kept as a reason too, not swallowed",
+      any("exited while starting" in r for r in _why.get("island") or []),
+      _why.get("island"))
+check("a map with several problems reports all of them, not the first",
+      len(_why.get("center") or []) == 2, _why.get("center"))
+
+# a check that raises is a failed check, not a crashed apply. The gate runs after the
+# swap, so an exception here would leave the batch with no verdict at all.
+_real_wh, _real_vi = _cl2.wait_healthy, _cl2.verify_instance
+
+
+def _boom(store, key, **k):
+    if key == "center":
+        raise RuntimeError("docker went away")
+    return _gates[key]
+
+
+_cl2.wait_healthy = lambda store, key, **k: (True, "healthy")
+_cl2.verify_instance = _boom
+try:
+    _ok2, _per2, _why2 = _appmod.verify_every_map(_va_store)
+finally:
+    _cl2.wait_healthy, _cl2.verify_instance = _real_wh, _real_vi
+check("a check that raises is a failed map, not a failed apply",
+      _per2.get("center") is False and "ragnarok" in _per2, _per2)
+check("and it says what went wrong",
+      any("docker went away" in r for r in _why2.get("center") or []),
+      _why2.get("center"))
+
+# both apply paths - the button and the schedule - go through the one function, so the
+# fix cannot be half-applied to a cluster.
+for _fn, _label in ((_appmod.build_app, "the Apply button"),
+                    (_appmod._scheduled_apply, "the scheduled apply")):
+    _src = _insp_dead.getsource(_fn)
+    check("%s calls the shared gate rather than its own copy" % _label,
+          "verify_every_map(store)" in _src and "and clusterctl.verify_instance" not in _src,
+          _label)
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

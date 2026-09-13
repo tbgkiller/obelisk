@@ -770,7 +770,15 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
 
     step("checking every map is really serving")
     gates = verify() if verify else (True, {})
-    ok_gates, per_map = gates if isinstance(gates, tuple) else (True, {})
+    # Two or three: verify_every_map hands back the reasons as well, and everything
+    # older hands back the pass/fail map on its own. Tolerated rather than required so
+    # a caller that only knows whether a map passed still works.
+    if not isinstance(gates, tuple):
+        ok_gates, per_map, why_map = True, {}, {}
+    elif len(gates) >= 3:
+        ok_gates, per_map, why_map = gates[0], gates[1], gates[2] or {}
+    else:
+        ok_gates, per_map, why_map = gates[0], gates[1], {}
 
     if swap_files:
         remember(store, primed=None, applied={"build": build, "when": int(now()),
@@ -792,8 +800,11 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                         (" The previous build is still on disk as ServerFiles.staging "
                          "if it has to go back." if swap_files else "")),
                      level="error", build=build if swap_files else "",
-                     detail=_lines("%-14s %s" % (k, "passed" if v else "FAILED")
-                                   for k, v in sorted((per_map or {}).items())))
+                     detail=_lines(
+                         "%-14s %s" % (k, "passed" if v else
+                                       "FAILED: %s" % ("; ".join(why_map.get(k) or [])
+                                                       or "no reason given"))
+                         for k, v in sorted((per_map or {}).items())))
         return False, "verification failed on: %s" % (bad or "some maps"), {
             "swapped": swap_files, "maps": per_map, "undone": bool(waiting)}
 
