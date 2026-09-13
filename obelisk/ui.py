@@ -1004,10 +1004,9 @@ def running_rows(jobs):
     return out
 
 
-_EVENT_ICONS = {"start": "▶", "done": "✅", "failed": "❌", "unsafe": "❌",
-                "applied": "✅", "primed": "✅", "up": "✅", "degraded": "⚠",
-                "warning": "⚠", "phase": "…", "available": "⬆", "updated": "⬆",
-                "stop": "■", "note": "•", "damaged": "❌", "unreachable": "⚠"}
+# The feed's icons are the channel's icons. Kept as a name here because the renderer
+# reads it, but there is one dict and it lives with the announcements.
+from .announce import ICONS as _EVENT_ICONS
 
 
 # Polls for events newer than the newest one on the page and prepends them, so an

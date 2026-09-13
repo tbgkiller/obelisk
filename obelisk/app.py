@@ -621,13 +621,6 @@ def build_app(store, docker=None):
             log.warning("could not render the dashboard: %s", e)
             return ""
 
-    async def update_status(request):
-        if not authed(request):
-            return web.json_response({"state": "denied"}, status=403)
-        out = dict(ujob)
-        out["elapsed"] = int(time.time() - ujob["started"]) if ujob["started"] else 0
-        return web.json_response(out)
-
     async def cluster_maps(request):
         """Update the map selection (or apply a preset) without launching anything."""
         if not authed(request):
@@ -1206,7 +1199,6 @@ def build_app(store, docker=None):
     app.router.add_get("/admin/activity/feed", activity_feed)
     app.router.add_post("/admin/update/prime", update_prime)
     app.router.add_post("/admin/update/apply", update_apply)
-    app.router.add_get("/admin/update/status", update_status)
     app.router.add_get("/healthz", healthz)
     return app
 

@@ -211,9 +211,40 @@ def pending():
     return _pending.qsize()
 
 
+# One map, read by both surfaces. There were two, keyed the same way and already
+# drifted: ark.update_unsafe and cluster.stop had a meaningful glyph in the UI feed and
+# a generic bullet in Discord - under a UI caption promising the two could not disagree.
+#
+# Keys are the last dotted segment of the event name, which is what both lookups take:
+# "ark.world_damaged" is "world_damaged", not "damaged". Getting that wrong is how two
+# entries added for the world gate rendered as bullets anyway.
 ICONS = {
-    "start": "▶", "done": "✅", "failed": "❌",
-    "warning": "⚠", "phase": "…",
+    # Outcomes
+    "done": "✅", "applied": "✅", "update_applied": "✅",
+    "primed": "✅", "update_primed": "✅", "saved": "✅",
+    "closed": "✅", "world_closed": "✅", "readable_again": "✅",
+    "up": "✅",
+    # Failures
+    "failed": "❌", "update_failed": "❌", "prime_failed": "❌",
+    "batch_failed": "❌", "closing_failed": "❌",
+    "unsafe": "❌", "update_unsafe": "❌", "world_damaged": "❌",
+    # world.damaged is the periodic sweep's; ark.world_damaged is the apply gate's.
+    "damaged": "❌",
+    # Warnings
+    "warning": "⚠", "degraded": "⚠", "closed_partly": "⚠",
+    "world_unreachable": "⚠", "deferred": "⚠",
+    # In progress
+    "start": "▶", "prime_start": "▶", "apply_start": "▶",
+    "point_start": "▶",
+    "phase": "…", "closing": "…",
+    # Something is available
+    "available": "⬆", "update_available": "⬆",
+    "mod_update_available": "⬆", "updated": "⬆",
+    # Quiet
+    "stop": "■", "note": "•", "apply_note": "•",
+    "staged": "•", "discarded": "•", "window_open": "•",
+    "key_set": "•", "key_cleared": "•",
+    "reconfigured": "•",
 }
 
 

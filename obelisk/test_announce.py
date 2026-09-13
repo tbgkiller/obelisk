@@ -208,6 +208,43 @@ with open(_path, "w", encoding="utf-8") as fh:
     fh.write("{ this is not json")
 check("and neither is a corrupt one", announce.load_from(_path) == 0)
 
+# ---- one icon map, keyed the way the lookup actually reads it
+#
+# There were two maps, keyed identically and already drifted, under a UI caption
+# promising the two surfaces could not disagree. Worse, several keys in both were inert:
+# the lookup takes event.rsplit(".", 1)[-1], so "ark.update_unsafe" is "update_unsafe"
+# and a key of "unsafe" never matched. Two entries added for the world gate had exactly
+# the same bug.
+import glob as _glob, io as _io, os as _os, re as _re            # noqa: E402
+from . import ui as _ui_icons                                    # noqa: E402
+
+check("the UI feed and Discord read one dict, not two copies",
+      _ui_icons._EVENT_ICONS is announce.ICONS)
+
+_names = set()
+for _f in _glob.glob(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "*.py")):
+    if _os.path.basename(_f).startswith("test_"):
+        continue
+    _src = _io.open(_f, encoding="utf-8").read()
+    _names |= set(_re.findall(r'say\(\s*"([a-z_]+\.[a-z_.]+)"', _src))
+    _names |= set(_re.findall(
+        r'"((?:ark|cluster|change|relay|backup|restore|world)\.[a-z_.]+)"', _src))
+_bulleted = sorted(n for n in _names
+                   if not announce.ICONS.get(n.rsplit(".", 1)[-1]))
+check("every event this product raises resolves an icon of its own",
+      not _bulleted, _bulleted)
+check("and there are enough of them to be worth saying that about",
+      len(_names) > 30, len(_names))
+
+# The two the world gate raises, named explicitly - they were the ones that regressed.
+for _e in ("ark.world_damaged", "ark.world_unreachable"):
+    check("%s has its own icon rather than the default bullet" % _e,
+          announce.ICONS.get(_e.rsplit(".", 1)[-1]) not in (None, "•"),
+          announce.ICONS.get(_e.rsplit(".", 1)[-1]))
+check("a refusal and a storage problem do not look the same",
+      announce.ICONS["world_damaged"] != announce.ICONS["world_unreachable"])
+
+
 # ---- a slot: one message in the channel that keeps changing
 #
 # A stop takes five minutes and used to be six lines scrolling past. A slot says "this

@@ -9,7 +9,7 @@ import os, sys, tempfile
 
 from . import install as install_mod
 from .install import (CONTAINER_PORT, candidate_mounts, container_root, derive_ports,
-                      derive_appdata, derive_status_port, host_path_of,
+                      derive_appdata, host_path_of,
                       mount_points, apply_timezone)
 from .firstrun import bootstrap
 
@@ -65,13 +65,18 @@ path, how = derive_appdata({}, "30 29 0:31 / / rw - overlay overlay rw\n")
 check("nothing to go on is reported, not guessed", path is None and how == "default")
 
 # ---- the port: one field, not two
-port, how = derive_status_port({})
-check("port defaults to the exposed port", port == CONTAINER_PORT, port)
-check("says where the port came from", how == "published port", how)
-check("an explicit STATUS_PORT still wins", derive_status_port({"STATUS_PORT": "9090"})[0] == 9090)
-check("0 still means the UI is off", derive_status_port({"STATUS_PORT": "0"})[0] == 0)
+#
+# These used to pin derive_status_port, which nothing in the product called - so the
+# rule that actually runs could change and the suite would not notice. Same assertions,
+# asked of derive_ports, which is what firstrun and app both use.
+listen, published, how = derive_ports({})
+check("port defaults to the exposed port", listen == CONTAINER_PORT, listen)
+check("says where the port came from", how, how)
+check("an explicit STATUS_PORT still wins",
+      derive_ports({"STATUS_PORT": "9090"})[0] == 9090)
+check("0 still means the UI is off", derive_ports({"STATUS_PORT": "0"})[0] == 0)
 check("a junk port falls back rather than crashing",
-      derive_status_port({"STATUS_PORT": "not-a-port"})[0] == CONTAINER_PORT)
+      derive_ports({"STATUS_PORT": "not-a-port"})[0] == CONTAINER_PORT)
 
 # ---- the whole point: one path + one port is a complete install
 d = tempfile.mkdtemp()

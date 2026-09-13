@@ -216,23 +216,6 @@ def derive_appdata(environ=None, mountinfo_text=None, data_dir=None):
     return None, "default"
 
 
-def derive_status_port(environ=None):
-    """(port, how) - the port to listen on inside the container.
-
-    An explicit STATUS_PORT still wins so an upgraded stack keeps its behaviour, and 0
-    still means "no web UI". Otherwise this is the exposed port: the operator picks the
-    host side in the template, Docker maps it here, and there is nothing to keep in sync.
-    """
-    environ = os.environ if environ is None else environ
-    raw = (environ.get("STATUS_PORT") or "").strip()
-    if raw:
-        try:
-            return int(raw), "environment"
-        except ValueError:
-            pass
-    return CONTAINER_PORT, "published port"
-
-
 def apply_timezone(tz):
     """Make the process observe `tz`, so wipe times and log stamps are local time.
 
