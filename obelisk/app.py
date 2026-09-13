@@ -317,9 +317,15 @@ def build_app(store, docker=None):
         except Exception as e:                       # noqa: BLE001 - never a blank page
             log.info("could not name the running maps: %s", e)
             return st
-        by_instance = {r["instance"]: r["name"] for r in rows}
+        # The key travels with the name. Both come off the same plan row, so a page
+        # can link a row to that map without turning a display name back into a key -
+        # which is the slip this function was written to stop, and doing it per row
+        # would be doing it everywhere.
+        by_instance = {r["instance"]: (r["name"], r["map"]) for r in rows}
         for svc in st.get("services") or []:
-            svc["label"] = by_instance.get(svc.get("service"), "")
+            name, key = by_instance.get(svc.get("service"), ("", ""))
+            svc["label"] = name
+            svc["map"] = key
         return st
 
     def _roster_now():
@@ -1473,6 +1479,47 @@ def build_app(store, docker=None):
                                 % ("Revoke" if revoking else "Allow", netid,
                                    len(results), kept)))
 
+    def _points_for(key):
+        """The game's own dated saves for one map. Read from disk each time - ARK
+        prunes them on its own schedule and a cached list offers rollbacks that are
+        already gone."""
+        try:
+            return pointsctl.list_points(store, key)
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.info("could not list restore points for %s: %s", key, e)
+            return []
+
+    async def map_page(request):
+        """One map: its ports, its RAM and why, its address, and its saves.
+
+        Addressed by the map's own key the whole way down - the plan row, the world
+        folder, the settings overrides and the restore guards are all keyed that way
+        already, so this page invents no identity and reverses none.
+        """
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        key = str(request.match_info.get("key") or "")
+        if key not in mapsmod.BY_KEY:
+            raise web.HTTPFound("/admin/cluster#run")
+        name = mapsmod.BY_KEY[key]["name"]
+        try:
+            rows = build_plan(store).get("maps") or []
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.warning("could not build the plan for %s: %s", key, e)
+            rows = []
+        row = None
+        for r in rows:
+            if r.get("map") == key:
+                row = r
+                break
+        host = install.host_address()
+        address = "%s:%d" % (host, row["game_port"]) if row else ""
+        return chrome(ui.render_map(name, key, row=row, address=address,
+                                    host_known=host != "<this-host>",
+                                    points=_points_for(key) if row else [],
+                                    job=rjob),
+                      name, "/admin/cluster")
+
     async def cluster_launch(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
@@ -1579,10 +1626,8 @@ def build_app(store, docker=None):
         if not plan.get("maps"):
             return ""
         host = install.host_address()
-        known = host != "<this-host>"
-        entries = [(r["name"], "%s:%d" % (host, r["game_port"])) for r in plan["maps"]]
-        web = "http://%s:%s/" % (host, store.get("status_port"))
-        return ui.render_connect(entries, web_address=web, host_known=known)
+        return ui.render_web_address("http://%s:%s/" % (host,
+                                                        store.get("status_port")))
 
     # ---- backups
     def _flush_for(store_):
@@ -1787,26 +1832,12 @@ def build_app(store, docker=None):
                 return False, str(e).strip() or e.__class__.__name__
         return False, "it is not running"
 
-    def _points_by_map():
-        """Read from disk each time - the game prunes these on its own schedule."""
-        out = []
-        for key in clusterctl._map_keys(store):
-            try:
-                found = pointsctl.list_points(store, key)
-            except Exception as e:                   # noqa: BLE001 - never a blank page
-                log.info("could not list restore points for %s: %s", key, e)
-                continue
-            if found:
-                from .maps import BY_KEY as _MAPS
-                out.append((_MAPS[key]["name"], found))
-        return out
-
     def _restore_body(message="", problem="", refusal=""):
         return ui.render_restore(store, backupctl.listing(store),
                                  chosen=_looked["archive"], info=_looked["info"],
                                  notes=_looked["notes"], message=message, problem=problem,
                                  refusal=refusal, job=rjob,
-                                 savepoints_by_map=_points_by_map())
+                                 savepoints_by_map=None)
 
     async def restore_page(request):
         if not authed(request):
@@ -2138,6 +2169,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/player/unban", player_unban)
     app.router.add_post("/admin/player/cap", player_cap)
     app.router.add_get("/admin/cluster/status", cluster_status)
+    app.router.add_get("/admin/cluster/map/{key}", map_page)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)
     app.router.add_get("/admin/backup/status", backup_status)

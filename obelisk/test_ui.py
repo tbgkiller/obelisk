@@ -6,7 +6,7 @@ import os, re, sys, tempfile
 from .plan import build_plan
 from .schema import SETTINGS, INSTALL_KEYS, BY_KEY
 from .settings import Store
-from .ui import page, render_settings, render_cluster, render_setup
+from .ui import page, render_settings, render_cluster, render_setup, render_map
 
 fails = []
 def _from(body, anchor):
@@ -123,8 +123,39 @@ check("chosen maps are ticked", 'value="island" checked' in h.replace('" ', '" '
       or 'value="island"  checked' in h or 'value="island" checked>' in h, "island not checked")
 check("unchosen maps are not ticked", 'value="genesis" checked' not in h)
 check("presets are offered", all(p in h for p in ("Full cluster", "Starter", "The classics")))
-check("the plan table shows ports", "7777" in h and "27020" in h)
-check("the plan explains a heavy map", "runs heavy" in h, h[h.find("Astraeos"):][:300])
+# Ports, RAM and the reason for it are one map's business, and ten copies of them
+# made a full-width table on the page that answers cluster-wide questions. The overview
+# keeps the way in; the numbers are on the map's own page.
+check("the plan no longer tabulates every map's ports",
+      "<th class=num>RCON</th>" not in h, h[h.find("Plan"):][:300])
+check("but every planned map is reachable from it",
+      h.count('href="/admin/cluster/map/') == len(plan["maps"])
+      and '/admin/cluster/map/island' in h,
+      h[h.find("<legend>Maps</legend>"):][:400])
+check("and a map that is not in the plan is not offered a page",
+      '/admin/cluster/map/genesis' not in h, h[h.find("Plan"):][:300])
+_mp = render_map("Astraeos", "astraeos",
+                 row={"map": "astraeos", "name": "Astraeos", "instance": "astraeos",
+                      "game_port": 7785, "rcon_port": 27024, "memory": "18g",
+                      "memory_why": "base x1.5 - this map runs heavy",
+                      "role": "secondary"},
+                 address="papaship:7785")
+check("the map page shows that map's ports", "7785" in _mp and "27024" in _mp, _mp[:600])
+check("its RAM and why it got that much",
+      "18g" in _mp and "runs heavy" in _mp, _mp[:800])
+check("its role", "secondary" in _mp, _mp[:800])
+check("the address people type", "papaship:7785" in _mp, _mp)
+check("and a way back to the cluster", 'href="/admin/cluster#run"' in _mp, _mp[:200])
+check("a map that is not in the plan says so rather than rendering a blank",
+      "not in this cluster" in render_map("Valguero", "valguero"),
+      render_map("Valguero", "valguero"))
+check("and offers the way back from there too",
+      'href="/admin/cluster#run"' in render_map("Valguero", "valguero"),
+      render_map("Valguero", "valguero"))
+check("the overrides are a link, not a second set of boxes",
+      'href="/admin#g-per-map"' in _mp and 'name="map:' not in _mp, _mp)
+check("it does not restate whether the map is up",
+      "players online" not in _mp and "Online" not in _mp, _mp)
 check("the summary totals RAM", "of RAM at most" in h)
 check("launch is enabled for a good plan", "Launch cluster</button>" in h and
       'disabled>Launch' not in h)

@@ -1299,9 +1299,16 @@ def render_status(status, players=None):
             # The dash carries its own explanation, because a dash beside a row Docker
             # still calls "serving" is otherwise indistinguishable from a quiet map.
             cell = ('<td class=num title="%s">&mdash;</td>' % _e(DASH_MEANS))
+        # The name is the way in. It is keyed on the map's own key, which the
+        # status row carries because the same lookup that put the name there had it -
+        # reversing a display name back into a key is the id-for-name slip this
+        # function exists to avoid, and it would be doing it on every row.
+        key = s.get("map") or ""
+        named = ('<a href="/admin/cluster/map/%s">%s</a>' % (_e(key), _e(label))
+                 if key else _e(label))
         rows += ("<tr><td>%s</td><td class=%s>%s</td>%s"
                  "<td class=help>%s</td></tr>"
-                 % (_e(label), css.get(level, ""), _e(says), cell,
+                 % (named, css.get(level, ""), _e(says), cell,
                     _e(s.get("service") or s.get("name") or "")))
         if s.get("log_tail"):
             rows += ('<tr><td colspan=4><details><summary class=help>why it is '
@@ -2096,6 +2103,57 @@ def render_jump():
             % " ".join('<a href="%s">%s</a>' % (h, _e(t)) for h, t in JUMPS))
 
 
+def render_map(name, key, row=None, address="", host_known=True, points=None,
+               job=None, planned=True):
+    """One map, in detail, for the things that are only true of that map.
+
+    The overview answers "is it up, who is on, is anything broken" for a cluster. Ports,
+    RAM, why that RAM, the role, the address people type and the saves the game took are
+    none of those things: they are a paragraph per map, and ten of them made two
+    full-width tables that pushed the answers off the top of the page.
+
+    Detail only, on purpose. Whether this map is up and how many are on it is the
+    overview's row to state, and stating it here too would be a second copy that can
+    disagree with the first - which is the duplication this whole consolidation is for.
+    """
+    if not row:
+        return ('<div class=jump><a href="/admin/cluster#run">Back to the '
+                'cluster</a></div>'
+                '<div class=warn>%s is not in this cluster\u2019s plan. Tick it under '
+                '<b>Maps</b> to add it.</div>' % _e(name))
+    facts = (("Game port", str(row.get("game_port") or "")),
+             ("RCON port", str(row.get("rcon_port") or "")),
+             ("RAM", "%s \u2014 %s" % (row.get("memory") or "",
+                                       row.get("memory_why") or "")),
+             ("Role", str(row.get("role") or "")),
+             ("Container", str(row.get("instance") or "")))
+    table = "".join("<tr><td>%s</td><td>%s</td></tr>" % (_e(k), _e(v))
+                    for k, v in facts)
+    here = ('<fieldset id=detail><legend>%s</legend><table>%s</table>'
+            '<div class=help style="margin-top:10px">These are what this map is given '
+            'when the cluster is applied. Changing them is the <b>Maps</b> and '
+            '<b>Settings</b> pages\u2019 job.</div></fieldset>'
+            % (_e(name), table))
+    connect = render_connect([(name, address)], host_known=host_known) if address else ""
+    saves = render_savepoints([(name, list(points or []))], job=job)
+    if not saves:
+        saves = ('<fieldset><legend>Quick restore points</legend>'
+                 '<div class=note>No dated saves for %s yet. ARK writes one every '
+                 '15 minutes once the map has been running.</div></fieldset>'
+                 % _e(name))
+    # A link, not a second set of boxes. The overrides are written by one form on the
+    # Settings page, and a second way to write the same values is a second way for them
+    # to disagree.
+    overrides = ('<fieldset><legend>Settings for this map</legend>'
+                 '<div class=help>Per-map overrides are set on the Settings page, under '
+                 '<b>Per-map overrides</b> - everything else this map uses is the '
+                 'cluster value.</div>'
+                 '<a class=help href="/admin#g-per-map">Open per-map overrides</a>'
+                 '</fieldset>')
+    return ('<div class=jump><a href="/admin/cluster#run">Back to the cluster</a></div>'
+            + here + connect + saves + overrides)
+
+
 def render_cluster(store, plan, status=None, roster=None,
                    pending=None, notice=None, bans=None,
                    bans_pending=None, bans_notice=None,
@@ -2112,12 +2170,15 @@ def render_cluster(store, plan, status=None, roster=None,
         % (_e(m["key"]), " checked" if m["key"] in selected else "", _e(m["name"]))
         for m in mapcat.MAPS)
 
-    rows = "".join(
-        "<tr><td>%s</td><td class=num>%s</td><td class=num>%s</td>"
-        "<td class=num>%s</td><td>%s</td><td>%s</td></tr>"
-        % (_e(r["name"]), r["game_port"], r["rcon_port"], _e(r["memory"]),
-           _e(r["memory_why"]), _e(r["role"]))
-        for r in plan["maps"])
+    # Ports, RAM and role left this page for each map's own. What stays is the way
+    # in, which is also the only entry point before anything has been launched: there
+    # is no running-maps row to click on a cluster that has never started.
+    chosen_links = ""
+    if plan["maps"]:
+        chosen_links = ('<div class=jump style="margin-top:10px">%s</div>'
+                        % " ".join('<a href="/admin/cluster/map/%s">%s</a>'
+                                   % (_e(r["map"]), _e(r["name"]))
+                                   for r in plan["maps"]))
 
     msgs = "".join('<div class=problem>%s</div>' % _e(p) for p in plan["problems"])
     msgs += "".join('<div class=note>%s</div>' % _e(n) for n in plan["notes"])
@@ -2155,13 +2216,11 @@ def render_cluster(store, plan, status=None, roster=None,
             '<div class=help>A preset just ticks boxes - it carries no settings of its '
             'own. Trim it afterwards.</div></fieldset>'
             '<fieldset id=maps><legend>Maps</legend><div class=maps>%s</div>'
-            '<button type=submit class=ghost>Update plan</button></fieldset>'
+            '<button type=submit class=ghost>Update plan</button>%s</fieldset>'
             '<fieldset><legend>Plan</legend>'
-            '<table><tr><th>Map</th><th class=num>Game</th><th class=num>RCON</th>'
-            '<th class=num>RAM</th><th>Why</th><th>Role</th></tr>%s</table>'
             '<div class=help style="margin-top:10px">%s</div>%s'
             '<div style="margin-top:14px">%s</div></fieldset></form>'
-            % (presets, boxes, rows, _e(summary), msgs, launch))
+            % (presets, boxes, chosen_links, _e(summary), msgs, launch))
     launched = bool((status or {}).get("compose_exists"))
     return (moderation + form) if launched else (form + moderation)
 
@@ -2892,6 +2951,22 @@ def render_cloud(store, state, remote=None, message="", problem="", warning=""):
             '<div class=help style="margin-top:8px">Nothing is called connected until a '
             'test upload path actually answers.</div>'
             '</fieldset></form>' % opts)
+
+def render_web_address(web_address):
+    """Where Obelisk itself answers - which is not a fact about any one map.
+
+    The per-map addresses went with the rest of the per-map detail. This one has nowhere
+    else to be, and it is the line somebody needs when they are trying to reach this
+    page from another machine.
+    """
+    if not web_address:
+        return ""
+    return ('<fieldset id=connect><legend>Connect</legend>'
+            '<div class=help>Obelisk itself: <code>%s</code></div>'
+            '<div class=help style="margin-top:8px">Each map\u2019s own address is on '
+            'its page - open a map from <b>Running now</b> or <b>Maps</b> above.</div>'
+            '</fieldset>' % _e(web_address))
+
 
 def render_connect(entries, web_address="", host_known=True):
     """Where to actually connect, per map.

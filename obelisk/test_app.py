@@ -176,7 +176,8 @@ async def run():
     r = await client.get("/admin/cluster")
     body = await r.text()
     check("cluster page renders", r.status == 200 and "Plan" in body, r.status)
-    check("it shows the port/RAM plan", "Game" in body and "RCON" in body)
+    check("it offers a way into each map rather than a table of all of them",
+          '/admin/cluster/map/island' in body and "<th>RCON</th>" not in body, body[:400])
     check("it offers a launch button", "/admin/launch" in body)
 
     r = await client.post("/admin/maps", data={"maps": ["island", "ragnarok"]},
@@ -2402,8 +2403,12 @@ check("the count is read, never measured, on a page render",
       _s1src.split("def _players_now")[1].split("    def ")[0],
       "a page render is doing RCON")
 check("naming a map is a lookup against the plan, not a guess",
-      "by_instance" in _s1src.split("def _label_services")[1][:900],
+      "by_instance" in _after(_s1src, "def _label_services").split(
+          chr(10) + "    def ")[0],
       "labels are not from the plan")
+check("and the key comes off the same row as the name, never reversed from it",
+      'r["name"], r["map"]' in _after(_s1src, "def _label_services"),
+      _window(_s1src, "def _label_services", 900))
 check("and a plan that cannot be built does not blank the page",
       "except Exception" in _s1src.split("def _label_services")[1][:900],
       "_label_services can raise")
@@ -2471,10 +2476,17 @@ finally:
     _appmod.clusterctl.status = _real_status_s1
     _bot_s1.LIVE = _real_live
 
+def _runtable(body):
+    """The Running-now table alone. The Maps row renders the same link markup, so a
+    pin that does not say which element it means is covered by the other one."""
+    return _from(body, "<fieldset id=run>").split("</fieldset>")[0]
+
+
 for _name, _body in (("the front page", _front), ("the cluster page", _clusterpg)):
     check("%s names its maps" % _name,
-          "<td>The Island</td>" in _body and "<td>Ragnarok</td>" in _body,
-          _body[_body.find("Running now"):][:400])
+          '<a href="/admin/cluster/map/island">The Island</a>' in _runtable(_body)
+          and '<a href="/admin/cluster/map/ragnarok">Ragnarok</a>' in _runtable(_body),
+          _runtable(_body)[:400])
     check("%s does not head an instance id as a Map" % _name,
           "<td>%s</td>" % _linst["The Island"] not in _body,
           _body[_body.find("Running now"):][:400])
@@ -2490,7 +2502,8 @@ for _name, _body in (("the front page", _front_off), ("the cluster page", _clust
           "&mdash;" in _body and "players online" not in _body,
           _body[_body.find("Running now"):][:300])
     check("%s still names its maps without a relay" % _name,
-          "<td>The Island</td>" in _body, _body[_body.find("Running now"):][:300])
+          '<a href="/admin/cluster/map/island">The Island</a>' in _runtable(_body),
+          _runtable(_body)[:300])
 
 # ---- a remembered number must never be served as a measured one
 #
@@ -4864,6 +4877,154 @@ for _href, _target in (("#run", "<fieldset id=run>"), ("#who", "<fieldset id=who
 check("and the readiness note says where the addresses went",
       "addresses people" in _idle_pg and "foot of this page" in _idle_pg,
       _window(_idle_pg, "not running", 260))
+
+# ---- one map, in detail, addressed by its own key
+#
+# The overview answers cluster questions. Ports, RAM, the address people type and the
+# saves the game took are none of those: they are a paragraph per map, and ten of them
+# were two full-width tables above the answers.
+_t27 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _FAKE_POINTS = [{"map": "island", "name": "TheIsland_09.13.2026_04.00.00",
+                     "local": "13 Sep 04:00", "ago": "6h ago",
+                     "human_size": "412 MB"}]
+
+    async def _map_get(path, points=None):
+        _appmod.clusterctl.status = lambda store: dict(
+            _lstatus, services=[dict(x) for x in _lstatus["services"]])
+        _bot_s1.LIVE = _kick_relay()
+        _real_pts = _appmod.pointsctl.list_points
+        _real_list = _appmod.backupctl.listing
+        if points is not None:
+            _appmod.pointsctl.list_points = lambda store, key: list(points)
+        # The restore page says "no backups on disk yet" and renders nothing else, so
+        # without an archive to list, a pin about what that page does NOT show cannot
+        # fail whatever the page does.
+        _appmod.backupctl.listing = lambda store: [
+            {"name": "obelisk-2026-09-13.tar.zst", "path": "/tmp/x.tar.zst",
+             "bytes": 1234567, "mtime": 1789000000.0, "when": "2026-09-13 04:00"}]
+        try:
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            r = await client.get(path, allow_redirects=False)
+            body = await r.text() if r.status == 200 else ""
+            where = r.headers.get("Location", "")
+            await client.close()
+        finally:
+            _appmod.pointsctl.list_points = _real_pts
+            _appmod.backupctl.listing = _real_list
+        return r.status, where, body
+
+    _mp_st, _, _mp_body = _t27.run_until_complete(
+        _map_get("/admin/cluster/map/island", points=_FAKE_POINTS))
+    _mp_none_st, _, _mp_none_body = _t27.run_until_complete(
+        _map_get("/admin/cluster/map/island", points=[]))
+    _mp_bad_st, _mp_bad_where, _ = _t27.run_until_complete(
+        _map_get("/admin/cluster/map/nosuchmap"))
+    _mp_unplanned_st, _, _mp_unplanned_body = _t27.run_until_complete(
+        _map_get("/admin/cluster/map/valguero"))
+    _mp_rest_st, _, _mp_rest_body = _t27.run_until_complete(
+        _map_get("/admin/restore", points=_FAKE_POINTS))
+finally:
+    _t27.close()
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+check("a map has a page of its own", _mp_st == 200, _mp_st)
+check("headed by the map's name, not its instance",
+      "<legend>The Island</legend>" in _mp_body, _window(_mp_body, "id=detail", 200))
+check("it shows that map's game port",
+      "7777" in _from(_mp_body, "<fieldset id=detail>"),
+      _window(_mp_body, "id=detail", 400))
+check("and its RCON port",
+      "27020" in _from(_mp_body, "<fieldset id=detail>"),
+      _window(_mp_body, "id=detail", 400))
+check("its RAM, with the reason it got that much",
+      _in_order(_from(_mp_body, "<fieldset id=detail>"), "RAM", "base"),
+      _window(_mp_body, "id=detail", 400))
+check("and its role", "Role" in _from(_mp_body, "<fieldset id=detail>"),
+      _window(_mp_body, "id=detail", 400))
+check("the address people type is here",
+      "7777" in _from(_mp_body, "<legend>Connect</legend>"),
+      _window(_mp_body, "<legend>Connect</legend>", 300))
+# Scoped to the panel: _from() runs to the end of the document, and the help line
+# under the table has a <code> of its own.
+_mp_connect = _from(_mp_body, "<legend>Connect</legend>").split("</fieldset>")[0]
+check("for this map alone, not a table of ten",
+      _mp_connect.count("<td><code>") == 1, _mp_connect)
+
+# ---- the saves the game took, on the page about the map they belong to
+check("its restore points are here", "Quick restore points" in _mp_body,
+      _window(_mp_body, "Quick restore points", 300))
+check("offered as the same guarded button the restore page used",
+      'action="/admin/restore/point"' in _mp_body
+      and 'value="island|TheIsland_09.13.2026_04.00.00"' in _mp_body,
+      _window(_mp_body, "restore/point", 400))
+check("carrying the consent sentence, not a tooltip",
+      "data-confirm=" in _mp_body and "Player characters and tribes are NOT" in _mp_body,
+      _window(_mp_body, "data-confirm", 300))
+check("a map with no saves yet says so rather than showing nothing",
+      "No dated saves for The Island yet" in _mp_none_body,
+      _window(_mp_none_body, "Quick restore", 300))
+check("the restore page still offers the archives",
+      _mp_rest_st == 200 and "obelisk-2026-09-13.tar.zst" in _mp_rest_body,
+      _window(_mp_rest_body, "<legend>Restore", 300))
+check("and no longer carries the per-map grid",
+      "Quick restore points" not in _mp_rest_body and "pointform" not in _mp_rest_body,
+      _window(_mp_rest_body, "Quick restore", 200))
+check("nor gathers the points it would need for one",
+      "_points_by_map" not in _s1src, "the restore page still collects save points")
+
+# ---- overrides are a link, and stay one
+check("the overrides are pointed at, not copied here",
+      'href="/admin#g-per-map"' in _mp_body,
+      _window(_mp_body, "g-per-map", 200))
+check("no second way to write them",
+      'name="map:' not in _mp_body, _window(_mp_body, "Settings for this map", 400))
+check("and the route adds no write path of its own",
+      "add_post(\"/admin/cluster/map" not in _s1src, "a new write path appeared")
+
+# ---- keys all the way down
+check("an unknown key is not a page", _mp_bad_st == 302, _mp_bad_st)
+check("it goes back to the list of real ones",
+      _mp_bad_where == "/admin/cluster#run", _mp_bad_where)
+check("a real map that is not in this plan says so",
+      _mp_unplanned_st == 200 and "not in this cluster" in _mp_unplanned_body,
+      _window(_mp_unplanned_body, "not in", 200))
+_mapsrc = _after(_s1src, "async def map_page").split(chr(10) + "    async def ")[0]
+check("the route is keyed on the map key, and checks it against the catalogue",
+      _in_order(_mapsrc, "match_info", "mapsmod.BY_KEY", "build_plan"), _mapsrc[:600])
+check("it finds its plan row by key rather than by name",
+      'r.get("map") == key' in _mapsrc, _window(_mapsrc, "plan", 400))
+check("and nothing in it turns a name back into a key",
+      '["name"]' not in _after(_mapsrc, "rows = []"),
+      _window(_mapsrc, "rows = []", 400))
+
+# ---- and the overview is lighter for it
+check("the overview no longer tabulates every map's ports",
+      "<th class=num>RCON</th>" not in _merged_pg, _window(_merged_pg, "Plan", 300))
+_ov_connect = _from(_merged_pg, "<fieldset id=connect>").split("</fieldset>")[0]
+check("nor every map's address",
+      "<table>" not in _ov_connect and _ov_connect.count("<code>") == 1, _ov_connect)
+check("it keeps the one address that is not a fact about a map",
+      "Obelisk itself:" in _ov_connect, _ov_connect)
+check("and says where the others went",
+      "own address is on" in _ov_connect, _ov_connect)
+check("the plan still says what it will cost and what is wrong with it",
+      "of RAM at most" in _merged_pg, _window(_merged_pg, "<legend>Plan</legend>", 300))
+check("and still launches", 'formaction="/admin/launch"' in _merged_pg, "no launch")
+
+# ---- reachable both ways
+check("a launched map is reachable from its running row",
+      '<a href="/admin/cluster/map/island">The Island</a>' in _runtable(_merged_pg),
+      _runtable(_merged_pg)[:600])
+check("and a never-launched one from the maps it has chosen",
+      _in_order(_fresh_pg, "<fieldset id=maps>", '/admin/cluster/map/island'),
+      _window(_fresh_pg, "<fieldset id=maps>", 900))
+check("which is the only way in before anything is running",
+      "<fieldset id=run>" not in _fresh_pg, _window(_fresh_pg, "Running", 200))
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
