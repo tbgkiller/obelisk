@@ -5330,6 +5330,11 @@ try:
     _rr_st, _rr_where, _, _rr_landed, _rr_again = _t29.run_until_complete(
         _post_data("/admin/restore/run", {"archive": "obelisk-real.tar.zst",
                                           "map": "island", "confirm": "The Island"}))
+    # The archive exists, so _archive_path resolves and inspect() actually runs - which
+    # is the branch the "No such archive" case never reaches. Without this, the inspect
+    # result could go back to rendering onto the POST and nothing would say so.
+    _ins_st, _ins_where, _ins_body, _ins_landed, _ = _t29.run_until_complete(
+        _post_data("/admin/restore/inspect", {"archive": "obelisk-real.tar.zst"}))
 finally:
     _t29.close()
     _appmod.clusterctl.status = _real_status_s1
@@ -5349,6 +5354,21 @@ for _what, _st, _where, _landed, _again, _phrase, _sect in (
           _phrase in _area(_landed, _sect), _area(_landed, _sect)[:400])
     check("and said once - reloading that page does not repeat it",
           _phrase not in _area(_again, _sect), _area(_again, _sect)[:300])
+
+# ---- and the inspect result itself, which is a different branch from "no such archive"
+check("looking inside an archive answers with a redirect", _ins_st == 302, _ins_st)
+check("to the restore section, carrying its result",
+      _ins_where.startswith("/admin/data?said=") and _ins_where.endswith("#restore"),
+      _ins_where)
+check("nothing is rendered onto that POST", _ins_body == "", _ins_body[:120])
+check("and what it found is in the restore section when it lands",
+      "does not open" in _area(_ins_landed, "restore"),
+      _area(_ins_landed, "restore")[:300])
+check("and nowhere else on the page",
+      _ins_landed.count("does not open") == 1, _ins_landed.count("does not open"))
+check("an archive that is not one says so rather than saying nothing",
+      _area(_ins_landed, "restore").count("<div class=problem>") == 1,
+      _area(_ins_landed, "restore")[:400])
 
 check("no answer is left rendered at the top of the page",
       _cc_body == "" and _cc_st != 200, [_cc_st, _cc_body[:80]])
