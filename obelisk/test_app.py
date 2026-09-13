@@ -2484,8 +2484,12 @@ def _runtable(body):
 
 for _name, _body in (("the front page", _front), ("the cluster page", _clusterpg)):
     check("%s names its maps" % _name,
-          '<a href="/admin/cluster/map/island">The Island</a>' in _runtable(_body)
-          and '<a href="/admin/cluster/map/ragnarok">Ragnarok</a>' in _runtable(_body),
+          '<a class=maplink href="/admin/cluster/map/island">The Island</a>'
+          in _runtable(_body)
+          and '<a class=maplink href="/admin/cluster/map/ragnarok">Ragnarok</a>'
+          in _runtable(_body), _runtable(_body)[:400])
+    check("%s styles that link rather than leaving a browser default" % _name,
+          "<a href=\"/admin/cluster/map/" not in _runtable(_body),
           _runtable(_body)[:400])
     check("%s does not head an instance id as a Map" % _name,
           "<td>%s</td>" % _linst["The Island"] not in _body,
@@ -2502,8 +2506,8 @@ for _name, _body in (("the front page", _front_off), ("the cluster page", _clust
           "&mdash;" in _body and "players online" not in _body,
           _body[_body.find("Running now"):][:300])
     check("%s still names its maps without a relay" % _name,
-          '<a href="/admin/cluster/map/island">The Island</a>' in _runtable(_body),
-          _runtable(_body)[:300])
+          '<a class=maplink href="/admin/cluster/map/island">The Island</a>'
+          in _runtable(_body), _runtable(_body)[:300])
 
 # ---- a remembered number must never be served as a measured one
 #
@@ -4877,6 +4881,13 @@ for _href, _target in (("#run", "<fieldset id=run>"), ("#who", "<fieldset id=who
 check("and the readiness note says where the addresses went",
       "addresses people" in _idle_pg and "foot of this page" in _idle_pg,
       _window(_idle_pg, "not running", 260))
+# The note promises something at the foot of the page. For a while the foot held only
+# Obelisk's own address, so the promise pointed at a panel that no longer kept what it
+# was promising.
+_idle_connect = _from(_idle_pg, "<fieldset id=connect>").split("</fieldset>")[0]
+check("and what it points at is actually there",
+      _idle_connect.count("<tr><td>") >= 1 and "The Island" in _idle_connect,
+      _idle_connect)
 
 # ---- one map, in detail, addressed by its own key
 #
@@ -4927,6 +4938,24 @@ try:
         _map_get("/admin/cluster/map/valguero"))
     _mp_rest_st, _, _mp_rest_body = _t27.run_until_complete(
         _map_get("/admin/restore", points=_FAKE_POINTS))
+
+    _real_st27 = _appmod.clusterctl.status
+
+    async def _map_down():
+        _appmod.clusterctl.status = lambda store: {
+            "docker_ok": True, "compose_exists": False, "running": 0, "services": []}
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        body = await (await client.get("/admin/cluster/map/island")).text()
+        await client.close()
+        return body
+
+    try:
+        _mp_down_body = _t27.run_until_complete(_map_down())
+    finally:
+        _appmod.clusterctl.status = _real_st27
 finally:
     _t27.close()
     _bot_s1.LIVE = _real_live
@@ -4954,6 +4983,40 @@ check("the address people type is here",
 _mp_connect = _from(_mp_body, "<legend>Connect</legend>").split("</fieldset>")[0]
 check("for this map alone, not a table of ten",
       _mp_connect.count("<td><code>") == 1, _mp_connect)
+
+# ---- the address reads like every other fact on the page
+#
+# It was a two-column table headed "Map" and "Address" with one row under it - the shape
+# it had when it listed ten maps on the overview. The page is already about one map.
+_mp_conn = _from(_mp_body, "<fieldset id=connect>").split("</fieldset>")[0]
+check("the address is a label and a value",
+      "<tr><td>Address</td><td><code>" in _mp_conn, _mp_conn)
+check("with no column repeating the map's name",
+      "<th>" not in _mp_conn and "<th>Map</th>" not in _mp_conn, _mp_conn)
+check("one address, because the page is about one map",
+      _mp_conn.count("<tr>") == 1, _mp_conn)
+check("and it still says how to use it",
+      "Join ARK" in _mp_conn, _mp_conn)
+
+# ---- which of the two states this map is in
+#
+# The page read byte-identically whether the map was serving or had never been started,
+# so clicking a row that said "Online" landed somewhere that did not confirm it.
+check("a running map says what Docker says about it",
+      "Docker says <b>Online</b> for this map" in _mp_body,
+      _window(_mp_body, "Docker says", 200))
+check("and points at the one page that keeps that up to date",
+      '<a class=maplink href="/admin/cluster#run">Running now</a>' in
+      _window(_mp_body, "Docker says", 300), _window(_mp_body, "Docker says", 300))
+check("without restating the count, which has one home",
+      "players online" not in _mp_body and "players</b>" not in _mp_body,
+      _window(_mp_body, "Docker says", 300))
+check("a map that is not running says so instead",
+      "This map is not running" in _mp_down_body,
+      _window(_mp_down_body, "not running", 200))
+check("and the two pages are not the same page",
+      ("Docker says" in _mp_body) != ("Docker says" in _mp_down_body),
+      [("Docker says" in _mp_body), ("Docker says" in _mp_down_body)])
 
 # ---- the saves the game took, on the page about the map they belong to
 check("its restore points are here", "Quick restore points" in _mp_body,
@@ -5005,21 +5068,33 @@ check("and nothing in it turns a name back into a key",
 # ---- and the overview is lighter for it
 check("the overview no longer tabulates every map's ports",
       "<th class=num>RCON</th>" not in _merged_pg, _window(_merged_pg, "Plan", 300))
+# An address is host:game_port, read off the plan row rather than measured, so the
+# overview and the map page cannot drift apart the way two readings of live state can -
+# and handing somebody every address is a cluster-wide job that ten page visits made
+# worse rather than better.
 _ov_connect = _from(_merged_pg, "<fieldset id=connect>").split("</fieldset>")[0]
-check("nor every map's address",
-      "<table>" not in _ov_connect and _ov_connect.count("<code>") == 1, _ov_connect)
-check("it keeps the one address that is not a fact about a map",
+check("the overview lists every map's address",
+      _ov_connect.count("<tr><td>") == 2
+      and "The Island" in _ov_connect and "Ragnarok" in _ov_connect, _ov_connect)
+check("with the port each map was planned on",
+      "7777" in _ov_connect, _ov_connect)
+check("and Obelisk's own address, which is not a fact about any map",
       "Obelisk itself:" in _ov_connect, _ov_connect)
-check("and says where the others went",
-      "own address is on" in _ov_connect, _ov_connect)
+check("the map page still carries its own, for whoever arrived there",
+      "papaship" in _mp_body or "7777" in
+      _from(_mp_body, "<fieldset id=connect>").split("</fieldset>")[0],
+      _from(_mp_body, "<fieldset id=connect>").split("</fieldset>")[0])
 check("the plan still says what it will cost and what is wrong with it",
       "of RAM at most" in _merged_pg, _window(_merged_pg, "<legend>Plan</legend>", 300))
 check("and still launches", 'formaction="/admin/launch"' in _merged_pg, "no launch")
 
 # ---- reachable both ways
 check("a launched map is reachable from its running row",
-      '<a href="/admin/cluster/map/island">The Island</a>' in _runtable(_merged_pg),
-      _runtable(_merged_pg)[:600])
+      '<a class=maplink href="/admin/cluster/map/island">The Island</a>'
+      in _runtable(_merged_pg), _runtable(_merged_pg)[:600])
+check("and the class it carries has a style of its own",
+      ".maplink{" in _uisrc_merge and ".maplink:visited{" in _uisrc_merge,
+      "maplink is unstyled")
 check("and a never-launched one from the maps it has chosen",
       _in_order(_fresh_pg, "<fieldset id=maps>", '/admin/cluster/map/island'),
       _window(_fresh_pg, "<fieldset id=maps>", 900))

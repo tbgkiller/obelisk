@@ -93,6 +93,13 @@ tr:last-child td{border-bottom:none}
 .whoform.byid{margin-top:10px;padding-top:10px;border-top:1px solid #232b36}
 .jump{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 12px;font-size:12px}
 .jump a{color:#8b94a3;text-decoration:none;border-bottom:1px dotted #303845}
+/* The map name in the running table is a link, and with no rule of its own it
+   rendered as the browser default: blue, underlined, and purple once visited -
+   which on a dark page reads as a bug, and gives a table cell a colour that
+   changes meaninglessly depending on where somebody has clicked before. */
+.maplink{color:#e6e9ef;text-decoration:none;border-bottom:1px dotted #3d4757}
+.maplink:visited{color:#e6e9ef}
+.maplink:hover{border-bottom-color:#8b94a3}
 .jump a:hover{color:#e6e9ef}
 .whoform.byid input{width:260px;flex:1 1 200px}
 /* Three actions, three weights. Talking to somebody and removing them should not
@@ -1304,8 +1311,8 @@ def render_status(status, players=None):
         # reversing a display name back into a key is the id-for-name slip this
         # function exists to avoid, and it would be doing it on every row.
         key = s.get("map") or ""
-        named = ('<a href="/admin/cluster/map/%s">%s</a>' % (_e(key), _e(label))
-                 if key else _e(label))
+        named = ('<a class=maplink href="/admin/cluster/map/%s">%s</a>'
+                 % (_e(key), _e(label)) if key else _e(label))
         rows += ("<tr><td>%s</td><td class=%s>%s</td>%s"
                  "<td class=help>%s</td></tr>"
                  % (named, css.get(level, ""), _e(says), cell,
@@ -2104,7 +2111,7 @@ def render_jump():
 
 
 def render_map(name, key, row=None, address="", host_known=True, points=None,
-               job=None, planned=True):
+               job=None, state=None):
     """One map, in detail, for the things that are only true of that map.
 
     The overview answers "is it up, who is on, is anything broken" for a cluster. Ports,
@@ -2134,7 +2141,15 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
             'when the cluster is applied. Changing them is the <b>Maps</b> and '
             '<b>Settings</b> pages\u2019 job.</div></fieldset>'
             % (_e(name), table))
-    connect = render_connect([(name, address)], host_known=host_known) if address else ""
+    # A label and a value, like the facts above it. This was a two-column table with
+    # "Map" and "Address" headers and one row in it - the shape it had when it listed
+    # ten maps on the overview, kept after the cut. The page is already about one map;
+    # a column repeating its name is a header with nothing to distinguish.
+    connect = ('<fieldset id=connect><legend>Connect</legend>'
+               '<table><tr><td>Address</td><td><code>%s</code></td></tr></table>'
+               '%s%s</fieldset>'
+               % (_e(address), IN_GAME_HELP,
+                  "" if host_known else HOST_UNKNOWN_WHY)) if address else ""
     saves = render_savepoints([(name, list(points or []))], job=job)
     if not saves:
         saves = ('<fieldset><legend>Quick restore points</legend>'
@@ -2150,8 +2165,22 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
                  'cluster value.</div>'
                  '<a class=help href="/admin#g-per-map">Open per-map overrides</a>'
                  '</fieldset>')
+    # Orientation, not a second reading. Which state this map is in is a fact the
+    # operator needs to have landed in the right place - what it is doing right now,
+    # and how many are on it, stay on the overview where one poll answers for every
+    # map. A page that could not tell a serving map from one that has never started
+    # was the same page either way, and an operator clicking a row that says "Online"
+    # arrived somewhere that did not confirm it.
+    if state and state.get("says"):
+        where = ('<div class=help>Docker says <b>%s</b> for this map. '
+                 '<a class=maplink href="/admin/cluster#run">Running now</a> on the '
+                 'cluster page is what keeps that up to date.</div>' % _e(state["says"]))
+    else:
+        where = ('<div class=help>This map is not running. '
+                 '<a class=maplink href="/admin/cluster#run">Running now</a> on the '
+                 'cluster page shows what is.</div>')
     return ('<div class=jump><a href="/admin/cluster#run">Back to the cluster</a></div>'
-            + here + connect + saves + overrides)
+            + here + where + connect + saves + overrides)
 
 
 def render_cluster(store, plan, status=None, roster=None,
@@ -2952,20 +2981,18 @@ def render_cloud(store, state, remote=None, message="", problem="", warning=""):
             'test upload path actually answers.</div>'
             '</fieldset></form>' % opts)
 
-def render_web_address(web_address):
-    """Where Obelisk itself answers - which is not a fact about any one map.
+# Said once, because two panels say it: the overview lists every map's address and a
+# map's own page states its own. A container cannot see the address its host answers
+# on, and the sentence explaining that is the same sentence in both places.
+HOST_UNKNOWN_WHY = ('<div class=help>Obelisk cannot see the address this machine '
+                    'answers on from inside a container, so it is showing its own host '
+                    'name. If that is not what people type, set <b>Server address</b> '
+                    'in the container template to your LAN IP - it changes these lines '
+                    'and nothing else.</div>')
 
-    The per-map addresses went with the rest of the per-map detail. This one has nowhere
-    else to be, and it is the line somebody needs when they are trying to reach this
-    page from another machine.
-    """
-    if not web_address:
-        return ""
-    return ('<fieldset id=connect><legend>Connect</legend>'
-            '<div class=help>Obelisk itself: <code>%s</code></div>'
-            '<div class=help style="margin-top:8px">Each map\u2019s own address is on '
-            'its page - open a map from <b>Running now</b> or <b>Maps</b> above.</div>'
-            '</fieldset>' % _e(web_address))
+IN_GAME_HELP = ('<div class=help style="margin-top:10px">In game: <b>Join ARK</b> '
+                '&rarr; <b>Unofficial</b>, or open the console and type '
+                '<code>open &lt;address&gt;</code>.</div>')
 
 
 def render_connect(entries, web_address="", host_known=True):
@@ -2980,19 +3007,11 @@ def render_connect(entries, web_address="", host_known=True):
     rows = "".join(
         "<tr><td>%s</td><td><code>%s</code></td></tr>" % (_e(n), _e(a))
         for n, a in entries)
-    note = ""
-    if not host_known:
-        note = ('<div class=help>Obelisk cannot see the address this machine answers '
-                'on from inside a container, so it is showing its own host name. If '
-                'that is not what people type, set <b>Server address</b> in the '
-                'container template to your LAN IP - it changes these lines and nothing '
-                'else.</div>')
+    note = HOST_UNKNOWN_WHY if not host_known else ""
     web = ""
     if web_address:
         web = ('<div class=help style="margin-bottom:8px">Obelisk itself: '
                '<code>%s</code></div>' % _e(web_address))
     return ('<fieldset id=connect><legend>Connect</legend>%s'
             '<table><tr><th>Map</th><th>Address</th></tr>%s</table>'
-            '<div class=help style="margin-top:10px">In game: <b>Join ARK</b> &rarr; '
-            '<b>Unofficial</b>, or open the console and type '
-            '<code>open &lt;address&gt;</code>.</div>%s</fieldset>' % (web, rows, note))
+            '%s%s</fieldset>' % (web, rows, IN_GAME_HELP, note))

@@ -1514,10 +1514,22 @@ def build_app(store, docker=None):
                 break
         host = install.host_address()
         address = "%s:%d" % (host, row["game_port"]) if row else ""
+        # Which state this map is in, from the same labelled status the overview reads.
+        # Enough to confirm the operator landed where they meant to; the live picture
+        # and the count stay on the one page that polls for every map at once.
+        state = None
+        try:
+            for svc in (_label_services(clusterctl.status(store)).get("services")
+                        or []):
+                if svc.get("map") == key:
+                    state = svc
+                    break
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.info("could not read the state of %s: %s", key, e)
         return chrome(ui.render_map(name, key, row=row, address=address,
                                     host_known=host != "<this-host>",
                                     points=_points_for(key) if row else [],
-                                    job=rjob),
+                                    job=rjob, state=state),
                       name, "/admin/cluster")
 
     async def cluster_launch(request):
@@ -1626,8 +1638,16 @@ def build_app(store, docker=None):
         if not plan.get("maps"):
             return ""
         host = install.host_address()
-        return ui.render_web_address("http://%s:%s/" % (host,
-                                                        store.get("status_port")))
+        # Every map's address, again. It was cut to the web address alone when the
+        # per-map detail moved out, and that was the wrong fact to cut: an address is
+        # host:game_port, derived from the plan row rather than measured, so two
+        # renderings of it cannot disagree the way two readings of live state can - and
+        # handing somebody the list of addresses is a whole-cluster job that the
+        # drill-down had turned into ten page visits.
+        entries = [(r["name"], "%s:%d" % (host, r["game_port"])) for r in plan["maps"]]
+        return ui.render_connect(
+            entries, web_address="http://%s:%s/" % (host, store.get("status_port")),
+            host_known=host != "<this-host>")
 
     # ---- backups
     def _flush_for(store_):

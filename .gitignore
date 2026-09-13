@@ -19,3 +19,7 @@ __pycache__/
 *.bak.*
 Claude outputs/
 _to_delete*/
+
+# Windows expands %SystemDrive% literally when a subprocess is given a stripped
+# environment, which creates this tree inside the repo. Never ours, never wanted.
+%SystemDrive%/
