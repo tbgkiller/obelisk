@@ -1778,8 +1778,23 @@ def render_cloud(store, state, remote=None, message="", problem=""):
                 '<div class=f><div class=help>Everything is encrypted on this machine '
                 'before it is sent. The provider stores ciphertext with obscured file '
                 'names and cannot read your saves.</div></div>'
+                # Not a button. Disconnecting deletes the passphrase, and the passphrase
+                # is the only thing that can read an off-site archive back - so the
+                # consequence is written out where the click used to be, and the word
+                # has to be typed. The passphrase itself is never shown here: pointing
+                # at it is the help this can safely give.
                 '<form method=post action="/admin/cloud/disconnect">'
-                '<button class=ghost type=submit>Disconnect</button></form></fieldset>'
+                '<div class=problem><b>Disconnecting deletes the encryption '
+                'passphrase.</b> Every archive already off-site stays on the provider '
+                'and becomes permanently unreadable - by you, and by Obelisk. This '
+                'cannot be undone, and no copy is kept.'
+                '<div class=help style="margin-top:6px">If you want those archives to '
+                'stay usable, make sure you have the passphrase saved somewhere else '
+                'before you do this. Obelisk will not show it to you here.</div></div>'
+                '<div class=f><label>Type %s to confirm</label>'
+                '<input name=confirm autocomplete=off placeholder="%s"></div>'
+                '<button class=ghost type=submit>Disconnect and delete the passphrase'
+                '</button></form></fieldset>'
                 '<fieldset><legend>Off-site copies</legend>'
                 '<table><tr><th>Archive</th><th class=num>Size</th><th>When</th></tr>%s</table>'
                 '<form method=post action="/admin/cloud/push" style="margin-top:12px">'
@@ -1794,7 +1809,8 @@ def render_cloud(store, state, remote=None, message="", problem=""):
                 'folder, where it becomes an ordinary local archive. Putting it back into '
                 'the cluster is the next step and is not wired up yet.</div></div>'
                 '</form></fieldset>'
-                % (_e(state.get("provider", "")), _e(state.get("path", "")), line, rows))
+                % (_e(state.get("provider", "")), _e(state.get("path", "")), line,
+                   _e(cloudlib.DISCONNECT_WORD), _e(cloudlib.DISCONNECT_WORD), rows))
 
     opts = "".join('<option value="%s">%s</option>' % (_e(p["key"]), _e(p["name"]))
                    for p in cloudlib.PROVIDERS)

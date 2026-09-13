@@ -275,8 +275,33 @@ async def run():
     check("upload runs from the UI",
           any("copy" in c and any("cloudcrypt:" in x for x in c) for c in rcalls), rcalls[-1])
 
+    # Disconnecting deletes the passphrase, and that passphrase is the only thing that
+    # can read an archive already off-site. So the page asks for the word to be typed,
+    # and - because a page can be bypassed by a bare POST, which is exactly what the
+    # line below used to be - the refusal has to hold at the route too.
+    body = await (await client.get("/admin/cloud")).text()
+    check("the connected page spells out what disconnecting destroys",
+          "permanently unreadable" in body, body[-1200:])
+    check("and asks for the word to be typed", 'name=confirm' in body, body[-1200:])
+    check("and does not show the passphrase while doing it",
+          "synthetic-phrase" not in body)
+
     r = await client.post("/admin/cloud/disconnect")
-    check("disconnect works from the UI", "Connect and test" in await r.text())
+    check("a bare POST with no confirmation is refused",
+          cloudctl.configured(store), "the vault was cleared without confirmation")
+    check("and the page says why rather than looking like it worked",
+          "was not confirmed" in await r.text())
+
+    r = await client.post("/admin/cloud/disconnect", data={"confirm": "yes"})
+    check("a wrong word is refused too", cloudctl.configured(store))
+
+    r = await client.post("/admin/cloud/disconnect", data={"confirm": "disconnect  "})
+    body = await r.text()
+    check("the typed word works, and case and spacing are forgiven",
+          not cloudctl.configured(store), body[:300])
+    check("and the page returns to the connect form", "Connect and test" in body)
+    check("and it is honest that the off-site copies can no longer be read",
+          "no longer be decrypted" in body, body[:600])
 
     # ---- a save must not be blocked by fields the user cannot change
     # The live failure: the settings form rendered status_port and appdata read-only but

@@ -208,13 +208,44 @@ def test(store):
     return False, out.strip()[-400:] or "rclone exit %d" % rc
 
 
-def disconnect(store):
+# What the operator has to type to prove they meant it. A word rather than a click,
+# because the click was not enough: this is the one action in the product that destroys
+# something no restore can bring back.
+DISCONNECT_WORD = "DISCONNECT"
+
+
+def disconnect(store, confirmed=False):
+    """Forget the cloud. Refuses unless `confirmed`. (ok, message).
+
+    The refusal is here rather than only in the page, because what this deletes is the
+    passphrase - and everything Obelisk pushes goes through the crypt remote, so that
+    passphrase is the only thing that can read any off-site archive back. Deleting it
+    does not disconnect a provider; it turns every backup already up there into bytes
+    nobody can open, including Obelisk, including the operator. There is no undo and no
+    copy kept.
+
+    A page can be bypassed - a stray POST, a bookmarked form, a future caller that
+    forgets. So the guard is on the function that does the destroying, which is the
+    only place it cannot be routed around.
+    """
+    if not confirmed:
+        return False, ("Disconnecting deletes the passphrase that decrypts your "
+                       "off-site backups, and nothing can read them back without it. "
+                       "That was not confirmed, so nothing was changed.")
     vault.clear(store)
     try:
         os.remove(conf_path(store))
     except OSError:
         pass
-    return True, "Cloud disconnected. Nothing further is sent; what is already there stays."
+    # Honest about what just happened. The old sentence here said "what is already
+    # there stays", which was true of the bytes and false about everything the operator
+    # cared about - it read as reassurance at the exact moment the archives became
+    # unreadable.
+    return True, ("Cloud disconnected and the passphrase deleted. The archives already "
+                  "off-site are still on the provider but can no longer be decrypted "
+                  "by anyone, including Obelisk - unless you kept a copy of the "
+                  "passphrase elsewhere, they are not recoverable. Nothing further "
+                  "will be sent.")
 
 
 def configured(store):

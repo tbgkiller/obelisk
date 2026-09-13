@@ -1071,8 +1071,13 @@ def build_app(store, docker=None):
     async def cloud_disconnect(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        ok, msg = cloudctl.disconnect(store)
-        return _cloud_chrome(msg, "")
+        form = await request.post()
+        typed = str(form.get("confirm") or "").strip()
+        # Case and surrounding space are forgiven; the word is not. Somebody who has
+        # read what this does can type it, and nobody reaches it by clicking.
+        confirmed = typed.upper() == cloudctl.DISCONNECT_WORD
+        ok, msg = cloudctl.disconnect(store, confirmed=confirmed)
+        return _cloud_chrome(msg if ok else "", "" if ok else msg)
 
     async def cloud_push(request):
         if not authed(request):

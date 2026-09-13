@@ -243,9 +243,39 @@ ok, msg = backupctl.run_scheduled(st4, push=True)
 check("a scheduled run with no cloud connected still backs up locally", ok, msg)
 check("and says the upload did not happen", "no cloud is connected" in msg, msg)
 
-ok, msg = cloudlib.disconnect(st3)
-check("disconnecting clears the credentials", ok and not cloudlib.configured(st3))
+# ---- disconnecting is the one action nothing can undo
+#
+# It deletes the passphrase, and everything Obelisk pushes goes through the crypt
+# remote - so that passphrase is the only thing that can read any archive already
+# off-site. Losing it does not disconnect a provider; it turns every remote backup into
+# bytes nobody can open. The guard is on the function rather than only on the page,
+# because a page can be bypassed and this cannot be walked back.
+before_conf = cloudlib.configured(st3)
+ok_u, msg_u = cloudlib.disconnect(st3)
+check("an unconfirmed disconnect refuses", not ok_u, msg_u)
+check("and it changes nothing - the credentials are still there",
+      cloudlib.configured(st3) == before_conf and cloudlib.configured(st3), msg_u)
+check("and the rclone config is still there",
+      os.path.isfile(cloudlib.conf_path(st3)), msg_u)
+check("and it says what it would have destroyed, not just that it refused",
+      "passphrase" in msg_u and "decrypt" in msg_u, msg_u)
+
+# Refusing is the default, not a mode: the caller has to say so explicitly.
+ok_f, _msg_f = cloudlib.disconnect(st3, confirmed=False)
+check("confirmed=False is refused the same way", not ok_f and cloudlib.configured(st3))
+
+ok, msg = cloudlib.disconnect(st3, confirmed=True)
+check("a confirmed disconnect clears the credentials", ok and not cloudlib.configured(st3))
 check("and removes the rclone config", not os.path.isfile(cloudlib.conf_path(st3)))
+
+# The old message said "what is already there stays", which was true of the bytes and
+# false about everything the operator cared about. It read as reassurance at the exact
+# moment the archives stopped being readable.
+check("the result says the off-site archives can no longer be decrypted",
+      "no longer be decrypted" in msg, msg)
+check("and that it is not recoverable", "not recoverable" in msg, msg)
+check("and it does not claim the backups are fine",
+      "what is already there stays" not in msg, msg)
 
 print("\nFAILURES: %s" % fails if fails else "\nall cloud tests passed")
 sys.exit(1 if fails else 0)
