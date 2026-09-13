@@ -387,18 +387,26 @@ def build_app(store, docker=None):
         _said[token] = dict({"message": "", "problem": "", "refusal": ""}, at=now, **kw)
         return token
 
+    def _asking(pending, where):
+        """The pending question, if it is this section's to ask."""
+        return pending if (pending or {}).get("where", "who") == where else None
+
     def _cluster_body(request, message="", problem="", refusal="", pending=None):
         # A result about a player is shown in the who's-online section rather than at
         # the top of the page: that is where the operator is looking when they press
         # the button, and where the answer changes something.
-        notice = ""
+        notice = bans_notice = ""
         if not (message or problem or refusal):
             token = str((getattr(request, "query", None) or {}).get("said") or "")
             said = _said.pop(token, None) if token else None
             if said:
-                if said.get("where") == "who":
-                    notice = ui.warn_block(said["problem"]) if said["problem"] else (
+                if said.get("where") in ("who", "bans"):
+                    block = ui.warn_block(said["problem"]) if said["problem"] else (
                         '<div class=note>%s</div>' % ui._e(said["message"]))
+                    if said["where"] == "bans":
+                        bans_notice = block
+                    else:
+                        notice = block
                 else:
                     message = said["message"]
                     problem = said["problem"]
@@ -444,7 +452,10 @@ def build_app(store, docker=None):
                 ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
                 ui.render_cluster(store, plan, status=_label_services(st),
                                   players=_players_now(), roster=_roster_now(),
-                                  pending=pending, notice=notice))
+                                  pending=_asking(pending, "who"), notice=notice,
+                                  bans=bansctl.recent(store),
+                                  bans_pending=_asking(pending, "bans"),
+                                  bans_notice=bans_notice))
 
     # The last poll, so opening the page does not go to the network before it renders.
     # A panel that takes two round trips to CurseForge to appear is a panel people
@@ -1138,7 +1149,8 @@ def build_app(store, docker=None):
                 "/admin/cluster?said=%s#who"
                 % _say_next(where="who",
                             problem="Ban sent for %s on %d of %d maps - NOT on %s, and "
-                                    "they can still join those.%s Try those maps again, "
+                                    "they can still join those.%s Recorded - see Banned "
+                                    "players below. Try those maps again, "
                                     "or check they are reachable."
                                     % (name, len(took), len(results),
                                        clusterctl._and([l for l, _w in missed]),
@@ -1153,9 +1165,120 @@ def build_app(store, docker=None):
         raise web.HTTPFound(
             "/admin/cluster?said=%s#who"
             % _say_next(where="who",
-                        message="Ban sent for %s on all %d maps.%s This list is from "
+                        message="Ban sent for %s on all %d maps.%s Recorded - "
+                                "see Banned players below. This list is from "
                                 "the last check - reload to see it."
                                 % (name, len(results), kick_note)))
+
+    # ---- letting somebody back in
+    #
+    # The same fan-out as the ban and for the same reason: the ban went into ten
+    # separate BanList.txt files, so taking it out of nine of them leaves a player who
+    # is banned from one map and cannot understand why.
+    #
+    # Keyed on the id rather than on a row of the list. Two records of the same id is a
+    # normal thing to have - a ban that reached eight maps and was sent again is two
+    # honest records - and "undo entry 3" would then leave the same person banned by
+    # entry 2. There is one question worth asking here, and it is about the player.
+    async def player_unban(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        netid = str(form.get("netid") or "").strip()
+        name = str(form.get("name") or "").strip()
+        when = str(form.get("when") or "").strip()
+        confirmed = str(form.get("confirm") or "").strip()
+        who = name or "that id"
+
+        def refuse(text_):
+            return chrome(_cluster_body(request, refusal=ui.warn_block(text_)),
+                          "Cluster", "/admin/cluster")
+
+        if not netid:
+            return refuse("That did not say which id to unban - nothing has been done.")
+
+        # Whitelisted like the ban's id, though this one is written to no file. It is
+        # still an argument to a console command, and unlike the ban's it can be typed:
+        # the by-id field is there precisely for ids this manager never saw.
+        if not bansctl.valid_netid(netid):
+            return refuse("%s is not an id that can be unbanned - platform ids are "
+                          "letters and digits. Nothing has been done."
+                          % (netid[:24] + ("..." if len(netid) > 24 else "")))
+
+        if not confirmed:
+            return chrome(
+                _cluster_body(request, pending={
+                    "where": "bans", "netid": netid, "when": when,
+                    "html": ui.render_unban_confirm(name, netid, when)}),
+                "Cluster", "/admin/cluster")
+
+        from . import bot
+        password = str(store.get("admin_password") or "")
+        targets = clusterctl.rcon_targets(store)
+
+        async def unban_one(lbl, host, port):
+            try:
+                await bot.rcon_with(host, port, password, "UnbanPlayer %s" % netid,
+                                    timeout=10)
+                return lbl, ""
+            except Exception as e:                   # noqa: BLE001 - the reason is data
+                return lbl, (str(e).strip() or e.__class__.__name__)
+
+        results = dict(await asyncio.gather(
+            *(unban_one(l, h, p) for l, h, p in targets)))
+        took = sorted(l for l, why in results.items() if not why)
+        gone = sorted((l, why) for l, why in results.items() if why)
+
+        def reasons(items, cap=4):
+            shown = "; ".join("%s (%s)" % (l, w) for l, w in items[:cap])
+            return shown + ("; and %d more" % (len(items) - cap)
+                            if len(items) > cap else "")
+
+        if not took:
+            announce.say("player.unban_failed",
+                         "An unban for %s did NOT send to any map: %s"
+                         % (who, reasons(gone)),
+                         level="error", player=name, netid=netid)
+            return chrome(_cluster_body(request, problem=(
+                "The unban did NOT send to any of the %d maps: %s. Nothing has changed "
+                "and %s is still banned." % (len(results), reasons(gone), who))),
+                "Cluster", "/admin/cluster")
+
+        # Marked, not removed, and only once the command actually went somewhere. An
+        # entry that says "unbanned" while every server still refuses them is the one
+        # thing this list must not do.
+        marked = bansctl.mark_unbanned(store, netid)
+        kept = (" The record is kept and marked unbanned." if marked else
+                " Obelisk had no record of that id, so nothing in the list changed.")
+
+        if gone:
+            announce.say(
+                "player.unban_partial",
+                "Unban sent for %s on %d of %d maps. NOT sent on %s - they are still "
+                "banned there." % (who, len(took), len(results),
+                                   clusterctl._and([l for l, _w in gone])),
+                level="warning", player=name, netid=netid,
+                detail="\n".join("%-14s %s" % (l, w or "sent")
+                                    for l, w in sorted(results.items())))
+            raise web.HTTPFound(
+                "/admin/cluster?said=%s#bans"
+                % _say_next(where="bans",
+                            problem="Unban sent for %s on %d of %d maps - NOT on %s, "
+                                    "and they are still banned there.%s Try those maps "
+                                    "again, or check they are reachable."
+                                    % (who, len(took), len(results),
+                                       clusterctl._and([l for l, _w in gone]), kept)))
+
+        announce.say("player.unban_sent",
+                     "Unban sent for %s on all %d maps from the web UI."
+                     % (who, len(results)),
+                     level="info", player=name, netid=netid,
+                     detail="\n".join("%-14s sent" % l for l in took))
+        raise web.HTTPFound(
+            "/admin/cluster?said=%s#bans"
+            % _say_next(where="bans",
+                        message="Unban sent for %s on all %d maps - they can join "
+                                "again.%s" % (who, len(results), kept)))
 
     async def cluster_launch(request):
         if not authed(request):
@@ -1831,6 +1954,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/player/message", player_message)
     app.router.add_post("/admin/player/kick", player_kick)
     app.router.add_post("/admin/player/ban", player_ban)
+    app.router.add_post("/admin/player/unban", player_unban)
     app.router.add_get("/admin/cluster/status", cluster_status)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)

@@ -16,6 +16,7 @@ from .schema import SETTINGS, GROUPS, INSTALL_KEYS
 from . import maps as mapcat
 from .presets import PRESETS
 from . import mods as modlib
+from . import bans as bansctl
 
 CSS = """
 :root{color-scheme:dark}
@@ -86,6 +87,10 @@ tr:last-child td{border-bottom:none}
 .whoflag{font-size:11px;color:#8b94a3}
 .whoform{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:0}
 .whoform input{font-size:12px;padding:4px 8px;width:170px;min-width:120px;flex:1 1 120px;margin:0}
+/* The by-id field is the one control here that is not about a row, so it gets
+   the space a form gets rather than sitting in the list. */
+.whoform.byid{margin-top:10px;padding-top:10px;border-top:1px solid #232b36}
+.whoform.byid input{width:260px;flex:1 1 200px}
 /* Three actions, three weights. Talking to somebody and removing them should not
    be the same button, and Kick sitting beside Ban in identical grey is the
    adjacency worth designing against before Ban exists. Same three-colour rule the
@@ -1617,7 +1622,9 @@ def render_ban_confirm(label, name, netid, problem=""):
             if problem else "")
     return ('<span class=whoflag><b>Ban %s from the whole cluster?</b> They are removed '
             'from every map, not just %s, and stay out until somebody unbans them. '
-            'Nothing they built is deleted. Nothing has been done yet.</span>%s'
+            'Nothing they built is deleted. It is recorded in Banned players '
+            'below and can be undone from there. Nothing has been done yet.'
+            '</span>%s'
             '<form method=post action="/admin/player/ban" class=whoform>'
             '<input type=hidden name=map value="%s">'
             '<input type=hidden name=name value="%s">'
@@ -1770,8 +1777,157 @@ def render_whos_online(roster, maps=(), pending=None, notice=None):
             % (notice or "", "".join(out)))
 
 
+# What the ban list is a record OF, said once, where somebody reading the list can see
+# it. ARK has no RCON command that reads back a server's BanList.txt, and those files
+# sit on ten filesystems this container cannot open - so this is what Obelisk did, which
+# is not the same claim as what the servers hold.
+BANS_ARE = ("bans issued from Obelisk \u2014 not a read of each server\u2019s ban "
+            "list, which nothing here can see")
+
+
+def _when_title(when):
+    """The exact time, for the hover, since "3d ago" is not a thing to act on."""
+    try:
+        return time.strftime("%Y-%m-%d %H:%M UTC", time.gmtime(int(when or 0)))
+    except Exception:                                # noqa: BLE001 - never a blank page
+        return ""
+
+
+def _spread(entry):
+    """How far a ban actually got, in the words the ban banner used."""
+    maps = entry.get("maps") or {}
+    took, gone = bansctl.sent_to(entry), bansctl.missed(entry)
+    if not maps:
+        return "no maps recorded"
+    if not gone:
+        return "sent to all %d maps" % len(maps)
+    if not took:
+        return "sent to none of the %d maps" % len(maps)
+    return ("%d of %d \u2014 missing %s"
+            % (len(took), len(maps), ", ".join(l for l, _w in gone)))
+
+
+def _unban_form(entry):
+    return ('<form method=post action="/admin/player/unban" class=whoform>'
+            '<input type=hidden name=netid value="%s">'
+            '<input type=hidden name=name value="%s">'
+            '<input type=hidden name=when value="%s">'
+            '<button class="whoact talk" type=submit>Unban</button></form>'
+            % (_e(entry.get("netid") or ""), _e(entry.get("name") or ""),
+               _e(str(entry.get("when") or 0))))
+
+
+def render_unban_confirm(name, netid, when="", problem=""):
+    """Ask once, and let them press it.
+
+    A click, not a typed name. The ban guard makes somebody write the name out because
+    a ban is hard to notice and lasts until an admin takes it out; an unban lets one
+    person back in and any of its mistakes are one press to correct. Asking for the
+    same ceremony either way is how a typed confirmation turns into something people
+    type without reading.
+    """
+    who = _e(name) if name else "this id"
+    warn = ('<span class=whoflag style="color:#ff9d94">%s</span>' % _e(problem)
+            if problem else "")
+    return ('<span class=whoflag><b>Unban %s?</b> The ban is lifted on every map and '
+            'they can join again. The record below is kept and marked unbanned, not '
+            'removed. Nothing has been done yet.</span>%s'
+            '<form method=post action="/admin/player/unban" class=whoform>'
+            '<input type=hidden name=netid value="%s">'
+            '<input type=hidden name=name value="%s">'
+            '<input type=hidden name=when value="%s">'
+            '<input type=hidden name=confirm value="1">'
+            '<span class=whoflag>%s</span>'
+            '<button class="whoact talk" type=submit>Yes, unban</button> '
+            '<a class=help href="/admin/cluster#bans">Cancel</a></form>'
+            % (who, warn, _e(netid), _e(name or ""), _e(when or ""), _e(netid)))
+
+
+def _unban_by_id_form():
+    """For the bans this manager never issued.
+
+    Somebody banned in-game or by hand has no row here - there is nothing to read the
+    server's list from - so the only way back in through this page is to type the id.
+    """
+    return ('<form method=post action="/admin/player/unban" class="whoform byid">'
+            '<label class=help for=unbanid>Unban an id this list does not have:</label>'
+            '<input id=unbanid name=netid autocomplete=off '
+            'placeholder="platform id (Steam, Epic or EOS)">'
+            '<button class="whoact talk" type=submit>Unban by ID</button></form>')
+
+
+def render_bans(entries, notice=None, pending=None, now=None):
+    """What Obelisk banned, newest first, and the way to undo it.
+
+    Its own section rather than a column of the roster above: these are the people who
+    are *not* there, and the two lists answer opposite questions.
+
+    `pending` is an unban this page is currently asking about, keyed on the id. Every
+    row for that id drops its button while the question stands - including rows the
+    question is not rendered on, because one press undoes them all and a second live
+    Unban beside an unanswered one is two ways to do the same thing.
+    """
+    now = time.time() if now is None else now
+    held = list(entries or [])
+    asking = str((pending or {}).get("netid") or "")
+    out = []
+    for entry in held:
+        netid = str(entry.get("netid") or "")
+        name = _e(entry.get("name") or "?")
+        when = entry.get("when") or 0
+        mine = asking and netid == asking
+        here = mine and str(pending.get("when") or "") == str(when)
+        gone = bansctl.is_unbanned(entry)
+        if here:
+            out.append('<div class="whorow asking"><span class=whoname>%s</span>%s</div>'
+                       % (name, pending.get("html") or ""))
+            continue
+        if gone:
+            act = ('<span class=whoflag>unbanned %s</span>'
+                   % _e(_ago(now - int(entry.get("unbanned") or 0))))
+        elif mine:
+            act = ""
+        else:
+            act = _unban_form(entry)
+        out.append('<div class=whorow><span class=whoname>%s</span>'
+                   '<span class=whoflag title="%s">%s</span>'
+                   '<span class=whoflag title="%s">%s</span>'
+                   '<span class=whoflag>%s</span>'
+                   '<span class=whoacts>%s</span></div>'
+                   % (name, _e(netid), _e(_shorten_id(netid)),
+                      _e(_when_title(when)), _e(_ago(now - int(when))),
+                      _e(_spread(entry)), act))
+    if not held:
+        # Not a warning. An empty ban list is the state this cluster is in most of the
+        # time, and a manager that paints it amber teaches people to ignore amber.
+        out.append('<div class=whonote>No bans recorded.</div>')
+    # A question about a typed id replaces the field it was typed into, for the same
+    # reason a question about a row replaces that row's buttons.
+    if asking and not str((pending or {}).get("when") or ""):
+        byid = ('<div class="whorow asking"><span class=whoname>Unban by ID</span>%s'
+                '</div>' % (pending.get("html") or ""))
+    else:
+        byid = _unban_by_id_form()
+    return ('<fieldset id=bans><legend>Banned players</legend>%s'
+            '<div class=help>%s</div>'
+            '<div class=whoroster>%s</div>%s</fieldset>'
+            % (notice or "", BANS_ARE, "".join(out), byid))
+
+
+def _shorten_id(netid):
+    """Enough of an id to tell two apart, with the whole of it on hover.
+
+    A 32-character EOS id in a row that also holds a name, a time and ten map names
+    pushes everything else off a phone screen, and nobody reads it character by
+    character anyway - they compare it to one they were given.
+    """
+    netid = str(netid or "")
+    return netid if len(netid) <= 20 else netid[:10] + "\u2026" + netid[-6:]
+
+
 def render_cluster(store, plan, status=None, players=None, roster=None,
-                   pending=None, notice=None):
+                   pending=None, notice=None, bans=None,
+                   bans_pending=None, bans_notice=None):
     selected = set(str(store.get("maps")).split(","))
     presets = "".join(
         '<button class=ghost type=button name=preset value="%s" title="%s">%s</button>'
@@ -1810,6 +1966,7 @@ def render_cluster(store, plan, status=None, players=None, roster=None,
     return (render_status(status, players=players) +
             render_whos_online(roster, maps=[m for m in running if m],
                                pending=pending, notice=notice) +
+            render_bans(bans, notice=bans_notice, pending=bans_pending) +
             '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '

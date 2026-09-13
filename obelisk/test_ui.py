@@ -1743,5 +1743,183 @@ check("and it asks for no more than it was asked for",
 check("an empty ledger is an empty list, not a crash",
       _bans.recent(_LedgerStore()) == [], "recent() on a fresh store")
 
+# ---- the Banned players list
+#
+# The list has to be honest about two things at once: what Obelisk did, and the fact
+# that it is the only record there is. No ARK server will read its ban list back, so
+# this is a record of commands sent, not of what the servers hold.
+_NOW = 1789000000
+_B1 = {"name": "Bob", "netid": "76561198000000001", "when": _NOW - 120,
+       "maps": {"The Island": "", "Ragnarok": "timed out"}, "kick": ""}
+_B2 = {"name": "Dana", "netid": "0002a1b2c3d4e5f60002a1b2c3d4e5f6", "when": _NOW - 90000,
+       "maps": {"The Island": "", "Ragnarok": ""}, "kick": ""}
+_B3 = {"name": "Bob", "netid": "76561198000000001", "when": _NOW - 300000,
+       "maps": {"The Island": "", "Ragnarok": ""}, "kick": "",
+       "unbanned": _NOW - 200000}
+_banlist = ui.render_bans([_B1, _B2, _B3], now=_NOW)
+
+check("the bans have a section of their own",
+      "<fieldset id=bans>" in _banlist and "<legend>Banned players</legend>" in _banlist,
+      _banlist[:200])
+check("it says what the list is a record of, where the list is",
+      _in_order(_banlist, "<fieldset id=bans>", "bans issued from Obelisk"),
+      _window(_banlist, "<fieldset id=bans>", 300))
+check("and does not claim to be the servers' own ban lists",
+      "not a read of each server" in _banlist,
+      _window(_banlist, "bans issued", 200))
+check("the rows come out in the order they were given, newest first",
+      _in_order(_banlist, "Bob", "Dana"), _banlist[:900])
+check("each row says who", _in_order(_from(_banlist, "<div class=whoroster>"),
+                                     ">Bob<", ">Dana<"),
+      _from(_banlist, "<div class=whoroster>")[:400])
+check("and when, in words a person reads",
+      "2m ago" in _banlist and "1d ago" in _banlist,
+      _window(_banlist, ">Bob<", 400))
+check("with the exact time on hover, because 1d ago is not a thing to act on",
+      'title="%s"' % ui._when_title(_B1["when"]) in _banlist,
+      _window(_banlist, ">Bob<", 400))
+check("the id is there to compare against one somebody was given",
+      "76561198000000001" in _window(_banlist, ">Bob<", 400),
+      _window(_banlist, ">Bob<", 400))
+check("a long one is shortened on screen and whole on hover",
+      'title="0002a1b2c3d4e5f60002a1b2c3d4e5f6"' in _banlist
+      and "0002a1b2c3…d4e5f6" in _banlist,
+      _window(_banlist, ">Dana<", 400))
+
+# ---- a partial ban has to read as a partial ban, here as well as in the banner
+check("a ban that reached one map of two says so",
+      "1 of 2 — missing Ragnarok" in _window(_banlist, ">Bob<", 500),
+      _window(_banlist, ">Bob<", 500))
+check("and one that reached everything says that instead",
+      "sent to all 2 maps" in _window(_banlist, ">Dana<", 500),
+      _window(_banlist, ">Dana<", 500))
+check("a record with no maps at all is not a crash",
+      "no maps recorded" in ui.render_bans([dict(_B1, maps={})], now=_NOW),
+      ui.render_bans([dict(_B1, maps={})], now=_NOW))
+
+# ---- the way back out
+check("every live ban has an Unban",
+      _window(_banlist, ">Bob<", 700).count(
+          '<form method=post action="/admin/player/unban"') == 1,
+      _window(_banlist, ">Bob<", 700))
+check("keyed on the id, which is what an unban acts on",
+      'name=netid value="76561198000000001"' in
+      _window(_from(_banlist, ">Bob<"), "/admin/player/unban", 300),
+      _window(_from(_banlist, ">Bob<"), "/admin/player/unban", 300))
+check("it is the lightest of the controls, because it lets somebody in",
+      '<button class="whoact talk" type=submit>Unban</button>' in _banlist,
+      _window(_banlist, "/admin/player/unban", 300))
+check("an entry already undone says when it was",
+      "unbanned 2d ago" in _banlist, _window(_banlist, ">Bob<", 2000))
+check("and offers no second Unban, because there is nothing left to undo",
+      _banlist.count(">Unban</button>") == 2, _banlist.count(">Unban</button>"))
+
+# ---- and a way in for the bans this manager never issued
+check("there is a field for an id the list does not have",
+      _in_order(_from(_banlist, 'class="whoform byid"'), "name=netid",
+                ">Unban by ID</button>"),
+      _from(_banlist, 'class="whoform byid"'))
+check("explained, because an id typed by hand needs a reason to exist",
+      "Unban an id this list does not have" in _banlist,
+      _from(_banlist, 'class="whoform byid"'))
+
+# ---- nothing to show is a calm sentence, not a warning
+_nobans = ui.render_bans([], now=_NOW)
+check("an empty ledger says so plainly", "No bans recorded." in _nobans, _nobans)
+check("in the quiet style, not amber and not red",
+      "<div class=warn>" not in _nobans and "<div class=problem>" not in _nobans,
+      _nobans)
+check("and the by-id field is still there, since it never depended on the list",
+      'class="whoform byid"' in _nobans, _nobans)
+check("the section is still anchorable when it is empty",
+      "<fieldset id=bans>" in _nobans, _nobans[:120])
+
+# ---- one question at a time, in the place it was asked
+_B1b = dict(_B1, when=_NOW - 5000)          # the same id, banned twice, both live
+_asked = ui.render_bans([_B1, _B2, _B1b], now=_NOW, pending={
+    "netid": "76561198000000001", "when": str(_B1["when"]),
+    "html": ui.render_unban_confirm("Bob", "76561198000000001", str(_B1["when"]))})
+check("the question replaces the row it was asked on",
+      '<div class="whorow asking">' in _asked, _asked[:200])
+check("naming who it is about", "Unban Bob?" in _asked,
+      _window(_asked, "whorow asking", 400))
+check("the other player keeps their Unban",
+      "/admin/player/unban" in _window(_from(_asked, ">Dana<"), ">Dana<", 700),
+      _window(_from(_asked, ">Dana<"), ">Dana<", 700))
+check("while that player's other live record offers no second Unban",
+      _asked.count(">Unban</button>") == 1, _asked.count(">Unban</button>"))
+check("because one press undoes every record of that id, not the row it was on",
+      _asked.count('<div class="whorow asking">') == 1,
+      _asked.count('<div class="whorow asking">'))
+
+_byid_asked = ui.render_bans([_B1], now=_NOW, pending={
+    "netid": "765", "when": "",
+    "html": ui.render_unban_confirm("", "765", "")})
+check("a question about a typed id replaces the field it was typed into",
+      'class="whoform byid"' not in _byid_asked, _byid_asked)
+check("and is asked where that field was",
+      _in_order(_byid_asked, "<div class=whoroster>", "whorow asking",
+                "Unban by ID"),
+      _from(_byid_asked, "<div class=whoroster>")[-500:])
+
+# ---- what the confirmation asks for
+_uconf = ui.render_unban_confirm("Bob", "76561198000000001", "123")
+check("the unban asks once and takes a press",
+      '<input type=hidden name=confirm value="1">' in _uconf, _uconf)
+check("not a typed name - it is reversible and it lets somebody in",
+      "placeholder=" not in _uconf, _uconf)
+check("it names the player", "Unban Bob?" in _uconf, _uconf)
+check("and shows the id it will act on", "76561198000000001" in _uconf, _uconf)
+check("it says the ban lifts everywhere, since that is what it does",
+      "lifted on every map" in _uconf, _uconf)
+check("and that the record survives it",
+      "kept and marked unbanned, not removed" in _uconf, _uconf)
+check("it says nothing has happened yet",
+      "Nothing has been done yet" in _uconf, _uconf)
+check("with a way out that returns to the list",
+      'href="/admin/cluster#bans"' in _uconf, _uconf)
+check("an id with no name to put to it still reads as a sentence",
+      "Unban this id?" in ui.render_unban_confirm("", "765", ""),
+      ui.render_unban_confirm("", "765", ""))
+check("a problem comes back with the question still standing",
+      _in_order(ui.render_unban_confirm("Bob", "765", "", "That id is not one."),
+                "That id is not one.", "name=confirm"),
+      ui.render_unban_confirm("Bob", "765", "", "That id is not one."))
+
+# ---- the ban confirm and the list now know about each other
+check("the ban confirmation says the ban is written down",
+      "recorded in Banned players below" in
+      ui.render_ban_confirm("Ragnarok", "Dana", "765"),
+      ui.render_ban_confirm("Ragnarok", "Dana", "765"))
+check("and that it can be undone from there",
+      "can be undone from there" in ui.render_ban_confirm("Ragnarok", "Dana", "765"),
+      ui.render_ban_confirm("Ragnarok", "Dana", "765"))
+
+# ---- marking, not deleting
+_ms = _LedgerStore()
+_bans.record(_ms, "Bob", "765", {"The Island": ""}, when=100)
+_bans.record(_ms, "Bob", "765", {"The Island": "", "Ragnarok": "timed out"}, when=200)
+_bans.record(_ms, "Dana", "999", {"The Island": ""}, when=300)
+_marked = _bans.mark_unbanned(_ms, "765", when=400)
+check("an unban marks every record of that id",
+      len(_marked) == 2 and all(_bans.is_unbanned(e) for e in _marked), _marked)
+check("because two records of one id is a normal thing to have",
+      len(_bans.entries_for(_ms, "765")) == 2, _bans.entries_for(_ms, "765"))
+check("it leaves everybody else alone",
+      not _bans.is_unbanned(_bans.entries_for(_ms, "999")[0]),
+      _bans.entries_for(_ms, "999"))
+check("nothing is deleted", len(_ms.data["bans"]) == 3, _ms.data["bans"])
+check("the ban itself is still readable afterwards",
+      _bans.missed(_bans.entries_for(_ms, "765")[1]) == [("Ragnarok", "timed out")],
+      _bans.entries_for(_ms, "765")[1])
+check("and it is persisted", _ms.saves == 4, _ms.saves)
+_again = _bans.mark_unbanned(_ms, "765", when=500)
+check("a second unban marks nothing twice", _again == [], _again)
+check("and does not rewrite when the first one happened",
+      all(e["unbanned"] == 400 for e in _bans.entries_for(_ms, "765")),
+      _bans.entries_for(_ms, "765"))
+check("an id nobody banned is not an error, just nothing to mark",
+      _bans.mark_unbanned(_ms, "nobody", when=600) == [], _ms.data["bans"])
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

@@ -3779,9 +3779,16 @@ check("the operator is redirected, so a refresh cannot ban twice", _bgo_st == 30
 check("the result is shown in the section it is about",
       _in_order(_bgo_landed, "<fieldset id=who>", "Ban sent for Bob on all 2 maps."),
       _after(_bgo_landed, "<fieldset id=who>")[:300])
-check("it says sent, not banned",
-      "banned" not in _window(_bgo_landed, "Ban sent for Bob", 300).lower(),
-      _window(_bgo_landed, "Ban sent for Bob", 300))
+# The rule is that the banner must not claim the ban took effect - Obelisk sent ten
+# commands and heard "Server received, But no response!!" ten times, which is not the
+# same as knowing. It is not a ban on the word "banned": since 2f the banner points at
+# the Banned players list, and naming a section is not a claim about a player.
+_bgo_says = _window(_bgo_landed, "Ban sent for Bob", 400)
+for _claim in ("has been banned", "is banned", "now banned", "was banned",
+               "Banned Bob", "banned Bob"):
+    check("the banner does not say %r" % _claim, _claim not in _bgo_says, _bgo_says)
+check("it says the ban was sent", "Ban sent for Bob on all 2 maps." in _bgo_says,
+      _bgo_says)
 check("and says the list on screen is the old one",
       "reload to see it" in _window(_bgo_landed, "Ban sent for Bob", 300),
       _window(_bgo_landed, "Ban sent for Bob", 300))
@@ -3972,6 +3979,283 @@ for _what_b, _frag_b in sorted({
         "the kick action": "async def player_kick",
 }.items()):
     check("%s is untouched by the ban" % _what_b, _frag_b in _appsrc_2d, _frag_b)
+
+# ---- the unban route: the way back out, and the only record that it happened
+#
+# It keys on the id rather than on a row of the list, because two records of one id is
+# a normal thing to have - a ban that reached eight maps and was sent again is two
+# honest records - and undoing "entry 3" would leave the same person banned by entry 2.
+_unsent = []
+
+
+def _unban_rcon(fail=()):
+    async def go(host, port, password, command, timeout=6.0):
+        _unsent.append({"host": host, "command": command})
+        if any(f in host for f in fail):
+            raise TimeoutError("timed out after 10s")
+        return "Server received, But no response!!"
+    return go
+
+
+def _seed_bans(rows):
+    _lstore.data["bans"] = [dict(r) for r in rows]
+
+
+_UB1 = {"name": "Bob", "netid": "76561198000000001", "when": 1789000000,
+        "maps": {"The Island": "", "Ragnarok": "timed out"}, "kick": ""}
+_UB2 = {"name": "Bob", "netid": "76561198000000001", "when": 1789000900,
+        "maps": {"The Island": "", "Ragnarok": ""}, "kick": ""}
+_UB3 = {"name": "Dana", "netid": "999888777666555444", "when": 1789000500,
+        "maps": {"The Island": "", "Ragnarok": ""}, "kick": ""}
+_BOBS = {"netid": "76561198000000001", "name": "Bob", "when": "1789000000"}
+
+
+async def _post_unban(data, rcon=None, follow=True):
+    _unsent[:] = []
+    _bot_s1.LIVE = _kick_relay()
+    _bot_s1.rcon_with = rcon or _unban_rcon()
+    _appmod.clusterctl.status = lambda store: dict(
+        _lstatus, services=[dict(x) for x in _lstatus["services"]])
+    client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_lstore.get("admin_token"))})
+    r = await client.post("/admin/player/unban", data=data, allow_redirects=False)
+    body = await r.text()
+    where, landed, again = r.headers.get("Location", ""), "", ""
+    if follow and r.status == 302:
+        landed = await (await client.get(where)).text()
+        again = await (await client.get(where)).text()
+    await client.close()
+    return r.status, where, body, landed, again
+
+
+_t22 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _seed_bans([_UB1, _UB2, _UB3])
+    _uask_st, _, _uask_body, _, _ = _t22.run_until_complete(_post_unban(dict(_BOBS)))
+    _uask_sent, _uask_ev = list(_unsent), _drain2()
+    _uask_rows = [dict(r) for r in _lstore.data["bans"]]
+
+    _seed_bans([_UB1, _UB2, _UB3])
+    _ugo_st, _ugo_where, _, _ugo_landed, _ugo_again = _t22.run_until_complete(
+        _post_unban(dict(_BOBS, confirm="1")))
+    _ugo_sent, _ugo_ev = list(_unsent), _drain2()
+    _ugo_rows = [dict(r) for r in _lstore.data["bans"]]
+
+    _seed_bans([_UB1, _UB2, _UB3])
+    _upart_st, _upart_where, _, _upart_landed, _ = _t22.run_until_complete(
+        _post_unban(dict(_BOBS, confirm="1"), rcon=_unban_rcon(fail=("ragnarok",))))
+    _upart_sent, _upart_ev = list(_unsent), _drain2()
+    _upart_rows = [dict(r) for r in _lstore.data["bans"]]
+
+    _seed_bans([_UB1, _UB2, _UB3])
+    _unone_st, _, _unone_body, _, _ = _t22.run_until_complete(
+        _post_unban(dict(_BOBS, confirm="1"), rcon=_unban_rcon(fail=("asa-",))))
+    _unone_sent, _unone_ev = list(_unsent), _drain2()
+    _unone_rows = [dict(r) for r in _lstore.data["bans"]]
+
+    _seed_bans([_UB1, _UB2, _UB3])
+    _ubad_st, _, _ubad_body, _, _ = _t22.run_until_complete(
+        _post_unban({"netid": "765;DoExit", "confirm": "1"}))
+    _ubad_sent, _ubad_rows = list(_unsent), [dict(r) for r in _lstore.data["bans"]]
+    _drain2()
+
+    _unone_id_st, _, _unone_id_body, _, _ = _t22.run_until_complete(
+        _post_unban({"netid": "", "confirm": "1"}))
+    _unone_id_sent = list(_unsent)
+    _drain2()
+
+    # an id this manager never banned: the unban still goes out, and says so
+    _seed_bans([_UB3])
+    _uunknown_st, _, _, _uunknown_landed, _ = _t22.run_until_complete(
+        _post_unban({"netid": "11112222333344445", "confirm": "1"}))
+    _uunknown_sent = list(_unsent)
+    _uunknown_rows = [dict(r) for r in _lstore.data["bans"]]
+    _drain2()
+
+    # and the by-id field's first press, which has a row for nothing
+    _seed_bans([])
+    _ubyid_st, _, _ubyid_body, _, _ = _t22.run_until_complete(
+        _post_unban({"netid": "11112222333344445"}))
+    _ubyid_sent = list(_unsent)
+    _drain2()
+finally:
+    _t22.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+# ---- it asks first, and asking does nothing
+check("pressing Unban asks before it acts", _uask_st == 200, _uask_st)
+check("naming who", "Unban Bob?" in _uask_body, _window(_uask_body, "whorow asking", 400))
+check("in the bans section, not the roster",
+      _in_order(_uask_body, "<fieldset id=bans>", "Unban Bob?"),
+      _window(_from(_uask_body, "<fieldset id=bans>"), "asking", 300))
+check("nothing was sent while it was asking", _uask_sent == [], _uask_sent)
+check("nothing was announced", _uask_ev == [], [i["event"] for i in _uask_ev])
+check("and nothing was marked", not any(i.get("unbanned") for i in _uask_rows),
+      _uask_rows)
+check("the by-id field asks the same way",
+      _ubyid_st == 200 and "Unban this id?" in _ubyid_body,
+      _window(_ubyid_body, "asking", 400))
+check("and sends nothing either", _ubyid_sent == [], _ubyid_sent)
+
+# ---- confirmed: every map, because the ban went to every map
+check("the unban goes to every map",
+      sorted(x["command"] for x in _ugo_sent) ==
+      ["UnbanPlayer 76561198000000001"] * 2, [x["command"] for x in _ugo_sent])
+check("two maps, two hosts", len({x["host"] for x in _ugo_sent}) == 2,
+      [x["host"] for x in _ugo_sent])
+check("keyed on the id, never the name",
+      all("Bob" not in x["command"] for x in _ugo_sent),
+      [x["command"] for x in _ugo_sent])
+check("and it bans nobody on the way past",
+      not any("BanPlayer" in x["command"] and "Unban" not in x["command"]
+              for x in _ugo_sent), [x["command"] for x in _ugo_sent])
+check("the operator is redirected, so a refresh cannot unban twice", _ugo_st == 302,
+      _ugo_st)
+check("to the list it is about", _ugo_where.endswith("#bans") and "said=" in _ugo_where,
+      _ugo_where)
+check("the result is shown in that section",
+      _in_order(_ugo_landed, "<fieldset id=bans>",
+                "Unban sent for Bob on all 2 maps"),
+      _window(_from(_ugo_landed, "<fieldset id=bans>"), "Unban sent", 300))
+check("it says sent, and does not claim they are back",
+      "is unbanned" not in _window(_ugo_landed, "Unban sent for Bob", 300)
+      and "they can join again" in _window(_ugo_landed, "Unban sent for Bob", 300),
+      _window(_ugo_landed, "Unban sent for Bob", 300))
+check("said once, to whoever pressed it",
+      "Unban sent for Bob" not in _ugo_again,
+      _window(_ugo_again, "<fieldset id=bans>", 300))
+check("announced at info",
+      ("player.unban_sent", "info") in [(i["event"], i["level"]) for i in _ugo_ev],
+      [(i["event"], i["level"]) for i in _ugo_ev])
+
+# ---- and the record is marked, not removed
+check("nothing is deleted from the list", len(_ugo_rows) == 3, _ugo_rows)
+check("every record of that id is marked",
+      [bool(r.get("unbanned")) for r in _ugo_rows] == [True, True, False], _ugo_rows)
+check("which is the point of keying on the id rather than on a row",
+      len([r for r in _ugo_rows if r["netid"] == "76561198000000001"]) == 2, _ugo_rows)
+check("somebody else's ban is untouched",
+      not _ugo_rows[2].get("unbanned"), _ugo_rows[2])
+check("and what the ban did is still readable afterwards",
+      _bans_app.missed(_ugo_rows[0]) == [("Ragnarok", "timed out")], _ugo_rows[0])
+check("the list now says so on the page",
+      "unbanned " in _from(_ugo_landed, "<fieldset id=bans>"),
+      _window(_from(_ugo_landed, "<fieldset id=bans>"), "unbanned", 200))
+
+# ---- one map short
+check("a partial redirects like the whole one", _upart_st == 302, _upart_st)
+check("naming the map that did not take it",
+      "NOT on Ragnarok" in _from(_upart_landed, "<fieldset id=bans>"),
+      _window(_upart_landed, "Unban sent for Bob", 400))
+check("and saying they are still banned there",
+      "still banned there" in _from(_upart_landed, "<fieldset id=bans>"),
+      _window(_upart_landed, "Unban sent for Bob", 400))
+check("ending with something to do about it",
+      "Try those maps again, or check they are reachable." in
+      _from(_upart_landed, "<fieldset id=bans>"),
+      _window(_upart_landed, "Unban sent for Bob", 400))
+check("in amber, in the section it is about",
+      _in_order(_upart_landed, "<fieldset id=bans>", "<div class=warn>",
+                "Unban sent for Bob")
+      and "<div class=problem>" not in _upart_landed,
+      _window(_from(_upart_landed, "<fieldset id=bans>"), "<div class=warn>", 300))
+check("announced as a partial, at warning",
+      ("player.unban_partial", "warning") in
+      [(i["event"], i["level"]) for i in _upart_ev],
+      [(i["event"], i["level"]) for i in _upart_ev])
+check("never as a clean one",
+      not any(i["event"] == "player.unban_sent" for i in _upart_ev),
+      [i["event"] for i in _upart_ev])
+check("the records are still marked, because the unban did happen somewhere",
+      [bool(r.get("unbanned")) for r in _upart_rows] == [True, True, False],
+      _upart_rows)
+
+# ---- and nothing at all
+check("an unban that reached no map is not a redirect", _unone_st == 200, _unone_st)
+check("it says it did NOT send",
+      "did NOT send to any of the 2 maps" in _unone_body,
+      _after(_unone_body, "did NOT")[:260])
+check("and that they are still banned",
+      "still banned" in _unone_body, _after(_unone_body, "did NOT")[:260])
+check("in red", "<div class=problem>" in _unone_body, _unone_body[:400])
+check("announced as a failure, at error",
+      ("player.unban_failed", "error") in
+      [(i["event"], i["level"]) for i in _unone_ev],
+      [(i["event"], i["level"]) for i in _unone_ev])
+check("and never as one that was sent",
+      not any(i["event"] in ("player.unban_sent", "player.unban_partial")
+              for i in _unone_ev), [i["event"] for i in _unone_ev])
+check("NOTHING is marked unbanned when nothing took it - the one lie this list "
+      "must not tell", not any(r.get("unbanned") for r in _unone_rows), _unone_rows)
+
+for _tail, _want in (("unban_sent", "✅"), ("unban_partial", "⚠"),
+                     ("unban_failed", "❌")):
+    check("%s has an icon of its own" % _tail, _ann2.ICONS.get(_tail) == _want,
+          _ann2.ICONS.get(_tail))
+
+# ---- the id is checked, because this one can be typed
+check("an id with a semicolon in it is refused", _ubad_st == 200, _ubad_st)
+check("saying what an id is",
+      "platform ids are letters and digits" in _ubad_body,
+      _after(_ubad_body, "class=warn")[:260])
+check("in amber", "<div class=problem>" not in _ubad_body, _ubad_body[:400])
+check("and NOTHING was sent", _ubad_sent == [], _ubad_sent)
+check("nor marked", not any(r.get("unbanned") for r in _ubad_rows), _ubad_rows)
+check("an empty id is refused too",
+      _unone_id_st == 200 and "did not say which id" in _unone_id_body,
+      _after(_unone_id_body, "class=warn")[:200])
+check("and sends nothing", _unone_id_sent == [], _unone_id_sent)
+
+# ---- an id this manager never banned still works, and says so
+check("an id with no record here is still unbanned on every map",
+      sorted(x["command"] for x in _uunknown_sent) ==
+      ["UnbanPlayer 11112222333344445"] * 2,
+      [x["command"] for x in _uunknown_sent])
+check("and the page says the list did not change, rather than implying it did",
+      "no record of that id" in _from(_uunknown_landed, "<fieldset id=bans>"),
+      _window(_uunknown_landed, "Unban sent", 300))
+check("nobody else's record was touched",
+      not any(r.get("unbanned") for r in _uunknown_rows), _uunknown_rows)
+
+# ---- the shape of the route, and what it left alone
+_unsrc = _after(_appsrc_2d, "async def player_unban").split(
+    chr(10) + "    async def ")[0]
+check("the id is checked before anything is sent",
+      _in_order(_unsrc, "valid_netid", "if not confirmed", "UnbanPlayer"),
+      _unsrc[:900])
+check("every map is a target",
+      "rcon_targets(store)" in _unsrc, _window(_unsrc, "rcon_targets", 200))
+check("all at once, like the ban", "asyncio.gather" in _unsrc,
+      _window(_unsrc, "gather", 200))
+check("keyed on the id", 'UnbanPlayer %s" % netid' in _unsrc,
+      _window(_unsrc, "UnbanPlayer", 140))
+check("the ledger is marked only after something took it",
+      _in_order(_unsrc, "if not took:", "mark_unbanned"),
+      _window(_unsrc, "if not took", 600))
+check("and it marks rather than deletes",
+      "mark_unbanned" in _unsrc and "del " not in _unsrc
+      and ".remove(" not in _unsrc, _window(_unsrc, "mark_unbanned", 200))
+for _what_u, _frag_u in sorted({
+        "the ban action": "async def player_ban",
+        "the kick action": "async def player_kick",
+        "the message action": "async def player_message",
+        "the apply gate": "def verify_every_map(store):",
+        "the restore gate": "def verify_restored(store, key, note=None):",
+        "the stop guard": "ui.render_stop_warning(counts, silent)",
+        "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
+}.items()):
+    check("%s is untouched by the unban" % _what_u, _frag_u in _appsrc_2d, _frag_u)
+
+# ---- and the ban now points at the list it writes to
+check("the ban result names where the record went",
+      "Recorded - see Banned players below" in _bgo_says, _bgo_says)
+check("the page it points at is on the same page, below the roster",
+      _in_order(_bgo_landed, "<fieldset id=who>", "<fieldset id=bans>"),
+      "sections out of order")
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

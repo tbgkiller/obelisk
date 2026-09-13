@@ -89,3 +89,37 @@ def sent_to(entry):
 def missed(entry):
     """The maps that did not, and why."""
     return sorted((k, v) for k, v in (entry.get("maps") or {}).items() if v)
+
+
+def is_unbanned(entry):
+    """Has this one been undone from here?"""
+    return bool((entry or {}).get("unbanned"))
+
+
+def entries_for(store, netid):
+    """Every record of this id being banned, oldest first.
+
+    Plural on purpose. A ban that reached eight maps of ten and was sent again is two
+    honest records of the same id, and the second does not replace the first - what
+    happened on those eight maps the first time is still what happened.
+    """
+    netid = str(netid or "")
+    return [e for e in (store.data.get("bans") or []) if e.get("netid") == netid]
+
+
+def mark_unbanned(store, netid, when=None):
+    """Mark every record of this id as undone. Returns the ones it marked.
+
+    Marked, not removed. Deleting the row would make the list agree with the present
+    and lie about the past: "was this person ever banned, and did it reach every map?"
+    is the question somebody asks precisely because they were let back in. An entry
+    already marked is left alone, so a second unban does not rewrite when the first
+    one happened.
+    """
+    at = int(when if when is not None else time.time())
+    marked = [e for e in entries_for(store, netid) if not is_unbanned(e)]
+    for entry in marked:
+        entry["unbanned"] = at
+    if marked:
+        store.save()
+    return marked
