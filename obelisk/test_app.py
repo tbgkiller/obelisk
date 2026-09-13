@@ -43,6 +43,20 @@ def _from(body, anchor):
     return body[i:] if i >= 0 else ""
 
 
+
+def _after(body, anchor):
+    """`body.split(anchor)[1]`, but "" instead of IndexError when it is not there.
+
+    The same family as .index, and missed in the first pass: splitting on a needle that
+    is gone raises, so a check scoped this way reports a crash rather than a failure -
+    and a crash names no check and stops the module before the rest of it runs. The
+    segment is the one split() would have given, so nothing changes about what is being
+    looked at.
+    """
+    parts = body.split(anchor)
+    return parts[1] if len(parts) > 1 else ""
+
+
 def check(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else " :: %s" % (detail,)))
     if not cond:
@@ -1562,7 +1576,7 @@ check("and the placeholder is a real map name, not a word",
       'placeholder="The Island"' in _b3body, "placeholder is not a map name")
 check("force is offered as a deliberate tick, not the default",
       'type=checkbox name=force' in _b3body and "checked" not in
-      _b3body.split("name=force")[1][:40], "force is not an opt-in")
+      _after(_b3body, "name=force")[:40], "force is not an opt-in")
 check("the consequence is stated where the decision is made",
       "no undo button" in _b3body and "entire world" in _b3body, "no consequence text")
 check("in warning styling rather than as a quiet note",
@@ -2765,7 +2779,7 @@ check("the unreadable row is shown and says what it costs",
 # the count column and the name list are one poll, so they agree on screen
 check("a map counted at four lists four names",
       ">4</td>" in _cluster_r
-      and _cluster_r.split("The Island</div>")[1].count("<div class=whorow>") >= 4,
+      and _after(_cluster_r, "The Island</div>").count("<div class=whorow>") >= 4,
       _cluster_r[-1600:])
 
 # ---- one header, not two

@@ -41,6 +41,20 @@ def _from(body, anchor):
     return body[i:] if i >= 0 else ""
 
 
+
+def _after(body, anchor):
+    """`body.split(anchor)[1]`, but "" instead of IndexError when it is not there.
+
+    The same family as .index, and missed in the first pass: splitting on a needle that
+    is gone raises, so a check scoped this way reports a crash rather than a failure -
+    and a crash names no check and stops the module before the rest of it runs. The
+    segment is the one split() would have given, so nothing changes about what is being
+    looked at.
+    """
+    parts = body.split(anchor)
+    return parts[1] if len(parts) > 1 else ""
+
+
 def check(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else " :: %s" % (detail,)))
     if not cond:
@@ -400,8 +414,8 @@ check("and every other row is untouched",
       all(x in _a10 for x in ("EngramEntry_A_C", "EngramEntry_B_C",
                               "EngramEntry_D_C", "EngramEntry_NEW_C")), _a10)
 check("order is still the file's",
-      [l.split('"')[1] for l in _a10.splitlines() if "OverrideNamedEngram" in l
-       and l.startswith("Override")]
+      [_after(l, chr(34)).split(chr(34))[0] for l in _a10.splitlines()
+       if "OverrideNamedEngram" in l and l.startswith("Override")]
       == ["EngramEntry_A_C", "EngramEntry_B_C", "EngramEntry_D_C", "EngramEntry_NEW_C"])
 
 # ---- the Phase 3 trap again: a store that has not adopted must not wipe the array

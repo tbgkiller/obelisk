@@ -39,6 +39,20 @@ def _in_order(body, *needles):
     return all(i >= 0 for i in at) and at == sorted(at)
 
 
+
+def _after(body, anchor):
+    """`body.split(anchor)[1]`, but "" instead of IndexError when it is not there.
+
+    The same family as .index, and missed in the first pass: splitting on a needle that
+    is gone raises, so a check scoped this way reports a crash rather than a failure -
+    and a crash names no check and stops the module before the rest of it runs. The
+    segment is the one split() would have given, so nothing changes about what is being
+    looked at.
+    """
+    parts = body.split(anchor)
+    return parts[1] if len(parts) > 1 else ""
+
+
 def check(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + ((" :: " + str(detail)) if detail and not cond else ""))
     if not cond: fails.append(name)
@@ -874,12 +888,12 @@ _before = render_settings(_fld)
 check("no pending marker when nothing is queued",
       ">pending</span>" not in _before)
 _pend.stage(_fld, {"max_players": 250})
-_after = render_settings(_fld)
-check("the field shows what was asked for", 'value="250"' in _after, "250 not in field")
-check("with a word saying it is waiting", ">pending</span>" in _after)
+_after_save = render_settings(_fld)
+check("the field shows what was asked for", 'value="250"' in _after_save, "250 not in field")
+check("with a word saying it is waiting", ">pending</span>" in _after_save)
 check("while the live value is untouched", _fld.get("max_players") == 70)
 check("a setting that is not queued is unaffected",
-      'value="20g"' in _after or "20g" in _after)
+      'value="20g"' in _after_save or "20g" in _after_save)
 
 
 # ---- the top bar stays put
@@ -1337,10 +1351,10 @@ check("not one heading each",
 check("nor one note each", _one_on.count("<div class=whonote>") == 1,
       _one_on.count("<div class=whonote>"))
 check("the populated map is not swept into the empty line",
-      "Ragnarok" not in _one_on.split("Nobody on:")[1], _one_on[-500:])
+      "Ragnarok" not in _after(_one_on, "Nobody on:"), _one_on[-500:])
 
 # the collapsed line keeps the table's order, like everything else here
-_listed = _one_on.split("Nobody on: ")[1].split(" <span")[0].split(", ")
+_listed = _after(_one_on, "Nobody on: ").split(" <span")[0].split(", ")
 check("the empty maps are listed in the order the table above lists them",
       _listed == [m for m in _TEN if m != "Ragnarok"], _listed)
 
@@ -1353,7 +1367,7 @@ check("a map that did not answer still gets its own row",
 check("naming itself, since it has no heading to name it",
       "<span class=whoname>Valguero</span>" in _with_quiet, _with_quiet[:800])
 check("and it is not in the Nobody-on line",
-      "Valguero" not in _with_quiet.split("Nobody on:")[1], _with_quiet[-400:])
+      "Valguero" not in _after(_with_quiet, "Nobody on:"), _with_quiet[-400:])
 check("which now counts eight", "(8 maps)" in _with_quiet, _with_quiet[-300:])
 check("a blackout is ten of those rows, not twenty lines",
       ui.render_whos_online({"by_map": {m: [] for m in _TEN[:1]}, "age": 5},
@@ -1402,7 +1416,7 @@ check("one form per real player, not one for the map",
 #
 # The "name" on a fallback row is a whole line the parser could not split. Sending to
 # it would address nobody, and a button that cannot work is worse than no button.
-_after_raw = _msg_who.split("some raw line we could not split")[1]
+_after_raw = _after(_msg_who, "some raw line we could not split")
 check("an unreadable row gets no message form",
       "/admin/player/message" not in _after_raw.split("</div>")[0], _after_raw[:300])
 check("it still says why there is nothing to press",
