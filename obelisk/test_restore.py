@@ -19,6 +19,16 @@ from .settings import Store
 fails = []
 
 
+def named(key):
+    """The confirmation restore_map now wants: the map's own name, typed.
+
+    Spelled through the catalogue rather than written out, so a map that gets renamed
+    breaks this loudly instead of leaving every restore test refused.
+    """
+    from .maps import BY_KEY
+    return BY_KEY[key]["name"]
+
+
 def check(name, cond, detail=""):
     print(("PASS " if cond else "FAIL ") + name + ("" if cond else " :: %s" % (detail,)))
     if not cond:
@@ -207,6 +217,7 @@ check("and it is refused before anything is stopped - preflight opens the archiv
 
 _stopped_m = []
 ok_x, msg_x, _d = restore.restore_map(st_m, arc_m, "ragnarok",
+                                      confirm=named("ragnarok"),
                                       stop=lambda k: (_stopped_m.append(k) or (True, "")))
 check("so restoring it never gets as far as stopping the map",
       not ok_x and _stopped_m == [], (msg_x, _stopped_m))
@@ -223,7 +234,7 @@ check("the live world is the newer one before we start",
 
 stopped, started = [], []
 ok_r, msg_r, det = restore.restore_map(
-    st3, arc3, "island",
+    st3, arc3, "island", confirm=named("island"),
     stop=lambda k: (stopped.append(k) or (True, "stopped")),
     start=lambda k: (started.append(k) or (True, "started")),
     verify=lambda k: (True, []))
@@ -258,7 +269,8 @@ check("with a size, so somebody can decide", left and left[0]["bytes"] > 0, left
 # ---------------------------------------------------------------- no-op safety
 before = world_marker(live_ark)
 ok_n, msg_n, det_n = restore.restore_map(
-    st3, arc3, "island", stop=lambda k: (True, ""), start=lambda k: (True, ""),
+    st3, arc3, "island", confirm=named("island"),
+    stop=lambda k: (True, ""), start=lambda k: (True, ""),
     verify=lambda k: (True, []))
 check("restoring the same archive again still succeeds", ok_n, msg_n)
 check("and the world is what it should be", world_marker(live_ark) == before)
@@ -273,6 +285,7 @@ ok, _m, arc4 = backup.create(st4)
 worlds(ark4, "live2")
 live4 = os.path.join(ark4, "shared", "SavedArks", "TheIsland_WP", "TheIsland_WP.ark")
 ok_f, msg_f, _d = restore.restore_map(st4, arc4, "island",
+                                      confirm=named("island"),
                                       stop=lambda k: (False, "container is wedged"))
 check("a map that will not stop aborts the restore", not ok_f, msg_f)
 check("and says nothing was changed", "nothing was changed" in msg_f, msg_f)
@@ -287,7 +300,7 @@ ok, _m, arc5 = backup.create(st5)
 worlds(ark5, "keepme")                          # live world is good again
 started5 = []
 ok_f2, msg_f2, _d2 = restore.restore_map(
-    st5, arc5, "island", stop=lambda k: (True, ""),
+    st5, arc5, "island", confirm=named("island"), stop=lambda k: (True, ""),
     start=lambda k: (started5.append(k) or (True, "")))
 check("an archive with an unreadable world is refused", not ok_f2, msg_f2)
 check("and says it was not put in place", "not put in place" in msg_f2, msg_f2)
@@ -300,7 +313,8 @@ worlds(ark6, "archived")
 ok, _m, arc6 = backup.create(st6)
 worlds(ark6, "wasthere")
 ok_f3, msg_f3, det3 = restore.restore_map(
-    st6, arc6, "island", stop=lambda k: (True, ""), start=lambda k: (True, ""),
+    st6, arc6, "island", confirm=named("island"),
+    stop=lambda k: (True, ""), start=lambda k: (True, ""),
     verify=lambda k: (False, ["RCON is not answering"]))
 check("a restore that fails its checks is reported as a failure", not ok_f3, msg_f3)
 check("the reason is passed through", "RCON is not answering" in msg_f3, msg_f3)
@@ -323,7 +337,7 @@ worlds(ark7, "before")
 
 seen = []
 ok_g, msg_g, det_g = restore.restore_map(
-    st7, arc7, "island",
+    st7, arc7, "island", confirm=named("island"),
     stop=lambda k: (True, ""), start=lambda k: (True, ""),
     verify=lambda k: (seen.append(k) or (True, [])),
     on_step=lambda t: seen.append("step:%s" % t))
@@ -388,6 +402,194 @@ ok_bw, why_bw = gates()
 check("a world that will not open fails the gates", not ok_bw, why_bw)
 check("and says the world does not verify",
       any("does not verify" in r for r in why_bw), why_bw)
+
+
+# ---------------------------------------------------------------- the guards
+#
+# This replaces one map's whole world directory - every base, every dino, every day
+# since the archive was taken - while people may be standing in it. Nothing is deleted
+# (the world it replaces becomes .superseded-<stamp>) but there is no undo anywhere in
+# the product, so from the operator's seat it does not come back. It was the least
+# guarded action in Obelisk: the save-point rollback beside it already refused for
+# players, already asked the map to save, already took a force flag. The bigger hammer
+# had none of them.
+
+st_g, ark_g = fresh()
+worlds(ark_g, "livenow")
+_ok, _m, arc_g = backup.create(st_g)
+worlds(ark_g, "livelater")
+live_g = os.path.join(ark_g, "shared", "SavedArks", "TheIsland_WP", "TheIsland_WP.ark")
+
+
+class Tripwire:
+    """Everything a refusal must not have done by the time it says no."""
+
+    def __init__(self):
+        self.calls = []
+
+    def stop(self, key):
+        self.calls.append("stop:%s" % key)
+        return True, ""
+
+    def start(self, key):
+        self.calls.append("start:%s" % key)
+        return True, ""
+
+    def preflight(self, *a, **k):
+        self.calls.append("preflight")
+        return True, []
+
+
+def guarded(**over):
+    """restore_map with the tripwires in, and everything else at its default."""
+    trip = Tripwire()
+    real_pre, real_copy = restore.preflight, restore.shutil.copytree
+    copied = []
+    restore.preflight = trip.preflight
+    restore.shutil.copytree = lambda *a, **k: (copied.append(a[:2])
+                                               or real_copy(*a, **k))
+    try:
+        kw = dict(stop=trip.stop, start=trip.start, verify=lambda k: (True, []))
+        kw.update(over)
+        out = restore.restore_map(st_g, arc_g, "island", **kw)
+    finally:
+        restore.preflight, restore.shutil.copytree = real_pre, real_copy
+    return out, trip, copied
+
+
+# 1. no confirmation at all
+(ok_c, msg_c, det_c), trip_c, copied_c = guarded()
+check("a restore with no confirmation is refused", not ok_c, msg_c)
+check("it says which word to type", "type The Island" in msg_c, msg_c)
+check("and that nothing has been changed", "Nothing has been changed" in msg_c, msg_c)
+check("nothing was stopped or started", trip_c.calls == [], trip_c.calls)
+check("and nothing was copied", copied_c == [], copied_c)
+check("the refusal is marked as a refusal, not a failure",
+      det_c.get("refused") == "confirm", det_c)
+check("the live world is exactly as it was", world_marker(live_g) == "livelater")
+
+# 2. the guard runs BEFORE preflight - a refusal never opens the archive
+check("a refusal never gets as far as reading the archive",
+      "preflight" not in trip_c.calls, trip_c.calls)
+
+# 3. the wrong map's name does not do
+(ok_w, msg_w, _dw), trip_w, _cw = guarded(confirm="Ragnarok")
+check("another map's name does not confirm this one", not ok_w, msg_w)
+check("and still stops nothing", trip_w.calls == [], trip_w.calls)
+
+# 4. the right name, however it was typed
+check("the name confirms", restore.confirms("island", "The Island"))
+check("case is not the point", restore.confirms("island", "the island"))
+check("nor is stray whitespace", restore.confirms("island", "  The Island  "))
+check("an empty confirmation never passes", not restore.confirms("island", ""))
+check("and neither does None", not restore.confirms("island", None))
+check("a map id is not a map name", not restore.confirms("island", "TheIsland_WP"))
+
+# 5. players on the map - a hard block, the way the save-point rollback has always
+#    been. The message has to name the map and the count, because "someone is on"
+#    with ten maps is not an answer anybody can act on.
+(ok_p, msg_p, det_p), trip_p, _cp = guarded(
+    confirm=named("island"), players=lambda: (3, {"island": 3}, []))
+check("players on the map stop the restore", not ok_p, msg_p)
+check("the message names the map", "The Island" in msg_p, msg_p)
+check("and the count", "3 player" in msg_p, msg_p)
+check("it says nothing has been changed", "Nothing has been changed" in msg_p, msg_p)
+check("it offers force rather than just refusing", "force" in msg_p, msg_p)
+check("nothing was stopped", trip_p.calls == [], trip_p.calls)
+check("marked as refused for players", det_p.get("refused") == "players", det_p)
+
+(ok_p1, msg_p1, _d), _t, _c = guarded(
+    confirm=named("island"), players=lambda: (1, {"island": 1}, []))
+check("one player reads as one player, not 1 players", "1 player is on" in msg_p1,
+      msg_p1)
+
+# a player on a DIFFERENT map is not a reason to refuse this one
+(ok_o, msg_o, _do), trip_o, _co = guarded(
+    confirm=named("island"), players=lambda: (4, {"ragnarok": 4}, []))
+check("players on another map do not block this one", ok_o, msg_o)
+
+# 6. a map that did not answer counts as occupied - the same rule restore_point
+#    keeps. "It is not known whether anyone is on it" is not "nobody is on it".
+(ok_s, msg_s, det_s), trip_s, _cs = guarded(
+    confirm=named("island"), players=lambda: (0, {}, [("island", "timed out")]))
+check("a map that did not answer is treated as occupied", not ok_s, msg_s)
+check("and says so rather than implying it is empty",
+      "did not answer" in msg_s and "not known" in msg_s, msg_s)
+check("nothing was stopped", trip_s.calls == [], trip_s.calls)
+check("marked as refused because it went silent",
+      det_s.get("refused") == "silent", det_s)
+
+# 7. force overrides both, because "restore anyway" is a real thing to mean
+(ok_fp, msg_fp, _dfp), _tfp, _cfp = guarded(
+    confirm=named("island"), force=True, players=lambda: (3, {"island": 3}, []))
+check("force restores with players on", ok_fp, msg_fp)
+(ok_fs, msg_fs, _dfs), _tfs, _cfs = guarded(
+    confirm=named("island"), force=True,
+    players=lambda: (0, {}, [("island", "timed out")]))
+check("force restores past a map that did not answer", ok_fs, msg_fs)
+check("but force is not a substitute for the confirmation",
+      not guarded(force=True)[0][0], guarded(force=True)[0][1])
+
+# 8. the save is best effort. The world being replaced is copied aside as a file a few
+#    lines later, so a save that does not happen costs nothing - and blocking on it
+#    would refuse to restore a map exactly when it is unhealthy, which is when
+#    somebody most wants to.
+saved = []
+(ok_sv, msg_sv, det_sv), _tsv, _csv = guarded(
+    confirm=named("island"),
+    save=lambda k: (saved.append(k) or (True, "saved")))
+check("the map is asked to save before it is stopped", saved == ["island"], saved)
+check("and the restore goes ahead", ok_sv, msg_sv)
+_steps = det_sv.get("steps") or []
+check("the save is a step somebody can see",
+      any("save first" in x for x in _steps), _steps)
+check("and it runs before the archive is verified",
+      next(i for i, x in enumerate(_steps) if "save first" in x)
+      < next(i for i, x in enumerate(_steps) if "archive verified" in x), _steps)
+
+
+def boom(_key):
+    raise RuntimeError("RCON is not answering")
+
+
+try:
+    (ok_b, msg_b, det_b), _tb, _cb = guarded(confirm=named("island"), save=boom)
+    raised_b = ""
+except Exception as e:                            # noqa: BLE001 - that is the assertion
+    ok_b, msg_b, det_b = False, "", {}
+    raised_b = "%s: %s" % (e.__class__.__name__, e)
+check("a save that raises does not stop the restore", ok_b and not raised_b,
+      raised_b or msg_b)
+check("and the exception never escapes restore_map", raised_b == "", raised_b)
+_bsteps = det_b.get("steps") or []
+check("and the step says it carried on",
+      any("carrying on" in x for x in _bsteps), _bsteps)
+check("naming what went wrong",
+      any("RCON is not answering" in x for x in _bsteps), _bsteps)
+
+(ok_r2, msg_r2, det_r2), _tr2, _cr2 = guarded(
+    confirm=named("island"), save=lambda k: (False, "it is not running"))
+check("a save that answers no does not stop the restore either", ok_r2, msg_r2)
+
+# 9. the messages are sentences, not tuples. A stray trailing comma made the success
+#    message a 1-tuple, so a finished restore announced the brackets and quotes to
+#    Discord along with the sentence.
+check("a successful restore's message is a string", isinstance(msg_sv, str),
+      type(msg_sv).__name__)
+check("and reads as a sentence", msg_sv.startswith("Restored"), msg_sv)
+check("with no tuple punctuation in it",
+      not msg_sv.startswith("(") and not msg_sv.endswith(",)"), msg_sv)
+
+st_t, ark_t = fresh()
+worlds(ark_t, "there")
+_okt, _mt, arc_t = backup.create(st_t)
+ok_ns, msg_ns, _dns = restore.restore_map(
+    st_t, arc_t, "island", confirm=named("island"),
+    stop=lambda k: (True, ""), start=lambda k: (False, "it would not come back"))
+check("a map that does not come back is reported", not ok_ns, msg_ns)
+check("as a string, not a tuple", isinstance(msg_ns, str), type(msg_ns).__name__)
+check("that names the world kept on disk", "still on disk" in msg_ns, msg_ns)
+
 
 print("\nFAILURES: %s" % fails if fails else "\nall restore tests passed")
 sys.exit(1 if fails else 0)

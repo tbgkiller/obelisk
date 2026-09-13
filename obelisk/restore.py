@@ -303,14 +303,41 @@ def preflight(store, path, map_key):
 
 
 # --------------------------------------------------------------------------- doing it
+def confirms(map_key, typed):
+    """Did the operator type this map's name? Case and spacing are not the point.
+
+    The word is the map's own name rather than a fixed one like DISCONnect's, because
+    what this guards against is not only "did you mean to do this" but "did you mean to
+    do it to *this map*". A fixed word can be typed from muscle memory onto whichever
+    map the page happens to be showing; a name cannot.
+    """
+    want = mapcat.BY_KEY[map_key]["name"] if map_key in mapcat.BY_KEY else ""
+    return bool(want) and str(typed or "").strip().casefold() == want.casefold()
+
+
 def restore_map(store, path, map_key, stop=None, start=None, verify=None,
-                snapshot=True, now=None, on_step=None):
+                snapshot=True, now=None, on_step=None, confirm=None, force=False,
+                players=None, save=None):
     """Put one map's world back from an archive. (ok, message, detail).
 
-    The order is the whole safety argument: verify the archive, copy the world that is
-    about to be replaced, stop only this map, extract beside the real data, prove what
-    came out, swap, start, and prove the server. A failure at any point leaves the map
-    on the world it already had.
+    The order is the whole safety argument: refuse unless somebody typed this map's
+    name, refuse if anybody is playing on it, ask it to save, verify the archive, copy
+    the world that is about to be replaced, stop only this map, extract beside the real
+    data, prove what came out, swap, start, and prove the server. A failure at any point
+    leaves the map on the world it already had.
+
+    The three guards at the front are new and the reason is what this function does to
+    a live cluster. It replaces a map's whole world directory - every base, every dino,
+    every day since the archive was taken - while people may be standing in it. Nothing
+    is deleted: the world it replaces becomes .superseded-<stamp> and a copy goes to the
+    backups folder. But there is no undo button anywhere in the product, so from the
+    operator's seat this is irreversible, and it was the least guarded action in it: the
+    save-point rollback beside it already refused for players, already asked the map to
+    save, and already took a force flag. The bigger hammer had none of them.
+
+    `confirm` is what the operator typed. `force` overrides the player count, the way it
+    does for a restore point - "restore anyway" is a real thing to mean at three in the
+    morning, and it should be a decision rather than the default.
     """
     map_id = _map_id(map_key)
     ark = layout.ark_root_of(store)
@@ -318,12 +345,49 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now or time.time()))
     detail = {"map": map_key, "map_id": map_id, "archive": os.path.basename(path),
               "steps": []}
+    name = mapcat.BY_KEY[map_key]["name"] if map_key in mapcat.BY_KEY else map_key
 
     def step(text):
         detail["steps"].append(text)
         log.info("restore %s: %s", map_id, text)
         if on_step:
             on_step(text)
+
+    # Everything that can refuse, refuses first - before the archive is opened, before
+    # anything is copied, before a container is touched. A refusal that has already
+    # decompressed 8 GB is a refusal that took a side effect on the way to saying no.
+    if not confirms(map_key, confirm):
+        detail["refused"] = "confirm"
+        return False, ("Not restoring: type %s to confirm you mean to replace that "
+                       "map's world. Nothing has been changed." % name), detail
+
+    if not force:
+        total, counts, silent = (players or (lambda: (0, {}, [])))()
+        mine = counts.get(map_key, counts.get(name, 0))
+        if any(l in (map_key, name) for l, _w in silent):
+            detail["refused"] = "silent"
+            return False, ("%s did not answer, so it is not known whether anyone is on "
+                           "it. Nothing has been changed. Restore with force if you "
+                           "mean to anyway." % name), detail
+        if mine:
+            detail["refused"] = "players"
+            return False, ("%d player%s on %s and this replaces the world they are "
+                           "standing in. Nothing has been changed. Restore with force, "
+                           "or wait until they are off."
+                           % (mine, " is" if mine == 1 else "s are", name)), detail
+
+    # Ask the map to write its world out before it is stopped, and carry on either way.
+    # Best effort on purpose, for the reason restore_point gives: the world being
+    # replaced is copied aside as a file a few lines down, so a save that does not
+    # happen costs nothing here - and blocking on it would refuse to restore a map
+    # exactly when it is unhealthy, which is when somebody most wants to.
+    if save:
+        step("asking %s to save first" % name)
+        try:
+            ok_sv, why_sv = save(map_key)
+        except Exception as e:                    # noqa: BLE001 - best effort means this
+            ok_sv, why_sv = False, str(e).strip() or e.__class__.__name__
+        step("saved" if ok_sv else "it did not answer, carrying on: %s" % why_sv)
 
     ok, problems = preflight(store, path, map_key)
     if not ok:
@@ -417,7 +481,7 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
     if not ok_r:
         return False, ("The world was restored but %s did not start again: %s. The "
                        "previous world is still on disk as %s."
-                       % (map_id, why_r, os.path.basename(superseded or "-")), ), detail
+                       % (map_id, why_r, os.path.basename(superseded or "-"))), detail
 
     if verify:
         ok_v, reasons = verify(map_key)
@@ -431,7 +495,7 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
 
     return True, ("Restored %s from %s. The world it replaced is kept as %s until you "
                   "remove it." % (map_id, os.path.basename(path),
-                                  os.path.basename(superseded or "-")), ), detail
+                                  os.path.basename(superseded or "-"))), detail
 
 
 def _restart(start, map_key, detail):

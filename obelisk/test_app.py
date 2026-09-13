@@ -450,9 +450,9 @@ check("the posted archive name is stripped to a basename",
       "os.path.basename" in _appsrc.split("_archive_path")[1][:400], "no basename call")
 check("and the result is confined to the backups folder",
       "startswith(base" in _appsrc.split("_archive_path")[1][:400], "no prefix check")
-check("a restore never runs alongside another cluster action",
-      "cluster_busy" in _appsrc.split("async def restore_run")[1][:1200])
 _runsrc = _appsrc.split("async def restore_run")[1].split("# ---- cloud")[0]
+check("a restore never runs alongside another cluster action",
+      "cluster_busy" in _runsrc, _runsrc[:200])
 check("and it runs off the event loop like the backup does",
       "to_thread" in _runsrc, _runsrc[-200:])
 
@@ -1391,6 +1391,157 @@ check("and they resolve through the real Discord formatter",
                                 "fields": "", "detail": ""}).startswith("\u274c"),
       _ann2.format_for_discord({"event": "backup.offsite_failed", "text": "x",
                                 "fields": "", "detail": ""})[:8])
+
+
+
+# ---- the archive shown is the archive restored
+#
+# The restore page has two forms: one to look inside an archive, one to run the
+# restore. The run form carried its own hidden copy of the name, so changing the
+# dropdown without pressing "Look inside" left the page showing one archive while the
+# button restored another - over a live world, with no confirmation anywhere on the
+# page. The browser half of the fix is a disabled button; this is the half that is
+# true for a second tab, and the half that can be tested without a browser.
+import shutil as _shutil_b3                                      # noqa: E402
+
+_b3d = tempfile.mkdtemp()
+os.environ["OBELISK_ARK"] = os.path.join(_b3d, "ark")
+_b3store, _b3c, _b3code = bootstrap(os.path.join(_b3d, "obelisk"), environ={})
+_b3store.patch({"maps": "island,ragnarok", "admin_password": "pw",
+                "cluster_id": "b3test"})
+
+_b3backups = _appmod.backupctl.backups_dir(_b3store)
+os.makedirs(_b3backups, exist_ok=True)
+_ARC_A = "obelisk-backup-2026-09-12T03-00-00Z.tar.gz"
+_ARC_B = "obelisk-backup-2026-09-01T03-00-00Z.tar.gz"
+for _n in (_ARC_A, _ARC_B):
+    with open(os.path.join(_b3backups, _n), "wb") as _fh:
+        _fh.write(b"not really a tarball, and never opened in this test")
+
+_INFO = {"ok": True, "problem": "", "created": "12 Sep 2026 03:00 UTC",
+         "cluster_id": "b3test", "maps": ["TheIsland_WP", "Ragnarok_WP"],
+         "mod_ids": "929110", "bytes": 1024, "from_manifest": True}
+
+_b3stopped = []
+_real_inspect, _real_compare = _appmod.restorectl.inspect, _appmod.restorectl.compare
+_real_stop_one, _real_rmap = _appmod.clusterctl.stop_one, _appmod.restorectl.restore_map
+_real_listp = _appmod.pointsctl.list_points
+
+
+def _b3_restore_map(*a, **k):
+    _b3stopped.append("restore_map")
+    return True, "should never happen in this test", {}
+
+
+async def _b3_run(inspect_name, run_name, confirm="The Island"):
+    """Look inside one archive, then post a restore naming another."""
+    _appmod.restorectl.inspect = lambda path: dict(_INFO)
+    _appmod.restorectl.compare = lambda store, info: []
+    _appmod.restorectl.restore_map = _b3_restore_map
+    _appmod.clusterctl.stop_one = lambda store, key: (
+        _b3stopped.append("stop:%s" % key) or (True, ""))
+    _appmod.pointsctl.list_points = lambda store, key: []
+    client = TestClient(TestServer(build_app(_b3store, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_b3store.get("admin_token"))})
+    if inspect_name:
+        await client.post("/admin/restore/inspect", data={"archive": inspect_name})
+    body = await (await client.post(
+        "/admin/restore/run",
+        data={"archive": run_name, "map": "island", "confirm": confirm})).text()
+    await client.close()
+    return body
+
+
+_t6 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _mismatch = _t6.run_until_complete(_b3_run(_ARC_A, _ARC_B))
+    _mismatch_ev = _drain2()
+    _noinspect = _t6.run_until_complete(_b3_run(None, _ARC_A))
+    _noinspect_ev = _drain2()
+    _nameless = _t6.run_until_complete(_b3_run(_ARC_A, _ARC_A, confirm="Ragnarok"))
+    _nameless_ev = _drain2()
+    _shown = _t6.run_until_complete(_b3_run(_ARC_A, _ARC_A, confirm=""))
+    _drain2()
+finally:
+    _t6.close()
+    _appmod.restorectl.inspect, _appmod.restorectl.compare = _real_inspect, _real_compare
+    _appmod.clusterctl.stop_one = _real_stop_one
+    _appmod.restorectl.restore_map = _real_rmap
+    _appmod.pointsctl.list_points = _real_listp
+
+check("restoring an archive other than the one looked inside is refused",
+      "not the one that was looked inside" in _mismatch, _mismatch[-600:])
+check("the refusal names the one that was asked for",
+      _ARC_B in _mismatch, _ARC_B)
+check("and the one that was actually checked", _ARC_A in _mismatch, _ARC_A)
+check("nothing was stopped and no restore was started", _b3stopped == [], _b3stopped)
+_mm_names = [(i["event"], i["level"]) for i in _mismatch_ev]
+check("a mismatch is announced as a refusal, not a failure",
+      ("restore.refused", "warning") in _mm_names, _mm_names)
+check("and never as a restore that started",
+      not any(e == "restore.start" for e, _l in _mm_names), _mm_names)
+check("the announcement says nothing was changed",
+      any("Nothing has been changed" in (i.get("text") or "") for i in _mismatch_ev),
+      [i.get("text") for i in _mismatch_ev])
+
+check("restoring with nothing looked inside is refused",
+      "Look inside an archive first" in _noinspect, _noinspect[-600:])
+check("still stopping nothing", _b3stopped == [], _b3stopped)
+check("and announced as a refusal",
+      ("restore.refused", "warning") in
+      [(i["event"], i["level"]) for i in _noinspect_ev],
+      [(i["event"], i["level"]) for i in _noinspect_ev])
+
+# the typed name is the other half. It is the map's own name rather than a fixed word
+# because the mistake worth preventing is doing this to the wrong map as much as doing
+# it at all - and a fixed word is typed from muscle memory onto whatever is on screen.
+check("the wrong map's name does not confirm a restore",
+      "Type The Island to confirm" in _nameless, _nameless[-600:])
+check("nor does an empty box", "Type The Island to confirm" in _shown, _shown[-600:])
+check("nothing was stopped for either", _b3stopped == [], _b3stopped)
+_nl_names = [(i["event"], i["level"]) for i in _nameless_ev]
+check("a failed confirmation is a refusal at warning",
+      ("restore.refused", "warning") in _nl_names, _nl_names)
+check("and does not announce a restore starting",
+      not any(e == "restore.start" for e, _l in _nl_names), _nl_names)
+
+# ---- the page says which archive it is about to restore from
+_b3body = _ui.render_restore(
+    _b3store, [{"name": _ARC_A, "bytes": 1024, "mtime": 1, "when": "now"},
+               {"name": _ARC_B, "bytes": 1024, "mtime": 1, "when": "then"}],
+    chosen=_ARC_A, info=dict(_INFO), notes=[], savepoints_by_map=[])
+
+check("the confirmation names the archive it will restore from",
+      _ARC_A in _b3body, _ARC_A)
+check("and when that archive was taken",
+      "12 Sep 2026 03:00 UTC" in _b3body, "timestamp missing")
+check("the run form carries the archive that was inspected",
+      ('<input type=hidden name=archive value="%s">' % _ARC_A) in _b3body,
+      "hidden field does not match info")
+check("the dropdown is told which archive that was, so the browser can compare",
+      ('data-looked="%s"' % _ARC_A) in _b3body, "no data-looked")
+check("there is a box to type the map's name into",
+      "name=confirm" in _b3body and "Type the map" in _b3body, "no confirm field")
+check("and the placeholder is a real map name, not a word",
+      'placeholder="The Island"' in _b3body, "placeholder is not a map name")
+check("force is offered as a deliberate tick, not the default",
+      'type=checkbox name=force' in _b3body and "checked" not in
+      _b3body.split("name=force")[1][:40], "force is not an opt-in")
+check("the consequence is stated where the decision is made",
+      "no undo button" in _b3body and "entire world" in _b3body, "no consequence text")
+check("in warning styling rather than as a quiet note",
+      "<div class=warn>" in _b3body, "consequence is not styled as a warning")
+
+# the browser half: the button goes dead the moment the select moves off it
+check("a change listener is wired to the archive picker",
+      "addEventListener('change'" in _b3body, "no change listener")
+check("and it disables the run button on a mismatch",
+      "btn.disabled" in _b3body and "pick.value !== looked" in _b3body,
+      "listener does not compare or disable")
+check("it fails safe when the elements are not there",
+      "if(!pick||!btn) return;" in _b3body, "listener is not defensive")
 
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")

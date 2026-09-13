@@ -1589,6 +1589,9 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
 
     keys = [k.strip() for k in str(store.get("maps") or "").split(",") if k.strip()]
     inside = set(info["maps"]) if info else set()
+    usable = [k for k in keys if k in mapcat.BY_KEY
+              and (not info or mapcat.BY_KEY[k]["map_id"] in inside)]
+    first_name = mapcat.BY_KEY[usable[0]]["name"] if usable else "the map's name"
     picks = "".join(
         '<option value="%s"%s>%s%s</option>'
         % (_e(k), "" if (not info or mapcat.BY_KEY[k]["map_id"] in inside) else " disabled",
@@ -1596,28 +1599,47 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
            "" if (not info or mapcat.BY_KEY[k]["map_id"] in inside) else " - not in this archive")
         for k in keys if k in mapcat.BY_KEY)
 
+    # The archive this will restore, named where the decision is made. The page used
+    # to show one archive in the dropdown and carry another in the run form's hidden
+    # field - change the select without pressing "Look inside" and the button restored
+    # something the screen was not showing, over a live world, with nothing to read.
+    taken = (info or {}).get("created") or "unknown date"
+    naming = ""
+    if chosen:
+        naming = ('<div class=warn><b>This replaces the chosen map’s entire world '
+                  'with the one in %s</b> (taken %s). Everything built on that map '
+                  'since then is gone from the world - and there is no undo button '
+                  'here, so the map’s name is typed rather than clicked.</div>'
+                  % (_e(chosen), _e(taken)))
+
     return (banner +
             '<form method=post action="/admin/restore/inspect">'
             '<fieldset><legend>1. Choose an archive</legend><div class=f>'
-            '<select name=archive>%s</select> '
+            '<select name=archive id=archivepick data-looked="%s">%s</select> '
             '<button type=submit>Look inside</button>'
             '<div class=help>Nothing is changed by looking. The archive is opened and '
             'read, which is also how it is checked.</div></div></fieldset></form>'
             '%s'
-            '<form method=post action="/admin/restore/run" data-busy>'
+            '<form method=post action="/admin/restore/run" id=runform data-busy>'
             '<input type=hidden name=archive value="%s">'
-            '<fieldset><legend>2. Restore one map</legend><div class=f>'
-            '<select name=map>%s</select> '
-            '<button type=submit%s>Restore this map</button>'
+            '<fieldset><legend>2. Restore one map</legend>'
+            '%s'
+            '<div class=f>'
+            '<select name=map id=runmap>%s</select> '
+            '<label class=inline>Type the map’s name to confirm</label>'
+            '<input name=confirm id=runconfirm autocomplete=off placeholder="%s"> '
+            '<label class=inline><input type=checkbox name=force> Restore even if '
+            'players are on it</label> '
+            '<button type=submit id=runbtn%s>Restore this map</button>'
             '<div class=help>Only the map you pick is stopped; the rest of the cluster '
             'keeps serving. Its current world is copied first, and the world being '
             'replaced is kept on disk afterwards - nothing is deleted. Worlds only: '
             'your mod list, ports and cluster id are not touched.</div>'
             '</div></fieldset></form>'
-            '%s%s%s'
-            % (opts, detail, _e(chosen or ""), picks,
-               " disabled" if (not info or running) else "",
-               RESTORE_JS, points_block, _superseded_block(store)))
+            '%s%s%s%s'
+            % (_e(chosen or ""), opts, detail, _e(chosen or ""), naming, picks,
+               _e(first_name), " disabled" if (not info or running) else "",
+               RESTORE_PICK_JS, RESTORE_JS, points_block, _superseded_block(store)))
 
 
 def render_savepoints(by_map, job=None, limit=6):
@@ -1741,6 +1763,40 @@ def _superseded_block(store):
 # A form post that simply hangs for that long is indistinguishable from one that has
 # failed - and this is the feature where "I do not know what it is doing" is least
 # acceptable, because it is in the middle of touching somebody's saves.
+# The browser half of the same guard. The server refuses a mismatch outright - that is
+# what makes it true for a second tab - but a button that is still live after the
+# dropdown has moved on is an invitation to press it and read a refusal. Same shape as
+# the restore-point confirm: one listener, no framework, and it fails safe by doing
+# nothing if the elements are not there.
+RESTORE_PICK_JS = """
+<script>
+(function(){
+  const pick=document.getElementById('archivepick');
+  const btn=document.getElementById('runbtn');
+  const form=document.getElementById('runform');
+  if(!pick||!btn) return;
+  const looked=pick.dataset.looked||'';
+  function sync(){
+    const moved = pick.value !== looked;
+    btn.disabled = moved || btn.dataset.locked === '1';
+    let n=document.getElementById('pickwarn');
+    if(moved && !n){
+      n=document.createElement('div');
+      n.id='pickwarn'; n.className='warn';
+      n.textContent='That is not the archive that was looked inside. Press "Look '
+                  + 'inside" first - nothing is restored from an archive that has '
+                  + 'not been opened and checked.';
+      (form||pick.parentNode).insertBefore(n,(form||pick).firstChild);
+    } else if(!moved && n){ n.remove() }
+  }
+  if(btn.disabled) btn.dataset.locked='1';
+  pick.addEventListener('change',sync);
+  sync();
+})();
+</script>
+"""
+
+
 RESTORE_JS = """
 <div id=rswrap hidden>
   <div class=note><strong>Restoring</strong> <span id=rsstep></span>

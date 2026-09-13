@@ -879,6 +879,32 @@ def build_app(store, docker=None):
         p = os.path.abspath(os.path.join(base, os.path.basename(str(name or ""))))
         return p if p.startswith(base + os.sep) and os.path.isfile(p) else None
 
+    def _save_one(key):
+        """Ask this one map to write its world out. Best effort, by design.
+
+        A map that shuts down cleanly does not leave a hot journal beside its world,
+        which is what refused the Genesis restore. So it is worth asking - but the
+        world has already been copied aside as a file, so a map that cannot answer
+        must not be a map that cannot be restored. That is precisely when somebody
+        wants to.
+
+        Shared by both restore paths. It sat inside the save-point handler, which is
+        how the archive restore - the one that replaces the whole world directory -
+        ended up being the path that never asked the map to save.
+        """
+        from . import bot
+        password = str(store.get("admin_password") or "")
+        for label, host, port in clusterctl.running_instances(store):
+            if label not in (key, mapsmod.BY_KEY[key]["name"]):
+                continue
+            try:
+                clusterctl.run_coroutine(
+                    bot.rcon_with(host, port, password, "SaveWorld", timeout=30))
+                return True, "saved"
+            except Exception as e:                   # noqa: BLE001 - reported, not fatal
+                return False, str(e).strip() or e.__class__.__name__
+        return False, "it is not running"
+
     def _points_by_map():
         """Read from disk each time - the game prunes these on its own schedule."""
         out = []
@@ -925,11 +951,62 @@ def build_app(store, docker=None):
         if not authed(request):
             raise web.HTTPFound("/setup")
         form = await request.post()
-        path = _archive_path(form.get("archive"))
+        posted = os.path.basename(str(form.get("archive") or ""))
+        path = _archive_path(posted)
         map_key = str(form.get("map") or "")
+        confirm = str(form.get("confirm") or "")
+        force = bool(form.get("force"))
         if not path:
             return chrome(_restore_body(problem="No such archive."), "Restore",
                           "/admin/restore")
+
+        # The archive that was looked inside is the only archive this will restore.
+        # The page has two forms - one to inspect, one to run - and the run form used
+        # to carry its own hidden copy of the name. Change the dropdown without
+        # pressing "Look inside" and the page showed one archive while the button
+        # restored another, over a live world, with no confirmation anywhere. The
+        # check is here rather than only in the browser because that is what makes it
+        # true for a second tab, and what can be tested without one.
+        looked = _looked["archive"]
+        if not looked or not _looked["info"]:
+            announce.say("restore.refused",
+                         "Restore refused: no archive has been looked inside yet, so "
+                         "there is nothing proven to restore from. Nothing has been "
+                         "changed.", level="warning", map=map_key)
+            return chrome(_restore_body(
+                problem="Look inside an archive first - nothing is restored from an "
+                        "archive that has not been opened and checked."),
+                "Restore", "/admin/restore")
+        if posted != looked:
+            announce.say("restore.refused",
+                         "Restore refused: the page asked to restore %s but %s is the "
+                         "archive that was looked inside. Nothing has been changed."
+                         % (posted, looked), level="warning", map=map_key)
+            return chrome(_restore_body(
+                problem="The archive shown is not the one that was looked inside: you "
+                        "asked for %s, and %s is what was opened and checked. Look "
+                        "inside %s again before restoring from it."
+                        % (posted, looked, posted)),
+                "Restore", "/admin/restore")
+
+        # Typed, not clicked, and it is the map's own name rather than a fixed word:
+        # this replaces one map's entire world, and the mistake worth preventing is
+        # doing it to the wrong map as much as doing it at all. restore_map refuses
+        # again on its own - this one is here so the answer is instant and nothing
+        # announces a restore that is about to be refused.
+        if not restorectl.confirms(map_key, confirm):
+            want = (mapsmod.BY_KEY[map_key]["name"] if map_key in mapsmod.BY_KEY
+                    else map_key)
+            announce.say("restore.refused",
+                         "Restore of %s refused: the confirmation did not match. "
+                         "Nothing has been changed." % (want or "that map"),
+                         level="warning", map=map_key, archive=posted)
+            return chrome(_restore_body(
+                problem="Type %s to confirm. This replaces that map's whole world with "
+                        "the one in the archive, and there is no undo - so the name is "
+                        "typed rather than clicked." % (want or "the map's name")),
+                "Restore", "/admin/restore")
+
         if cluster_busy.locked():
             return chrome(_restore_body(problem="Something else is already working on "
                                                 "the cluster - this was ignored rather "
@@ -962,7 +1039,11 @@ def build_app(store, docker=None):
                 store, path, map_key,
                 stop=lambda k: (note("stopping %s" % k) or clusterctl.stop_one(store, k)),
                 start=lambda k: (note("starting %s" % k) or clusterctl.start_one(store, k)),
-                verify=verify_after, on_step=note)
+                verify=verify_after, on_step=note,
+                # The same three guards the save-point rollback has had all along, on
+                # the path that replaces the whole world directory rather than one file.
+                confirm=confirm, force=force,
+                players=lambda: clusterctl.players_online(store), save=_save_one)
 
         async def run_it():
             try:
@@ -971,15 +1052,24 @@ def build_app(store, docker=None):
             except Exception as e:                       # noqa: BLE001 - surfaced below
                 ok, msg, detail = False, "Restore failed: %s" % e, {}
                 log.exception("restore failed")
-            announce.say("restore.done" if ok else "restore.failed", str(msg),
-                         level="info" if ok else "error", map=map_key)
+            # A guard saying no is not a restore that broke. Announcing them the
+            # same way trains somebody to read past the one that matters - the same
+            # collapse the off-site copy had between "not set up" and "it failed".
+            refused = bool((detail or {}).get("refused"))
+            announce.say("restore.done" if ok else
+                         ("restore.refused" if refused else "restore.failed"), str(msg),
+                         level="info" if ok else ("warning" if refused else "error"),
+                         map=map_key, archive=os.path.basename(path))
             rjob.update(state="done", ok=ok, message=msg, step="done",
                         detail=detail)
 
         announce.say("restore.start",
-                     "Restoring %s - only that map stops; its current world is copied "
-                     "first and the one it replaces is kept." % map_key,
-                     archive=os.path.basename(path))
+                     "Restoring %s from %s - only that map stops; its current world is "
+                     "copied first and the one it replaces is kept."
+                     % (mapsmod.BY_KEY[map_key]["name"]
+                        if map_key in mapsmod.BY_KEY else map_key,
+                        os.path.basename(path)),
+                     map=map_key, archive=os.path.basename(path))
         rjob.update(state="running", ok=None, message="", step="starting",
                     map=map_key, archive=os.path.basename(path),
                     started=time.time(), detail={})
@@ -1009,28 +1099,6 @@ def build_app(store, docker=None):
                 return False, [why_h]
             note("checking it is really serving")
             return clusterctl.verify_instance(store, key)
-
-        def _save_one(key):
-            """Ask this one map to write its world out. Best effort, by design.
-
-            A map that shuts down cleanly does not leave a hot journal beside its world,
-            which is what refused the Genesis restore. So it is worth asking - but the
-            world has already been copied aside as a file, so a map that cannot answer
-            must not be a map that cannot be restored. That is precisely when somebody
-            wants to.
-            """
-            from . import bot
-            password = str(store.get("admin_password") or "")
-            for label, host, port in clusterctl.running_instances(store):
-                if label not in (key, mapsmod.BY_KEY[key]["name"]):
-                    continue
-                try:
-                    clusterctl.run_coroutine(
-                        bot.rcon_with(host, port, password, "SaveWorld", timeout=30))
-                    return True, "saved"
-                except Exception as e:               # noqa: BLE001 - reported, not fatal
-                    return False, str(e).strip() or e.__class__.__name__
-            return False, "it is not running"
 
         def go():
             return pointsctl.restore_point(
