@@ -469,10 +469,13 @@ check("Phase 1 does not restore the cluster definition",
 # called it done. Starting a container and it serving a world are minutes apart.
 check("the restore actually verifies afterwards rather than assuming",
       "verify=verify_after" in _runsrc, "verify is not wired")
+check("through the helper both restore paths share",
+      "verify_restored(store, key, note)" in _runsrc, _runsrc[:300])
+_vrsrc = _appsrc.split("def verify_restored(")[1].split(chr(10) + "def ")[0]
 check("and it waits for the map to be healthy before checking",
-      "wait_healthy" in _runsrc, _runsrc[:200])
+      "wait_healthy" in _vrsrc, _vrsrc[:200])
 check("the six gates are the same ones the migration used",
-      "verify_instance" in _runsrc)
+      "verify_instance" in _vrsrc)
 check("a restore reports progress while it runs",
       "/admin/restore/status" in _appsrc)
 check("and only one runs at a time",
@@ -502,8 +505,11 @@ for _ev in ("backup.start", "restore.start", "restore.phase"):
     check("%s is announced" % _ev, '"%s"' % _ev in _appsrc, _ev)
 check("a backup announces its outcome either way",
       '"backup.done" if ok else "backup.failed"' in _appsrc)
-check("so does a restore",
-      '"restore.done" if ok else "restore.failed"' in _appsrc)
+check("so does a restore, three ways",
+      _appsrc.count('"restore.done" if ok else') == 2
+      and _appsrc.count('"restore.refused" if refused else "restore.failed"') == 2,
+      [_appsrc.count('"restore.done" if ok else'),
+       _appsrc.count('"restore.refused" if refused else "restore.failed"')])
 check("a failed restore announces at error level, not buried at info",
       'level="info" if ok else "error"' in _appsrc)
 check("launching and stopping the cluster are announced too",
@@ -2134,6 +2140,160 @@ check("and still carries the result",
       _STOPPED_MSG in (_end_js.get("html") or ""), _end_js.get("html"))
 check("the page after it still has exactly one wrapper",
       _page_after.count("id=stopwrap") == 1, _page_after.count("id=stopwrap"))
+
+
+
+# ---- one verify_after, and it asks every question
+#
+# Two byte-identical copies, both reading `if not ok_h: return False, [why_h]` - the
+# same short circuit A3 took out of the apply gate, in a different feature. A map that
+# did not report healthy was never asked whether its WORLD verifies, seconds after that
+# world was swapped underneath it. That is the one question a restore exists to answer,
+# skipped in exactly the case that most needed it.
+_vr_store = Store(os.path.join(tempfile.mkdtemp(), "settings.json")).load()
+_vr_store.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
+_vr_store.patch({"maps": "island", "admin_password": "pw", "cluster_id": "vrtest"})
+
+_vr_asked = []
+_vr_notes = []
+_real_wh2, _real_vi2 = _cl2.wait_healthy, _cl2.verify_instance
+
+
+def _vr_run(healthy, gates):
+    _vr_asked[:] = []
+    _vr_notes[:] = []
+    _cl2.wait_healthy = lambda store, key, **k: healthy
+    _cl2.verify_instance = lambda store, key, **k: (_vr_asked.append(key) or gates)
+    try:
+        return _appmod.verify_restored(_vr_store, "island", _vr_notes.append)
+    finally:
+        _cl2.wait_healthy, _cl2.verify_instance = _real_wh2, _real_vi2
+
+
+_ok_u, _why_u = _vr_run((False, "the container exited while starting"),
+                        (False, ["the world on disk does not verify: it is 0 bytes"]))
+check("a restored map that is not healthy is still asked about its world",
+      _vr_asked == ["island"], _vr_asked)
+check("the restore is still a failure", _ok_u is False, _ok_u)
+check("the world's verdict survives, which is the whole question",
+      any("0 bytes" in r for r in _why_u), _why_u)
+check("and the health timeout is kept as a reason, not as a reason to stop asking",
+      any("exited while starting" in r for r in _why_u), _why_u)
+check("both reasons, not just the first", len(_why_u) == 2, _why_u)
+
+_ok_h2, _why_h2 = _vr_run((True, "healthy"), (True, []))
+check("the healthy path is unchanged", _ok_h2 is True and _why_h2 == [],
+      [_ok_h2, _why_h2])
+_ok_g, _why_g = _vr_run((True, "healthy"), (False, ["RCON is not answering"]))
+check("a healthy map that fails its gates still fails",
+      _ok_g is False and _why_g == ["RCON is not answering"], [_ok_g, _why_g])
+check("the steps are reported to the route either way", len(_vr_notes) == 2, _vr_notes)
+
+
+def _vr_boom(store, key, **k):
+    raise RuntimeError("docker went away")
+
+
+_cl2.wait_healthy = lambda store, key, **k: (True, "healthy")
+_cl2.verify_instance = _vr_boom
+try:
+    _ok_x, _why_x = _appmod.verify_restored(_vr_store, "island")
+finally:
+    _cl2.wait_healthy, _cl2.verify_instance = _real_wh2, _real_vi2
+check("a check that raises is a failed map, not a failed restore",
+      _ok_x is False, _ok_x)
+check("and says what went wrong",
+      any("docker went away" in r for r in _why_x), _why_x)
+check("it works with no step reporter at all",
+      isinstance(_why_x, list), type(_why_x).__name__)
+
+# one copy, and a test that fails if either route grows its own again
+_n3src = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
+                 encoding="utf-8").read()
+import ast as _ast_n3                                            # noqa: E402
+_vrtree = next(n for n in _ast_n3.walk(_ast_n3.parse(_n3src))
+               if isinstance(n, _ast_n3.FunctionDef) and n.name == "verify_restored")
+check("the helper has one exit, so it cannot bail before the gates",
+      len([n for n in _ast_n3.walk(_vrtree)
+           if isinstance(n, _ast_n3.Return)]) == 1,
+      len([n for n in _ast_n3.walk(_vrtree) if isinstance(n, _ast_n3.Return)]))
+check("and there is exactly one place in the file that waits and then gates",
+      _n3src.count("clusterctl.wait_healthy(store, key)") == 1,
+      _n3src.count("clusterctl.wait_healthy(store, key)"))
+check("the apply gate goes through it too, rather than keeping a third copy",
+      "verify_restored(store, key)" in
+      _n3src.split("def verify_every_map(")[1].split(chr(10) + "def ")[0],
+      "verify_every_map still has its own copy")
+check("both restore routes call the shared helper",
+      _n3src.count("verify_restored(store, key, note)") == 2,
+      _n3src.count("verify_restored(store, key, note)"))
+
+
+# ---- the save-point restore says no the way the archive restore does
+#
+# It never set detail["refused"], so a guard refusing because somebody is playing
+# announced restore.failed at error and rendered red - beside an identical refusal from
+# the archive path, amber, one page apart.
+from . import savepoints as _sp2                                 # noqa: E402
+from . import cluster as _clm                                    # noqa: E402
+
+check("the plural agrees with the count",
+      _clm._are(1) == "1 player is" and _clm._are(3) == "3 players are",
+      [_clm._are(1), _clm._are(3)])
+check("and the parenthetical is gone from the save-point path",
+      "player(s)" not in _insp_dead.getsource(_sp2.restore_point),
+      "player(s) is still there")
+
+_spsrc = _insp_dead.getsource(_sp2.restore_point)
+check("a save-point refusal marks itself as a refusal",
+      _spsrc.count('detail["refused"]') == 2, _spsrc.count('detail["refused"]'))
+check("both of them say nothing has been changed",
+      _spsrc.count("Nothing has been changed") == 2,
+      _spsrc.count("Nothing has been changed"))
+check("and the route reads that to announce it as one",
+      '"restore.refused" if refused else "restore.failed"' in _n3src
+      and _n3src.count('"restore.refused" if refused') == 2,
+      _n3src.count('"restore.refused" if refused'))
+check("at warning rather than error",
+      _n3src.count('"warning" if refused else "error"') == 2,
+      _n3src.count('"warning" if refused else "error"'))
+
+# the page renders it amber through the path the archive restore already uses - no
+# second rendering route, so the two cannot drift apart again
+_sp_refused_job = {"state": "done", "ok": False, "step": "done",
+                   "message": "3 players are on Ragnarok. Nothing has been changed. "
+                              "Restore with force, or wait until they are off.",
+                   "detail": {"refused": "players"}}
+_sp_failed_job = {"state": "done", "ok": False, "step": "done",
+                  "message": "that restore point will not open: SQLite reports it "
+                             "damaged",
+                  "detail": {"steps": []}}
+_sp_ref_body = ui.render_restore(_b3store, _ARCS, chosen=_ARC_A, info=dict(_INFO),
+                                 notes=[], savepoints_by_map=[], job=_sp_refused_job)
+_sp_fail_body = ui.render_restore(_b3store, _ARCS, chosen=_ARC_A, info=dict(_INFO),
+                                  notes=[], savepoints_by_map=[], job=_sp_failed_job)
+check("a refused save-point restore renders amber",
+      ('<div class="warn">' + ui._e(_sp_refused_job["message"])) in _sp_ref_body,
+      _sp_ref_body[:200])
+check("not red", ('<div class="problem">' + ui._e(_sp_refused_job["message"]))
+      not in _sp_ref_body)
+check("a save-point restore that actually broke is still red",
+      ('<div class="problem">' + ui._e(_sp_failed_job["message"])) in _sp_fail_body,
+      _sp_fail_body[:200])
+
+
+# ---- a manual backup that failed is not routine
+#
+# No level= at all meant info, so a failure was announced in the styling of a success,
+# under an icon that is a cross. The event name was right and everything around it
+# said nothing happened.
+_bk_src = _n3src.split("def _run_backup()")[1].split("async def _backup_task")[0]
+check("a manual backup failure is announced at error",
+      'level="info" if ok else "error"' in _bk_src, _bk_src[-400:])
+check("and a successful one is still information",
+      '"backup.done" if ok else "backup.failed"' in _bk_src, _bk_src[-400:])
+check("the failure icon and the failure level now agree",
+      _ann2.ICONS.get("failed") == "❌", _ann2.ICONS.get("failed"))
 
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")

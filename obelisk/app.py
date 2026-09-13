@@ -825,7 +825,11 @@ def build_app(store, docker=None):
         announce.say("backup.start", "Backup started.")
         ok, msg, _path = backupctl.create(store, flush=_flush_for(store),
                                           progress=_note)
-        announce.say("backup.done" if ok else "backup.failed", msg)
+        # No level at all meant info, so a manual backup that FAILED was announced in
+        # the styling of one that worked - under an icon that is a cross. The event
+        # name was right and everything around it said routine.
+        announce.say("backup.done" if ok else "backup.failed", msg,
+                     level="info" if ok else "error")
         if ok:
             removed = backupctl.prune(store)
             if removed:
@@ -1120,12 +1124,7 @@ def build_app(store, docker=None):
             checking immediately would measure the wrong thing and call every restore a
             success. This is the step that makes the promise real.
             """
-            note("waiting for %s to come back" % key)
-            ok_h, why_h = clusterctl.wait_healthy(store, key)
-            if not ok_h:
-                return False, [why_h]
-            note("checking it is really serving")
-            return clusterctl.verify_instance(store, key)
+            return verify_restored(store, key, note)
 
         def go():
             return restorectl.restore_map(
@@ -1186,12 +1185,7 @@ def build_app(store, docker=None):
             announce.say("restore.phase", text, map=map_key)
 
         def verify_after(key):
-            note("waiting for %s to come back" % key)
-            ok_h, why_h = clusterctl.wait_healthy(store, key)
-            if not ok_h:
-                return False, [why_h]
-            note("checking it is really serving")
-            return clusterctl.verify_instance(store, key)
+            return verify_restored(store, key, note)
 
         def go():
             return pointsctl.restore_point(
@@ -1210,8 +1204,15 @@ def build_app(store, docker=None):
             except Exception as e:                   # noqa: BLE001 - surfaced below
                 ok, msg, detail = False, "Restore point failed: %s" % e, {}
                 log.exception("restore point failed")
-            announce.say("restore.done" if ok else "restore.failed", str(msg),
-                         level="info" if ok else "error", map=map_key,
+            # The same three-way the archive restore makes: worked, refused, broke.
+            # This path announced its player refusals as restore.failed at error, so a
+            # guard saying "somebody is playing on it" arrived with a red cross beside
+            # an identical refusal from the archive path rendered amber.
+            refused = bool((detail or {}).get("refused"))
+            announce.say("restore.done" if ok else
+                         ("restore.refused" if refused else "restore.failed"), str(msg),
+                         level="info" if ok else ("warning" if refused else "error"),
+                         map=map_key, point=name,
                          detail="\n".join(detail.get("steps") or []))
             rjob.update(state="done", ok=ok, message=msg, step="done", detail=detail)
 
@@ -1602,6 +1603,36 @@ async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
             log.info("world sweep skipped: %s", e)
 
 
+def verify_restored(store, key, note=None):
+    """The six gates on a map whose world has just been replaced. (ok, reasons).
+
+    Both restore paths had a byte-identical copy of this, and both read
+    `if not ok_h: return False, [why_h]` - the same short circuit A3 took out of the
+    apply gate, in a different feature. A map that did not report healthy was never
+    asked whether its world verifies, seconds after that world was swapped underneath
+    it. That is the one question a restore exists to answer, and it was skipped in
+    exactly the case that most needed it.
+
+    So every question is asked and the reasons are collected. A health timeout is a
+    reason like any other, not a reason to stop asking, and a check that raises is a
+    failed map rather than a failed restore - the world is already in place by the time
+    this runs, so an exception here would leave the operator with no verdict at all.
+
+    `note` is the route's step reporter. One function, two callers, and a test that
+    fails if either grows its own copy again.
+    """
+    say = note or (lambda _text: None)
+    say("waiting for %s to come back" % key)
+    ok_h, why_h = clusterctl.wait_healthy(store, key)
+    reasons = [] if ok_h else ["did not report healthy: %s" % why_h]
+    say("checking it is really serving")
+    try:
+        ok_v, reasons_v = clusterctl.verify_instance(store, key)
+    except Exception as e:                            # noqa: BLE001 - a failure is a result
+        ok_v, reasons_v = False, ["the check itself failed: %s" % e]
+    return (bool(ok_h) and bool(ok_v)), reasons + list(reasons_v or [])
+
+
 def verify_every_map(store):
     """The six gates on every map, whatever the map before it did. (ok, per_map, why).
 
@@ -1621,14 +1652,11 @@ def verify_every_map(store):
     """
     results, why = {}, {}
     for key in clusterctl._map_keys(store):
-        ok_h, why_h = clusterctl.wait_healthy(store, key)
-        reasons = [] if ok_h else ["did not report healthy: %s" % why_h]
-        try:
-            ok_v, reasons_v = clusterctl.verify_instance(store, key)
-        except Exception as e:                    # noqa: BLE001 - a failure is a result
-            ok_v, reasons_v = False, ["the check itself failed: %s" % e]
-        results[key] = bool(ok_h) and bool(ok_v)
-        why[key] = reasons + list(reasons_v or [])
+        # The same question the restore paths ask, asked once per map. It was written
+        # out here as well until this commit - three copies of "wait, then gate, and
+        # keep the reasons" in one file, which is how two of them kept a short circuit
+        # the third had already had removed.
+        results[key], why[key] = verify_restored(store, key)
     return all(results.values()), results, why
 
 

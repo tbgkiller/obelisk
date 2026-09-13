@@ -29,7 +29,7 @@ import re
 import shutil
 import time
 
-from . import backup, layout, restore
+from . import backup, cluster, layout, restore
 from . import maps as mapcat
 
 log = logging.getLogger("obelisk.savepoints")
@@ -172,14 +172,23 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
     detail["point"] = point["name"]
 
     if not force:
+        # A guard saying no is not a restore that broke. `refused` is what the route
+        # reads to announce it at warning and the page reads to render it amber - the
+        # archive restore beside this one has said it that way since the guards went
+        # in, and this one was still announcing its refusals with a red cross.
+        name_of = mapcat.BY_KEY[map_key]["name"]
         total, counts, silent = (players or (lambda: (0, {}, [])))()
-        mine = counts.get(map_key, counts.get(mapcat.BY_KEY[map_key]["name"], 0))
-        if any(l in (map_key, mapcat.BY_KEY[map_key]["name"]) for l, _w in silent):
+        mine = counts.get(map_key, counts.get(name_of, 0))
+        if any(l in (map_key, name_of) for l, _w in silent):
+            detail["refused"] = "silent"
             return False, ("%s did not answer, so it is not known whether anyone is on "
-                           "it. Restore with force if you mean to anyway." % map_id), detail
+                           "it. Nothing has been changed. Restore with force if you "
+                           "mean to anyway." % name_of), detail
         if mine:
-            return False, ("%d player(s) are on %s. Restore with force, or wait until "
-                           "they are off." % (mine, map_id)), detail
+            detail["refused"] = "players"
+            return False, ("%s on %s. Nothing has been changed. Restore with force, or "
+                           "wait until they are off."
+                           % (cluster._are(mine), name_of)), detail
 
     ok, why = verify_point(point["path"])
     if not ok:

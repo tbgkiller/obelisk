@@ -194,6 +194,18 @@ def _and(names):
     return "%s and %s" % (", ".join(names[:-1]), names[-1])
 
 
+def _are(count, noun="player"):
+    """"1 player is", "3 players are" - the subject and its verb, agreeing.
+
+    Beside _and() because it is the same kind of helper and the same complaint: a
+    sentence a person reads rather than a template with a parenthetical in it. The
+    restore paths had three spellings of this between them, one of which was
+    "%d player(s) are", which is wrong for every count including one.
+    """
+    count = int(count or 0)
+    return "%d %s%s" % (count, noun, " is" if count == 1 else "s are")
+
+
 def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
                 interval=EXIT_INTERVAL, running=None, on_exited=None):
     """Ask every running map to save and close itself. {label: {"exited", "why"}}.

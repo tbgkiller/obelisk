@@ -589,6 +589,20 @@ ok_ns, msg_ns, _dns = restore.restore_map(
 check("a map that does not come back is reported", not ok_ns, msg_ns)
 check("as a string, not a tuple", isinstance(msg_ns, str), type(msg_ns).__name__)
 check("that names the world kept on disk", "still on disk" in msg_ns, msg_ns)
+# ...and names the map the way every other sentence in this flow does. This was the
+# last message left saying TheIsland_WP, after the success line moved to The Island.
+check("naming the map, not the folder on disk",
+      "The Island did not start again" in msg_ns, msg_ns)
+check("while the folder it kept is still a real path",
+      "TheIsland_WP.superseded-" in msg_ns, msg_ns)
+
+# and the player refusal agrees with its count through the shared helper
+_ok_pl, _msg_pl, _d_pl = restore.restore_map(
+    st_t, arc_t, "island", confirm=named("island"),
+    players=lambda: (1, {"island": 1}, []))
+check("one player still reads as one player", "1 player is on The Island" in _msg_pl,
+      _msg_pl)
+check("with no parenthetical plural anywhere", "player(s)" not in _msg_pl, _msg_pl)
 
 
 

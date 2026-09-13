@@ -34,7 +34,7 @@ import sqlite3
 import tarfile
 import time
 
-from . import backup, layout
+from . import backup, cluster, layout
 from . import maps as mapcat
 
 log = logging.getLogger("obelisk.restore")
@@ -371,10 +371,9 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
                            "mean to anyway." % name), detail
         if mine:
             detail["refused"] = "players"
-            return False, ("%d player%s on %s and this replaces the world they are "
-                           "standing in. Nothing has been changed. Restore with force, "
-                           "or wait until they are off."
-                           % (mine, " is" if mine == 1 else "s are", name)), detail
+            return False, ("%s on %s and this replaces the world they are standing in. "
+                           "Nothing has been changed. Restore with force, or wait until "
+                           "they are off." % (cluster._are(mine), name)), detail
 
     # Ask the map to write its world out before it is stopped, and carry on either way.
     # Best effort on purpose, for the reason restore_point gives: the world being
@@ -481,7 +480,7 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
     if not ok_r:
         return False, ("The world was restored but %s did not start again: %s. The "
                        "previous world is still on disk as %s."
-                       % (map_id, why_r, os.path.basename(superseded or "-"))), detail
+                       % (name, why_r, os.path.basename(superseded or "-"))), detail
 
     if verify:
         ok_v, reasons = verify(map_key)
