@@ -862,8 +862,36 @@ async def run_discord(relay):
 
     await client.start(DISCORD_TOKEN)
 
+# The relay that is actually running, so the rest of the process can read what it
+# already knows. It polls every map for ListPlayers once a minute anyway; asking the
+# servers a second time to draw a page would be paying twice for the same answer.
+#
+# A handle rather than a callback because there is exactly one relay per process and
+# the web UI reads it, never writes it. None until main() runs - a manager with no
+# cluster to relay between never starts one, and "no relay" has to be distinguishable
+# from "nobody is playing".
+LIVE = None
+
+
+def online_snapshot():
+    """What the relay last saw. (by_map, total, age_seconds), or None if it is not up.
+
+    None and 0 are different answers and the difference matters on a status page: one
+    means nobody is playing, the other means nobody asked. The age travels with the
+    numbers for the same reason - a count with no age silently becomes a claim about
+    now, and this one can be a minute old.
+    """
+    relay = LIVE
+    if relay is None or not relay.last_refresh:
+        return None
+    return (dict(relay.online_by_map), int(relay.online_total),
+            max(0.0, time.time() - relay.last_refresh))
+
+
 async def main():
+    global LIVE
     relay = Relay()
+    LIVE = relay
     tasks = [asyncio.create_task(relay.poll_forever())]
     tasks.append(asyncio.create_task(relay.maintenance_loop()))
     tasks.append(asyncio.create_task(relay.announce_loop()))

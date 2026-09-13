@@ -2296,6 +2296,149 @@ check("the failure icon and the failure level now agree",
       _ann2.ICONS.get("failed") == "❌", _ann2.ICONS.get("failed"))
 
 
+
+# ---- the count reaches the pages, and costs nothing to draw
+#
+# The relay already asks every map once a minute and keeps the answer. Asking again to
+# render a page would pay twice for it, and would put ten RCON round trips inside a
+# request handler.
+from . import bot as _bot_s1                                     # noqa: E402
+
+_real_live = _bot_s1.LIVE
+try:
+    _bot_s1.LIVE = None
+    check("with no relay running there is no snapshot",
+          _bot_s1.online_snapshot() is None, _bot_s1.online_snapshot())
+
+    class _FakeRelay:
+        online_by_map = {"The Island": 3, "Ragnarok": 7}
+        online_total = 10
+        last_refresh = 0.0
+
+    _fr = _FakeRelay()
+    _bot_s1.LIVE = _fr
+    check("a relay that has never polled yet is also no snapshot",
+          _bot_s1.online_snapshot() is None, "an unpolled relay answered")
+
+    _fr.last_refresh = _time_dead.time() - 30
+    _snap = _bot_s1.online_snapshot()
+    check("once it has polled, the snapshot is there", _snap is not None, _snap)
+    _by, _total, _age = _snap
+    check("carrying the per-map counts", _by == {"The Island": 3, "Ragnarok": 7}, _by)
+    check("the cluster total", _total == 10, _total)
+    check("and how old they are", 29 <= _age <= 40, _age)
+    check("the snapshot is a copy, so a page cannot edit the relay's state",
+          (_by.__setitem__("The Island", 999) or _fr.online_by_map["The Island"]) == 3,
+          _fr.online_by_map)
+finally:
+    _bot_s1.LIVE = _real_live
+
+_s1src = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
+                 encoding="utf-8").read()
+check("the status page asks for the count",
+      "players=_players_now()" in _s1src.split("async def root")[1][:600],
+      "the front page does not ask")
+check("and names its maps before rendering them",
+      "_label_services(st)" in _s1src.split("async def root")[1][:600],
+      "the front page does not name its maps")
+_cbsrc = _s1src.split("def _cluster_body")[1].split(chr(10) + "    def ")[0]
+check("the cluster page does both too",
+      "_label_services(st)" in _cbsrc and "players=_players_now()" in _cbsrc,
+      _cbsrc[-300:])
+check("the count is read, never measured, on a page render",
+      "online_snapshot" in _s1src and "players_online" not in
+      _s1src.split("def _players_now")[1].split("    def ")[0],
+      "a page render is doing RCON")
+check("naming a map is a lookup against the plan, not a guess",
+      "by_instance" in _s1src.split("def _label_services")[1][:900],
+      "labels are not from the plan")
+check("and a plan that cannot be built does not blank the page",
+      "except Exception" in _s1src.split("def _label_services")[1][:900],
+      "_label_services can raise")
+
+# ---- and none of the paths that touch the cluster moved
+_untouched = {
+    "the apply gate": "def verify_every_map(store):",
+    "the restore gate": "def verify_restored(store, key, note=None):",
+    "the stop guard": "ui.render_stop_warning(counts, silent)",
+    "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
+    "the save-before-stop": "save=lambda: clusterctl.save_and_settle(",
+}
+for _what, _frag in sorted(_untouched.items()):
+    check("%s is untouched" % _what, _frag in _s1src, _frag)
+
+# ...and it actually works, not merely says it does. A source check passes a mutation
+# that leaves the lookup in place and stops assigning the result.
+from .plan import build_plan as _bp_s1                            # noqa: E402
+
+_ld = tempfile.mkdtemp()
+os.environ["OBELISK_ARK"] = os.path.join(_ld, "ark")
+_lstore, _lc, _lcode = bootstrap(os.path.join(_ld, "obelisk"), environ={})
+_lstore.patch({"maps": "island,ragnarok", "admin_password": "pw",
+               "cluster_id": "labeltest"})
+_lrows = _bp_s1(_lstore)["maps"]
+_linst = {r["name"]: r["instance"] for r in _lrows}
+check("the plan knows both maps by name and instance", len(_linst) == 2, _linst)
+
+_lstatus = {"docker_ok": True, "compose_exists": True, "running": 2, "services": [
+    {"service": _linst["The Island"], "name": "asa-labeltest-island",
+     "level": "ok", "says": "Online", "status": "Up"},
+    {"service": _linst["Ragnarok"], "name": "asa-labeltest-ragnarok",
+     "level": "ok", "says": "Online", "status": "Up"}]}
+
+
+class _LiveRelay:
+    online_by_map = {"The Island": 4, "Ragnarok": 1}
+    online_total = 5
+    last_refresh = 0.0
+
+
+async def _page_with(relay):
+    _appmod.clusterctl.status = lambda store: dict(
+        _lstatus, services=[dict(x) for x in _lstatus["services"]])
+    _bot_s1.LIVE = relay
+    client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_lstore.get("admin_token"))})
+    front = await (await client.get("/")).text()
+    cluster = await (await client.get("/admin/cluster")).text()
+    await client.close()
+    return front, cluster
+
+
+_real_status_s1 = _appmod.clusterctl.status
+_t10 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _lr = _LiveRelay()
+    _lr.last_refresh = _time_dead.time() - 20
+    _front, _clusterpg = _t10.run_until_complete(_page_with(_lr))
+    _front_off, _cluster_off = _t10.run_until_complete(_page_with(None))
+finally:
+    _t10.close()
+    _appmod.clusterctl.status = _real_status_s1
+    _bot_s1.LIVE = _real_live
+
+for _name, _body in (("the front page", _front), ("the cluster page", _clusterpg)):
+    check("%s names its maps" % _name,
+          "<td>The Island</td>" in _body and "<td>Ragnarok</td>" in _body,
+          _body[_body.find("Running now"):][:400])
+    check("%s does not head an instance id as a Map" % _name,
+          "<td>%s</td>" % _linst["The Island"] not in _body,
+          _body[_body.find("Running now"):][:400])
+    check("%s shows each map's own count" % _name,
+          ">4</td>" in _body and ">1</td>" in _body,
+          _body[_body.find("Running now"):][:400])
+    check("%s shows the cluster total with its age" % _name,
+          "<b>5 players online</b>" in _body and "ago" in _body,
+          _body[_body.find("players online") - 40:][:200])
+
+for _name, _body in (("the front page", _front_off), ("the cluster page", _cluster_off)):
+    check("%s shows a dash when the relay is not running" % _name,
+          "&mdash;" in _body and "players online" not in _body,
+          _body[_body.find("Running now"):][:300])
+    check("%s still names its maps without a relay" % _name,
+          "<td>The Island</td>" in _body, _body[_body.find("Running now"):][:300])
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

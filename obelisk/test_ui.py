@@ -966,5 +966,98 @@ from obelisk.backup import SECRET_KEYS as _SK
 
 check("and still guarded against being announced", "curseforge_api_key" in _SK)
 
+
+# ---- the player count, back where somebody looks
+#
+# It was on the relay's own status page - a per-map table with a players column - until
+# that page was stood down inside Obelisk on 4 September to stop it binding the port the
+# web UI already had. The web UI never picked the column up, so the one number an
+# operator checks before restarting anything has been missing ever since. The data never
+# went anywhere: the relay polls every map once a minute and keeps it in memory.
+_ST = {"docker_ok": True, "compose_exists": True, "running": 3, "services": [
+    {"service": "island", "name": "asa-tbg-island", "label": "The Island",
+     "level": "ok", "says": "Online", "status": "Up 3 hours"},
+    {"service": "ragnarok", "name": "asa-tbg-ragnarok", "label": "Ragnarok",
+     "level": "ok", "says": "Online", "status": "Up 3 hours"},
+    {"service": "valguero", "name": "asa-tbg-valguero", "label": "Valguero",
+     "level": "bad", "says": "Failing to start", "status": "Restarting"}]}
+_PL = {"by_map": {"The Island": 3, "Ragnarok": 7}, "total": 10, "age": 45}
+
+_live = ui.render_status(_ST, players=_PL)
+
+check("the running table has a Players column",
+      "<th class=num>Players</th>" in _live, _live[:400])
+check("a map's own count is on its row",
+      "<td>The Island</td>" in _live and ">3</td>" in _live, _live[:600])
+check("and a busier map shows its own, not the total",
+      "<td>Ragnarok</td>" in _live and ">7</td>" in _live, _live[:700])
+check("the cluster total is in the header",
+      "<b>10 players online</b>" in _live, _live[:400])
+check("counting the maps that are actually up",
+      "across 2 maps" in _live, _live[:400])
+
+# a stale number that does not say it is stale is a claim about now
+check("the header says how old the count is", "45s ago" in _live, _live[:400])
+check("just-polled reads as just now",
+      "just now" in ui.render_status(_ST, players=dict(_PL, age=2)), "no just now")
+check("a minute-old count says minutes",
+      "2m ago" in ui.render_status(_ST, players=dict(_PL, age=150)), "no minutes")
+check("the age helper never invents precision",
+      [ui._ago(x) for x in (0, 5, 45, 95, 600)]
+      == ["just now", "just now", "45s ago", "1m ago", "10m ago"],
+      [ui._ago(x) for x in (0, 5, 45, 95, 600)])
+
+# "nobody asked" is not "nobody is playing" - the rule the update gate already keeps
+_norelay = ui.render_status(_ST, players=None)
+check("with no relay the count is a dash, not a zero",
+      "&mdash;" in _norelay and "players online" not in _norelay, _norelay[:400])
+check("and the page says why rather than showing an empty cluster",
+      "chat relay is not running" in _norelay, _norelay[:400])
+check("a zero is only ever shown when it was actually measured",
+      ">0</td>" in ui.render_status(_ST, players={"by_map": {"The Island": 0},
+                                                  "total": 0, "age": 5}),
+      "a measured zero went missing")
+check("a map the relay has no answer for is a dash, not a zero",
+      ui.render_status(_ST, players=_PL).count("&mdash;") >= 1, "Valguero showed 0")
+
+# ---- the Map column says the map
+#
+# It was headed "Map" and filled with s["service"] - the compose service key, which is
+# the instance id. Same id-for-name slip the restore flow had, on the front page.
+check("the Map column shows the name the operator picked",
+      "<td>The Island</td>" in _live, _live[:600])
+check("not the instance id under a Map heading",
+      "<td>island</td>" not in _live, _live[:600])
+check("the instance is still shown, where it is diagnostic",
+      '<td class=help>island</td>' in _live, _live[:600])
+check("a service with no label falls back rather than rendering blank",
+      "asa-tbg-x" in ui.render_status(
+          {"docker_ok": True, "compose_exists": True, "running": 1,
+           "services": [{"service": "", "name": "asa-tbg-x", "level": "ok",
+                         "says": "Online", "status": ""}]}, players=None),
+      "a nameless service vanished")
+
+# the failure detail still spans the table now that it is a column wider
+check("the why-it-is-failing row spans every column",
+      "colspan=4" in ui.render_status(
+          dict(_ST, services=[dict(_ST["services"][2], log_tail="boom")]),
+          players=_PL), "colspan did not follow the new column")
+
+# ---- and nothing about how the count is obtained changed
+import io as _io_s1                                              # noqa: E402
+_botsrc = _io_s1.open(os.path.join(os.path.dirname(__file__), "bot.py"),
+                      encoding="utf-8").read()
+check("the relay still counts players with RCON ListPlayers",
+      'rcon(hp[0], hp[1], "ListPlayers")' in _botsrc, "the mechanism moved")
+check("on its own poll, not on a page render",
+      "ONLINE_POLL_SECONDS" in _botsrc and "async def poll_online" in _botsrc,
+      "the poller moved")
+check("and the snapshot only reads what the poll already wrote",
+      "def online_snapshot" in _botsrc
+      and "await" not in _botsrc.split("def online_snapshot")[1].split(chr(10) + chr(10)
+                                                                     + chr(10))[0],
+      "online_snapshot does I/O")
+
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

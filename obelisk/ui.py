@@ -1158,8 +1158,27 @@ def render_settings(store):
             % (banner, toolbar, "".join(blocks), SETTINGS_JS))
 
 
-def render_status(status):
-    """What is actually running. Absent or empty is a normal state, not an error."""
+def _ago(seconds):
+    """"just now" / "45s ago" / "2m ago" - how old a cached number is."""
+    seconds = int(seconds or 0)
+    if seconds < 10:
+        return "just now"
+    if seconds < 90:
+        return "%ds ago" % seconds
+    return "%dm ago" % (seconds // 60)
+
+
+def render_status(status, players=None):
+    """What is actually running. Absent or empty is a normal state, not an error.
+
+    `players` is the relay's cached population: {"by_map": {name: n}, "total": int,
+    "age": seconds}, or None when there is no relay to have asked. None renders as a
+    dash rather than a zero, because "nobody asked" is not "nobody is playing" - the
+    same rule the update gate keeps about a map that did not answer.
+
+    The count is shown with its age. It comes from a poll that runs once a minute, so
+    presenting it bare would be presenting a claim about now that it is not making.
+    """
     if not status:
         return ""
     if not status.get("docker_ok"):
@@ -1172,15 +1191,27 @@ def render_status(status):
     # container that aborts and restarts every few seconds reports "running" the whole
     # time, and showing that in green is a status that lies.
     css = {"ok": "ok", "busy": "", "bad": "bad"}
+    seen = (players or {}).get("by_map") or {}
     rows = ""
     for s in status.get("services", []):
         level = s.get("level") or ("ok" if s.get("state") == "running" else "bad")
         says = s.get("says") or s.get("status") or s.get("state") or "?"
-        rows += ("<tr><td>%s</td><td class=%s>%s</td><td>%s</td></tr>"
-                 % (_e(s.get("service") or s.get("name") or "?"), css.get(level, ""),
-                    _e(says), _e(s.get("status") or "")))
+        # The map, by the name the operator chose it as. This column was headed "Map"
+        # and filled with the compose service name, which is the same id-for-name slip
+        # the restore flow had - on the page most people look at first.
+        label = s.get("label") or s.get("service") or s.get("name") or "?"
+        if players is None:
+            count = "&mdash;"
+        elif label in seen:
+            count = "%d" % seen[label]
+        else:
+            count = "&mdash;"
+        rows += ("<tr><td>%s</td><td class=%s>%s</td><td class=num>%s</td>"
+                 "<td class=help>%s</td></tr>"
+                 % (_e(label), css.get(level, ""), _e(says), count,
+                    _e(s.get("service") or s.get("name") or "")))
         if s.get("log_tail"):
-            rows += ('<tr><td colspan=3><details><summary class=help>why it is '
+            rows += ('<tr><td colspan=4><details><summary class=help>why it is '
                      'failing</summary><pre class=logtail>%s</pre></details></td></tr>'
                      % _e(s["log_tail"]))
     if not rows:
@@ -1192,8 +1223,26 @@ def render_status(status):
                   'is not a slow first start - the server keeps aborting and restarting. '
                   'Open the row below for the reason.</div>'
                   % (len(bad), "" if len(bad) == 1 else "s"))
-    return (banner + '<fieldset><legend>Running now</legend><table>'
-            '<tr><th>Map</th><th>Doing</th><th>Container</th></tr>%s</table>'
+    # The population, where somebody looking at the cluster will actually see it. It
+    # was on the relay's own status page until that page was stood down inside Obelisk
+    # on 4 September, and the web UI never picked it up - so the one number an operator
+    # checks before restarting anything has been missing ever since.
+    head = ""
+    if players is not None:
+        total = int(players.get("total") or 0)
+        up = sum(1 for s in status.get("services", [])
+                 if (s.get("level") or "") == "ok")
+        head = ('<div class=note><b>%d player%s online</b> across %d map%s '
+                '<span class=help>&middot; %s</span></div>'
+                % (total, "" if total == 1 else "s", up, "" if up == 1 else "s",
+                   _e(_ago(players.get("age")))))
+    else:
+        head = ('<div class=note>Player counts are not available &mdash; the chat relay '
+                'is not running, and it is what counts them.</div>')
+
+    return (banner + head + '<fieldset><legend>Running now</legend><table>'
+            '<tr><th>Map</th><th>Doing</th><th class=num>Players</th>'
+            '<th>Container</th></tr>%s</table>'
             '<div class=help style="margin-top:10px">A first start downloads about 12 GB '
             'of game files and then generates the world, so it is normally slow. The '
             'phase and elapsed time above are how you tell it is still moving.</div>'
@@ -1398,7 +1447,7 @@ def render_held_down(maps, states=None):
                "world" if one else "worlds", advice))
 
 
-def render_cluster(store, plan, status=None):
+def render_cluster(store, plan, status=None, players=None):
     selected = set(str(store.get("maps")).split(","))
     presets = "".join(
         '<button class=ghost type=button name=preset value="%s" title="%s">%s</button>'
@@ -1431,7 +1480,7 @@ def render_cluster(store, plan, status=None):
                % (len(plan["maps"]), "" if len(plan["maps"]) == 1 else "s",
                   plan["total_memory"], plan["obelisk_port"]))
 
-    return (render_status(status) +
+    return (render_status(status, players=players) +
             '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '

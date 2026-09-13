@@ -302,6 +302,42 @@ def build_app(store, docker=None):
                      level="info" if ok else "error")
 
     # ---- the cluster: define it, launch it, stop it
+    def _label_services(st):
+        """Put each map's own name on its running service, so a page can say it.
+
+        compose keys a service by its instance and the plan knows what that instance is
+        called, so this is a lookup rather than a guess. The status table was headed
+        "Map" and filled with the instance - the same id-for-name slip the restore flow
+        had, on the page people open first.
+        """
+        try:
+            rows = (build_plan(store).get("maps") or [])
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.info("could not name the running maps: %s", e)
+            return st
+        by_instance = {r["instance"]: r["name"] for r in rows}
+        for svc in st.get("services") or []:
+            svc["label"] = by_instance.get(svc.get("service"), "")
+        return st
+
+    def _players_now():
+        """The relay's cached population, or None when there is no relay to have asked.
+
+        Read, never measured. The relay already asks every map once a minute and the
+        answer is sitting in memory; asking the servers again to draw a page would pay
+        twice for it - and would put ten RCON round trips inside a page render.
+        """
+        from . import bot
+        try:
+            snap = bot.online_snapshot()
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.info("could not read the player count: %s", e)
+            return None
+        if snap is None:
+            return None
+        by_map, total, age = snap
+        return {"by_map": by_map, "total": total, "age": age}
+
     def _cluster_body(request, message="", problem="", refusal=""):
         try:
             in_use = clusterctl.other_ports_in_use(store)
@@ -342,7 +378,8 @@ def build_app(store, docker=None):
         # element rather than two of them stacked.
         return (banner + _pending_panel() + _update_panel() +
                 ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
-                ui.render_cluster(store, plan, status=st))
+                ui.render_cluster(store, plan, status=_label_services(st),
+                                  players=_players_now()))
 
     # The last poll, so opening the page does not go to the network before it renders.
     # A panel that takes two round trips to CurseForge to appear is a panel people
@@ -1325,7 +1362,7 @@ def build_app(store, docker=None):
         todo = store.readiness()
         st = clusterctl.status(store)
         if st.get("running"):
-            body = ui.render_status(st)
+            body = ui.render_status(_label_services(st), players=_players_now())
         else:
             body = ('<div class=note>Cluster not running. %s</div>'
                     % (("Still to set: " + ", ".join(b["label"] for b in todo))
