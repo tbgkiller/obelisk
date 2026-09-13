@@ -1628,6 +1628,32 @@ check("no network call is made", joined_calls == [], joined_calls)
 # ---- coverage is a claim, so it gets checked
 clusterctl.dockerctl = _NetDocker()
 good, bad = clusterctl.reachable(st_n, probe=lambda h, p: "No Players Connected")
+# reachable() is players_online() with the count discarded - one RCON fan-out, not two
+# that drift. These pin that the two doors still answer the way their callers expect.
+_probe_calls = []
+
+
+def _probe_ok(host, port):
+    _probe_calls.append((host, port))
+    return "No Players Connected"
+
+
+_good_r, _bad_r = clusterctl.reachable(st_q, probe=_probe_ok)
+_total_p, _counts_p, _silent_p = clusterctl.players_online(st_q, probe=_probe_ok)
+check("reachable and players_online see the same maps",
+      sorted(_good_r) == sorted(_counts_p), (_good_r, _counts_p))
+check("and agree on which ones did not answer", _bad_r == _silent_p, (_bad_r, _silent_p))
+check("reachable still returns a list of labels, as its callers unpack",
+      isinstance(_good_r, list) and all(isinstance(x, str) for x in _good_r), _good_r)
+check("and players_online still returns the counts reachable throws away",
+      _total_p == 0 and isinstance(_counts_p, dict), (_total_p, _counts_p))
+check("the shorter timeout is kept - coverage only needs the door to open",
+      clusterctl.reachable.__defaults__[-1] == 6.0,
+      clusterctl.reachable.__defaults__)
+check("while the player count keeps its longer one",
+      clusterctl.players_online.__defaults__[-1] == 10.0,
+      clusterctl.players_online.__defaults__)
+
 check("every map answering counts as reachable", len(good) == 2 and not bad, (good, bad))
 
 

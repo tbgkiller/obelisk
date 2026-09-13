@@ -1099,20 +1099,12 @@ def reachable(store, probe=None, timeout=6.0):
     reach them, and the relay used to conflate the two: it reported "covering 10 maps"
     from the container list while resolving none of them, and the only sign was a
     warning per map per poll. Coverage is a claim, so it gets checked.
+
+    The check is players_online with the count thrown away - the same RCON fan-out over
+    the same containers asking the same question. Keeping two of them meant two things
+    to maintain that had already drifted on timeout for no stated reason. The shorter
+    timeout stays: this runs on a two-minute loop and only needs to know whether the
+    door opens.
     """
-    from . import bot
-    password = str(store.get("admin_password") or "")
-
-    def ask(host, port):
-        return run_coroutine(bot.rcon_with(host, port, password, "ListPlayers",
-                                           timeout=timeout))
-
-    probe = probe or ask
-    good, bad = [], []
-    for label, host, port in running_instances(store):
-        try:
-            probe(host, port)
-            good.append(label)
-        except Exception as e:                    # noqa: BLE001 - the reason is the point
-            bad.append((label, str(e).strip() or e.__class__.__name__))
-    return good, bad
+    _total, counts, bad = players_online(store, probe=probe, timeout=timeout)
+    return list(counts), bad
