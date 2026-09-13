@@ -2547,6 +2547,43 @@ for _name, _body in (("the front page", _page_u), ("the cluster page", _cluster_
           "<b>5 players online</b>" in _body and "across 2 maps" in _body,
           _body[_body.find("players online") - 40:][:200])
 
+# ---- the blackout reaches the real page as a warning, not as a zero
+#
+# Cluster-wide RCON loss is ordinary: the relay drops the docker network, the admin
+# password changes, everything restarts at once. The page it produces is the one that
+# gets somebody to restart maps that were serving fine.
+_t12 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _dark = _LiveRelay()
+    _dark.map_up = {"The Island": False, "Ragnarok": False}
+    _dark.last_refresh = _time_dead.time() - 8
+    _page_d, _cluster_d = _t12.run_until_complete(_page_with(_dark))
+finally:
+    _t12.close()
+    _appmod.clusterctl.status = _real_status_s1
+    _bot_s1.LIVE = _real_live
+
+check("a blackout leaves the snapshot measuring nothing",
+      _page_d.count("&mdash;</td>") == 2, _page_d.count("&mdash;</td>"))
+for _name, _body in (("the front page", _page_d), ("the cluster page", _cluster_d)):
+    check("%s does not call a blackout an empty cluster" % _name,
+          "0 players online" not in _body,
+          _body[_body.find("not available") - 80:][:300])
+    check("%s says nothing answered" % _name, "no map answered" in _body,
+          _body[_body.find("not available") - 80:][:300])
+    check("%s warns before a restart rather than after one" % _name,
+          "before restarting anything" in _body,
+          _body[_body.find("not available") - 80:][:300])
+    check("%s explains the dashes in its table" % _name,
+          "did not answer the last poll" in _body, "no dash note")
+    check("%s heads the last column Service" % _name,
+          "<th>Service</th>" in _body and "<th>Container</th>" not in _body,
+          "wrong column header")
+
+check("and the no-relay page points at where to set one up",
+      "Discord" in _front_off and "Settings" in _front_off,
+      _front_off[_front_off.find("not available") - 40:][:300])
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

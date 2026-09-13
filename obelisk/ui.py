@@ -1158,14 +1158,36 @@ def render_settings(store):
             % (banner, toolbar, "".join(blocks), SETTINGS_JS))
 
 
+# The population poll runs once a minute, so anything much older than that is not a
+# slightly stale number - it is a poller that has stopped. Said out loud rather than
+# left for somebody to work out from a large figure.
+STALE_AFTER = 300
+
+# One sentence for the dash, used by the cell's tooltip and by the note under the
+# table, and written to cover both ways of getting one: the map did not answer, or
+# there is no relay to have asked it. Either way it is "not known", which is the whole
+# distinction this column exists to draw.
+DASH_MEANS = ("\u2014 means that map's player count is not known: it did not answer "
+              "the last poll, or the chat relay that asks is not running.")
+
+
 def _ago(seconds):
-    """"just now" / "45s ago" / "2m ago" - how old a cached number is."""
+    """"just now" / "45s ago" / "3m ago" / "2h ago" / "1d ago".
+
+    It used to stop at minutes, so an hour read "60m ago" and a day "1500m ago" - a
+    number that has to be divided in your head before it means anything, at exactly the
+    moment it is telling you something has gone wrong.
+    """
     seconds = int(seconds or 0)
     if seconds < 10:
         return "just now"
-    if seconds < 90:
+    if seconds < 60:
         return "%ds ago" % seconds
-    return "%dm ago" % (seconds // 60)
+    if seconds < 3600:
+        return "%dm ago" % (seconds // 60)
+    if seconds < 86400:
+        return "%dh ago" % (seconds // 3600)
+    return "%dd ago" % (seconds // 86400)
 
 
 def render_status(status, players=None):
@@ -1200,15 +1222,15 @@ def render_status(status, players=None):
         # and filled with the compose service name, which is the same id-for-name slip
         # the restore flow had - on the page most people look at first.
         label = s.get("label") or s.get("service") or s.get("name") or "?"
-        if players is None:
-            count = "&mdash;"
-        elif label in seen:
-            count = "%d" % seen[label]
+        if players is not None and label in seen:
+            cell = '<td class=num>%d</td>' % seen[label]
         else:
-            count = "&mdash;"
-        rows += ("<tr><td>%s</td><td class=%s>%s</td><td class=num>%s</td>"
+            # The dash carries its own explanation, because a dash beside a row Docker
+            # still calls "serving" is otherwise indistinguishable from a quiet map.
+            cell = ('<td class=num title="%s">&mdash;</td>' % _e(DASH_MEANS))
+        rows += ("<tr><td>%s</td><td class=%s>%s</td>%s"
                  "<td class=help>%s</td></tr>"
-                 % (_e(label), css.get(level, ""), _e(says), count,
+                 % (_e(label), css.get(level, ""), _e(says), cell,
                     _e(s.get("service") or s.get("name") or "")))
         if s.get("log_tail"):
             rows += ('<tr><td colspan=4><details><summary class=help>why it is '
@@ -1227,31 +1249,55 @@ def render_status(status, players=None):
     # was on the relay's own status page until that page was stood down inside Obelisk
     # on 4 September, and the web UI never picked it up - so the one number an operator
     # checks before restarting anything has been missing ever since.
-    head = ""
-    if players is not None:
-        total = int(players.get("total") or 0)
-        # The maps the count actually covers, not the maps that look healthy. They were
-        # two different populations: the numerator came from every map that answered
-        # and the denominator from every map reporting "ok", so a cluster with players
-        # on an unhealthy map read "5 players online across 0 maps". N and M have to
-        # describe the same set of maps or the sentence is not about anything.
-        covered = len(seen)
-        head = ('<div class=note><b>%d player%s online</b> across %d map%s '
-                '<span class=help>&middot; %s</span></div>'
-                % (total, "" if total == 1 else "s",
-                   covered, "" if covered == 1 else "s",
-                   _e(_ago(players.get("age")))))
+    # The maps the count actually covers, not the maps that look healthy. They were two
+    # different populations - the numerator came from every map that answered and the
+    # denominator from every map reporting "ok" - so a cluster with players on an
+    # unhealthy map read "5 players online across 0 maps". N and M have to describe the
+    # same set of maps or the sentence is not about anything.
+    covered = len(seen) if players is not None else 0
+    if players is None:
+        head = ('<div class=warn>Player counts are not available &mdash; the chat relay '
+                'is not running, and it is what counts them. Set it up under '
+                '<b>Discord</b> in Settings.</div>')
+    elif not covered:
+        # Nothing answered. The filter that stops one silent map showing a remembered
+        # number removes every map when the whole cluster goes quiet - which it does,
+        # routinely: the relay loses the docker network, the admin password changes,
+        # everything restarts at once. What is left is an empty measurement, and an
+        # empty measurement rendered as "0 players online" is the ghost zero again at
+        # cluster scale. It is also the worst one: a glance at "0 online, just now" is
+        # exactly what precedes restarting maps that were perfectly fine.
+        head = ('<div class=warn>Player counts are not available &mdash; no map answered '
+                'the last poll, so this is not an empty cluster, it is an unanswered '
+                'question. Check the maps are reachable before restarting anything.'
+                '</div>')
     else:
-        head = ('<div class=note>Player counts are not available &mdash; the chat relay '
-                'is not running, and it is what counts them.</div>')
+        stale = int(players.get("age") or 0) > STALE_AFTER
+        head = ('<div class="%s"><b>%d player%s online</b> across %d map%s '
+                '<span class=help>&middot; %s%s</span></div>'
+                % ("warn" if stale else "note",
+                   int(players.get("total") or 0),
+                   "" if int(players.get("total") or 0) == 1 else "s",
+                   covered, "" if covered == 1 else "s",
+                   _e(_ago(players.get("age"))),
+                   " &middot; the count refreshes every minute, so this is out of date"
+                   if stale else ""))
 
+    # Only when there is a dash to explain. A note about a symbol that is not on the
+    # page is noise that teaches people to stop reading the notes.
+    dashes = ('<div class=help style="margin-top:10px">%s</div>' % _e(DASH_MEANS)
+              if "&mdash;" in rows else "")
+
+    # "Container" was the header over s["service"], which is the instance - the
+    # container name is a longer thing built from the cluster and the instance. The
+    # column was right and the word over it was not.
     return (banner + head + '<fieldset><legend>Running now</legend><table>'
             '<tr><th>Map</th><th>Doing</th><th class=num>Players</th>'
-            '<th>Container</th></tr>%s</table>'
+            '<th>Service</th></tr>%s</table>%s'
             '<div class=help style="margin-top:10px">A first start downloads about 12 GB '
             'of game files and then generates the world, so it is normally slow. The '
             'phase and elapsed time above are how you tell it is still moving.</div>'
-            '</fieldset>' % rows)
+            '</fieldset>' % (rows, dashes))
 
 
 def stop_reason(counts, silent=()):

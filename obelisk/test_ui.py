@@ -1059,5 +1059,86 @@ check("and the snapshot only reads what the poll already wrote",
       "online_snapshot does I/O")
 
 
+# ---- a cluster-wide blackout is not an empty cluster
+#
+# The filter that stops one silent map showing a remembered number removes every map
+# when the whole cluster goes quiet - and it does, routinely: the relay loses the docker
+# network, the admin password changes, everything restarts at once. What is left is an
+# empty measurement, and an empty measurement rendered as "0 players online · just now"
+# is the ghost zero again at cluster scale. It is also the worst one: that glance is
+# exactly what precedes restarting maps that were perfectly fine.
+_blackout = ui.render_status(_ST, players={"by_map": {}, "total": 0, "age": 5})
+check("every map silent does not report an empty cluster",
+      "0 players online" not in _blackout, _blackout[:400])
+check("nor claims to have counted any maps",
+      "across 0 maps" not in _blackout, _blackout[:400])
+check("it says the counts are not available",
+      "not available" in _blackout, _blackout[:400])
+check("and that this is an unanswered question, not an answer",
+      "no map answered" in _blackout, _blackout[:400])
+check("warning the operator before they restart something that was fine",
+      "before restarting anything" in _blackout, _blackout[:400])
+check("in amber, because something is wrong rather than quiet",
+      "<div class=warn>" in _blackout, _blackout[:200])
+check("the rows are all dashes underneath it",
+      _blackout.count("&mdash;</td>") == 3, _blackout.count("&mdash;</td>"))
+
+# ...while a cluster that really is empty still says so. This is the line the fix must
+# not cross: every map answered, every map answered zero.
+_reallyempty = ui.render_status(_ST, players={
+    "by_map": {"The Island": 0, "Ragnarok": 0, "Valguero": 0}, "total": 0, "age": 5})
+check("a measured empty cluster still reports zero",
+      "<b>0 players online</b>" in _reallyempty, _reallyempty[:400])
+check("across the maps it measured", "across 3 maps" in _reallyempty,
+      _reallyempty[:400])
+check("and stays a quiet note, not a warning",
+      '<div class="note">' in _reallyempty, _reallyempty[:200])
+
+# ---- the dash explains itself
+check("the dash carries a tooltip", 'title="' in _live, _live[:800])
+_FOOT = '<div class=help style="margin-top:10px">%s</div>' % ui._e(ui.DASH_MEANS)
+check("and there is a note under the table, not only a tooltip",
+      _FOOT in _live, _live[-900:])
+check("the tooltip is there as well", 'title="%s"' % ui._e(ui.DASH_MEANS) in _live,
+      _live[:900])
+check("the wording covers the no-relay case too, which shows the same dash",
+      "chat relay that asks is not running" in ui.DASH_MEANS, ui.DASH_MEANS)
+check("and it says plainly that the count is not known",
+      "not known" in ui.DASH_MEANS, ui.DASH_MEANS)
+check("the note is not printed when there is no dash to explain",
+      _FOOT not in ui.render_status(
+          _ST, players={"by_map": {"The Island": 1, "Ragnarok": 2, "Valguero": 0},
+                        "total": 3, "age": 5}),
+      "a note about a symbol that is not on the page")
+
+# ---- the age keeps its units
+check("an hour is an hour, not sixty minutes", ui._ago(3600) == "1h ago", ui._ago(3600))
+check("a minute is a minute, not sixty seconds", ui._ago(60) == "1m ago", ui._ago(60))
+check("a day is a day, not fifteen hundred minutes",
+      ui._ago(90000) == "1d ago", ui._ago(90000))
+check("and the short end is unchanged",
+      [ui._ago(x) for x in (0, 45, 150)] == ["just now", "45s ago", "2m ago"],
+      [ui._ago(x) for x in (0, 45, 150)])
+_stale = ui.render_status(_ST, players=dict(_PL, age=7200))
+check("a count much older than its poll says so rather than sitting there",
+      "out of date" in _stale, _stale[:400])
+check("and is shown as a warning", '<div class="warn">' in _stale, _stale[:200])
+check("a fresh count is not nagged about",
+      "out of date" not in _live, _live[:400])
+
+# ---- the no-relay sentence says what to do about it
+check("the no-relay note names where the relay is set up",
+      "Discord" in _norelay and "Settings" in _norelay, _norelay[:400])
+check("and is a warning rather than a quiet aside",
+      "<div class=warn>" in _norelay, _norelay[:200])
+
+# ---- the column header stopped over-promising
+check("the last column is called Service, which is what it holds",
+      "<th>Service</th>" in _live, _live[:500])
+check("not Container, which is a longer name it does not show",
+      "<th>Container</th>" not in _live, _live[:500])
+check("and it still shows the instance underneath",
+      "<td class=help>island</td>" in _live, _live[:700])
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
