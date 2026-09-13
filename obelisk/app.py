@@ -302,7 +302,7 @@ def build_app(store, docker=None):
                      level="info" if ok else "error")
 
     # ---- the cluster: define it, launch it, stop it
-    def _cluster_body(request, message="", problem=""):
+    def _cluster_body(request, message="", problem="", refusal=""):
         try:
             in_use = clusterctl.other_ports_in_use(store)
         except Exception:
@@ -312,6 +312,11 @@ def build_app(store, docker=None):
         banner = ""
         if problem:
             banner = '<div class=problem>%s</div>' % ui._e(problem)
+        elif refusal:
+            # Already styled, and amber rather than red: a stop refused because people
+            # are playing is the same kind of answer as a restore refused for the same
+            # reason, and nothing has happened yet either way.
+            banner = refusal
         elif message:
             banner = '<div class=note>%s</div>' % ui._e(message)
         # Both buttons on this page start every map, including one the gate is holding
@@ -333,6 +338,7 @@ def build_app(store, docker=None):
                 banner += ui.render_held_down(
                     still, states=updatesctl.held_down_states(store))
         return (banner + _pending_panel() + _update_panel() +
+                ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
                 ui.render_cluster(store, plan, status=st))
 
     # The last poll, so opening the page does not go to the network before it renders.
@@ -652,17 +658,13 @@ def build_app(store, docker=None):
     cluster_busy = APPLY_LOCK          # module level: see the comment there
 
     def _act(fn, request):
-        # A stop is a story rather than a moment: the request, every stage inside it and
-        # the result all belong to one slot, so the channel carries a single status line
-        # from "Stop requested" to "Cluster stopped." The result ends the slot, so the
-        # next stop starts a fresh message instead of rewriting this one.
-        slot = clusterctl.STOP_SLOT if fn is clusterctl.stop else None
+        """Launch, synchronously. The stop has its own path below - it is the one that
+        takes minutes and the one somebody has to be warned before."""
         announce.say("cluster.%s" % fn.__name__, "%s requested from the web UI."
-                     % fn.__name__.title(), slot=slot)
+                     % fn.__name__.title())
         ok, msg = fn(store)
         announce.say("cluster.%s.%s" % (fn.__name__, "done" if ok else "failed"), msg,
-                     level="info" if ok else "error",
-                     slot=slot, slot_end=bool(slot))
+                     level="info" if ok else "error")
         body = _cluster_body(request, message=msg if ok else "", problem="" if ok else msg)
         return chrome(body, "Cluster", "/admin/cluster")
 
@@ -687,10 +689,95 @@ def build_app(store, docker=None):
             raise web.HTTPFound("/setup")
         return await _act_once(clusterctl.launch, request)
 
+    # ---- stopping the cluster: who is on, and where it has got to
+    #
+    # One stop at a time, and what it is currently doing. A stop takes minutes on ten
+    # maps and the request used to be held open for all of them, so the browser sat on
+    # a dead tab with no way to tell a stop that was working from one that had hung -
+    # and nobody had been given the chance to find out who was playing first.
+    sjob = {"state": "idle", "step": "", "message": "", "ok": None, "started": 0.0}
+
+    def _stop_say(event, text, **kw):
+        """The stop's own description, to the channel and to the page at once.
+
+        cluster.stop already emits a stage per map and one slot-edited message to
+        Discord. The page was the only surface not reading it. Nothing new is measured
+        here - it is the same sentence, written somewhere else as well.
+        """
+        sjob["step"] = text
+        announce.say(event, text, **kw)
+
+    def _run_stop():
+        # A stop is a story rather than a moment: the request, every stage inside it
+        # and the result all belong to one slot, so the channel carries a single status
+        # line from "Stop requested" to "Cluster stopped." The result ends the slot, so
+        # the next stop starts a fresh message instead of rewriting this one.
+        slot = clusterctl.STOP_SLOT
+        _stop_say("cluster.stop", "Stop requested from the web UI.", slot=slot)
+        ok, msg = clusterctl.stop(store, say=_stop_say)
+        _stop_say("cluster.stop.done" if ok else "cluster.stop.failed", msg,
+                  level="info" if ok else "error", slot=slot, slot_end=True)
+        return ok, msg
+
+    async def _stop_task():
+        try:
+            async with cluster_busy:
+                ok, msg = await asyncio.to_thread(_run_stop)
+        except Exception as e:                       # noqa: BLE001 - surfaced below
+            ok, msg = False, "Stopping the cluster failed: %s" % e
+            log.exception("stopping the cluster failed")
+        sjob.update(state="done", ok=ok, message=msg, step=msg if ok else "failed")
+
     async def cluster_stop(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        return await _act_once(clusterctl.stop, request)
+        if sjob["state"] == "running" or cluster_busy.locked():
+            return chrome(_cluster_body(
+                request, message="Already working on the last request - this one was "
+                                 "ignored rather than run twice."),
+                "Cluster", "/admin/cluster")
+
+        form = await request.post()
+        force = bool(form.get("force"))
+        if not force:
+            # Asked off the loop: ten RCON round trips is not something to do inside a
+            # request handler. A map that does not answer counts as occupied, for the
+            # reason it counts everywhere else - "it is not known whether anyone is on
+            # it" is not "nobody is on it".
+            try:
+                _total, counts, silent = await asyncio.to_thread(
+                    clusterctl.players_online, store)
+            except Exception as e:                   # noqa: BLE001 - reported, not fatal
+                log.warning("could not count players before stopping: %s", e)
+                _total, counts, silent = 0, {}, [("the cluster", str(e))]
+            if any(n for n in (counts or {}).values()) or silent:
+                announce.say(
+                    "cluster.stop_refused",
+                    "Stop refused: %s Nothing has been stopped."
+                    % ui.stop_reason(counts, silent), level="warning")
+                return chrome(_cluster_body(
+                    request, refusal=ui.render_stop_warning(counts, silent)),
+                    "Cluster", "/admin/cluster")
+
+        sjob.update(state="running", ok=None, message="", step="starting",
+                    started=time.time())
+        # Started, not awaited. Holding the response across the stop is what made the
+        # page look hung for the several minutes it takes ten maps to close their
+        # worlds - the one stretch where somebody most wants to know it is working.
+        asyncio.create_task(_stop_task())
+        raise web.HTTPFound("/admin/cluster")
+
+    def _sjob_live():
+        out = dict(sjob)
+        out["elapsed"] = int(time.time() - sjob["started"]) if sjob.get("started") else 0
+        return out
+
+    async def cluster_status(request):
+        if not authed(request):
+            return web.json_response({"state": "denied"}, status=403)
+        live = _sjob_live()
+        live["html"] = ui.render_stop_job(live)
+        return web.json_response(live)
 
     def _connect_panel():
         """The addresses people actually type, once there are maps to type them for."""
@@ -1265,6 +1352,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/maps", cluster_maps)
     app.router.add_post("/admin/launch", cluster_launch)
     app.router.add_post("/admin/stop", cluster_stop)
+    app.router.add_get("/admin/cluster/status", cluster_status)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)
     app.router.add_get("/admin/backup/status", backup_status)

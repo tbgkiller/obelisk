@@ -725,6 +725,22 @@ APPLY_PHASES = [
 ]
 
 
+# The stop, as the stop actually describes itself. Matched on the words cluster.stop
+# emits rather than a parallel enumeration somebody has to remember to update - the
+# same rule APPLY_PHASES learned the hard way, where a reworded step left the bar on
+# no phase at all and the apply read as having gone backwards.
+#
+# Three stages, because a stop has three: ask every map to close its own world, stop
+# the servers, done. The per-map "3 of 10" lives in the step text under the bar, which
+# is where a count belongs - it is not a phase of its own.
+STOP_PHASES = [
+    ("Closing worlds", ("asked to save and close", "could not be asked to close",
+                        "saved its world and closed")),
+    ("Stopping servers", ("stopping the servers now",)),
+    ("Stopped", ("cluster stopped",)),
+]
+
+
 def phase_index(step, phases):
     """Which step of the journey a status line belongs to. -1 when nothing matches.
 
@@ -1181,6 +1197,109 @@ def render_status(status):
             'of game files and then generates the world, so it is normally slow. The '
             'phase and elapsed time above are how you tell it is still moving.</div>'
             '</fieldset>' % rows)
+
+
+def stop_reason(counts, silent=()):
+    """One sentence naming who is on, for the channel. The page gets the block below.
+
+    Shared so the two cannot disagree about who was playing - the complaint that made
+    the icon map one map instead of two.
+    """
+    from .cluster import _and
+    rows = sorted((label, n) for label, n in (counts or {}).items() if n)
+    total = sum(n for _l, n in rows)
+    quiet = sorted(l for l, _w in (silent or []))
+    parts = []
+    if rows:
+        parts.append("%d player%s on %s"
+                     % (total, " is" if total == 1 else "s are",
+                        _and([l for l, _n in rows])))
+    if quiet:
+        parts.append("%s did not answer, so it is not known whether anyone is on %s"
+                     % (_and(quiet), "it" if len(quiet) == 1 else "them"))
+    return ("%s." % "; ".join(parts)) if parts else "somebody may be playing."
+
+
+def render_stop_warning(counts, silent=()):
+    """Who is on, before the cluster is stopped out from under them.
+
+    A stop is reversible - Launch brings it back - so this is amber rather than red,
+    the same colour and the same shape as the restore guard's player refusal. What it
+    is not is a dialog box: the answer comes back as a page, so it is the server that
+    decided, it survives a second tab, and it can be tested without a browser.
+
+    A map that did not answer counts as occupied, for the reason it counts everywhere
+    else: "it is not known whether anyone is on it" is not "nobody is on it".
+    """
+    from .cluster import _and
+    rows = sorted((label, n) for label, n in (counts or {}).items() if n)
+    total = sum(n for _l, n in rows)
+    quiet = sorted(l for l, _w in (silent or []))
+
+    lines = []
+    if rows:
+        lines.append("<b>%d player%s on %s.</b> Stopping now disconnects %s."
+                     % (total, " is" if total == 1 else "s are",
+                        _e(_and([l for l, _n in rows])),
+                        "them" if total != 1 else "them"))
+    if quiet:
+        lines.append("%s did not answer, so it is not known whether anyone is on %s."
+                     % (_e(_and(quiet)), "it" if len(quiet) == 1 else "them"))
+    lines.append('Nothing has been stopped. Wait until they are off, or stop anyway.')
+    return ('<div class=warn>%s</div>'
+            '<form method=post action="/admin/stop" style="margin:-4px 0 14px">'
+            '<input type=hidden name=force value="1">'
+            '<button class=ghost type=submit>Stop anyway</button></form>'
+            % "<br>".join(lines))
+
+
+def render_stop_job(job):
+    """Where the stop has got to, for a page that used to just stop responding.
+
+    The request used to be held open across the whole thing - minutes, on ten maps -
+    so the browser showed a dead tab and the operator had no way to tell a stop that
+    was working from one that had hung. The stop already described itself stage by
+    stage to Discord; this is the same description, on the screen where the button was
+    pressed, driven by the same announcements.
+    """
+    job = job or {}
+    if job.get("state") != "running":
+        return ""
+    return ('<div class=panel><div class=ptitle>Stopping the cluster</div>%s'
+            '<div class=help style="margin-top:6px">%s</div></div>'
+            % (render_stepper(STOP_PHASES, job.get("step"),
+                              elapsed=job.get("elapsed")),
+               _e(job.get("step") or "starting")))
+
+
+# Shaped like RESTORE_JS, and for the same reason: a long job on a page that would
+# otherwise say nothing until it finished. The panel's HTML comes back with the poll
+# rather than being rebuilt in the browser - the same swap the activity feed already
+# does with its dashboard block, so the stepper on screen and the stepper the server
+# would render cannot disagree. One reload when it finishes, so the result arrives as
+# an ordinary page instead of as another thing to poll.
+STOP_JS = """
+<div id=stopwrap hidden></div>
+<script>
+(function(){
+  const wrap=document.getElementById('stopwrap');
+  if(!wrap) return;
+  let sawRunning = wrap.dataset.running === '1';
+  function tick(){
+    fetch('/admin/cluster/status',{credentials:'same-origin'})
+      .then(function(r){return r.json()}).then(function(j){
+        if(j.state==='running'){
+          sawRunning=true;
+          wrap.hidden=false;
+          wrap.innerHTML=j.html||'';
+          setTimeout(tick,2000);
+        } else if(sawRunning){ location.reload(); }
+      }).catch(function(){setTimeout(tick,5000)});
+  }
+  tick();
+})();
+</script>
+"""
 
 
 def render_held_down(maps, states=None):

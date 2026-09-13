@@ -169,10 +169,15 @@ async def run():
           [b[:120] for b in bodies])
 
     acts.clear()
-    r = await client.post("/admin/stop")
-    body = await r.text()
-    check("stop runs from the UI", acts and acts[-1] == ["down"], acts)
-    check("stop says saves are safe", "untouched" in body)
+    r = await client.post("/admin/stop", data={"force": "1"},
+                          allow_redirects=False)
+    check("stop hands the page straight back rather than holding it open",
+          r.status == 302, r.status)
+    for _ in range(40):
+        if acts and acts[-1] == ["down"]:
+            break
+        await _aio.sleep(0.05)
+    check("stop still runs from the UI", acts and acts[-1] == ["down"], acts)
     clusterctl.compose_path, clusterctl.layout.ensure_ark = _rp, _re
     clusterctl.layout.ensure_obelisk = _ro
 
@@ -1638,6 +1643,230 @@ check("the run button is not left looking actionable",
       "id=runbtn disabled" in _foreign_body, "run button is still live")
 check("an archive that does hold one of your maps still offers the button",
       "id=runbtn disabled" not in _restore_page(), "usable archive was disabled")
+
+
+
+# ---- stopping the cluster: who is on, and a page that keeps answering
+#
+# Two faults on one button. It asked nobody whether people were playing before
+# disconnecting ten servers' worth of them, and it held the HTTP response open across
+# the whole stop - minutes, on ten maps - so the browser showed a dead tab with no way
+# to tell a stop that was working from one that had hung.
+
+# 1. every string the stop emits lands on exactly one phase. A stepper that drifts
+#    from the thing it describes sits on -1 and reads as "nothing is happening", which
+#    is the fault it exists to fix. APPLY_PHASES learned this the hard way.
+_STOP_EMITS = [
+    "Stopping the cluster. Each map is being asked to save and close its own world "
+    "first, which takes a few minutes on a big map - nothing is shut down until its "
+    "world is written.",
+    "Ragnarok saved its world and closed (3 of 10).",
+    "The Island saved its world and closed (10 of 10).",
+    "The maps could not be asked to close their worlds, so every one of them is being "
+    "stopped the ordinary way instead - their last saves are whatever each server "
+    "wrote on its way out. Reason: docker went away",
+    "10 of 10 worlds saved and closed. Stopping the servers now - nothing is left "
+    "writing.",
+    "8 of 10 worlds saved and closed. Valguero and Astraeos would not close and are "
+    "being stopped the ordinary way instead - worth checking them once the cluster is "
+    "back up. Stopping the servers now.",
+    "1 of 1 world saved and closed. Stopping the servers now - nothing is left writing.",
+    "Cluster stopped. Saves and settings are untouched; Launch brings it back.",
+]
+_lost = [t for t in _STOP_EMITS if ui.phase_index(t, ui.STOP_PHASES) < 0]
+check("every stage the stop announces lands on a phase", _lost == [],
+      [t[:60] for t in _lost])
+_ambiguous = []
+for _t in _STOP_EMITS:
+    _hits = [m for _l, _ms in ui.STOP_PHASES for m in _ms if m.lower() in _t.lower()]
+    if len(_hits) != 1:
+        _ambiguous.append((_t[:50], _hits))
+check("and on exactly one marker, so the bar cannot jump", _ambiguous == [],
+      _ambiguous)
+check("the stages come in the order the stop takes them",
+      [ui.phase_index(t, ui.STOP_PHASES) for t in _STOP_EMITS]
+      == [0, 0, 0, 0, 1, 1, 1, 2],
+      [ui.phase_index(t, ui.STOP_PHASES) for t in _STOP_EMITS])
+
+# ...and those strings are the real ones. Pinned against cluster.py's own source, so a
+# reworded stage breaks here rather than silently on the page.
+_clsrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),
+                 encoding="utf-8").read()
+_stopsrc = _clsrc.split("def stop(store")[1].split("def restart(")[0]
+for _frag in ("asked to save and close", "saved its world and closed",
+              "could not be asked to close", "Stopping the servers now",
+              "Cluster stopped"):
+    check("the stop still says %r, which the stepper matches on" % _frag,
+          _frag in _stopsrc, _frag)
+
+# 2. the wording, through the helper the rest of the product uses
+check("one player reads as one player",
+      "1 player is on Ragnarok" in ui.stop_reason({"Ragnarok": 1}, []),
+      ui.stop_reason({"Ragnarok": 1}, []))
+check("several read as several, and the maps are joined as a sentence",
+      "4 players are on Ragnarok and The Island"
+      in ui.stop_reason({"Ragnarok": 3, "The Island": 1}, []),
+      ui.stop_reason({"Ragnarok": 3, "The Island": 1}, []))
+check("three maps get their commas and their and",
+      "Astraeos, Ragnarok and The Island"
+      in ui.stop_reason({"Ragnarok": 1, "The Island": 1, "Astraeos": 1}, []),
+      ui.stop_reason({"Ragnarok": 1, "The Island": 1, "Astraeos": 1}, []))
+check("a map that did not answer is said, not swallowed",
+      "did not answer" in ui.stop_reason({}, [("Valguero", "timed out")]),
+      ui.stop_reason({}, [("Valguero", "timed out")]))
+check("and a map nobody is on is not listed as occupied",
+      "Ragnarok" not in ui.stop_reason({"Ragnarok": 0, "The Island": 2}, []),
+      ui.stop_reason({"Ragnarok": 0, "The Island": 2}, []))
+
+_warn_block = ui.render_stop_warning({"Ragnarok": 3, "The Island": 1}, [])
+check("the refusal block is amber, the way the restore guard's is",
+      "<div class=warn>" in _warn_block, _warn_block[:120])
+check("it names who is on", "4 players are on Ragnarok and The Island" in _warn_block,
+      _warn_block[:200])
+check("it says what stopping would do to them",
+      "disconnects them" in _warn_block, _warn_block[:300])
+check("it says nothing has happened yet",
+      "Nothing has been stopped" in _warn_block, _warn_block[:300])
+check("and it offers the way through rather than only refusing",
+      'name=force value="1"' in _warn_block and "Stop anyway" in _warn_block,
+      _warn_block[-300:])
+
+# 3. the route: refuse, force, and hand the page straight back
+_sd = tempfile.mkdtemp()
+os.environ["OBELISK_ARK"] = os.path.join(_sd, "ark")
+_sstore, _sc, _scode = bootstrap(os.path.join(_sd, "obelisk"), environ={})
+_sstore.patch({"maps": "island,ragnarok", "admin_password": "pw",
+               "cluster_id": "stoptest"})
+
+_stop_calls = []
+_real_players, _real_stop = _appmod.clusterctl.players_online, _appmod.clusterctl.stop
+
+
+def _slow_stop(store, **kw):
+    """A stop that takes a while and describes itself on the way, like the real one."""
+    say = kw.get("say") or (lambda *a, **k: None)
+    _stop_calls.append("stop")
+    say("cluster.closing",
+        "Stopping the cluster. Each map is being asked to save and close its own "
+        "world first, which takes a few minutes on a big map - nothing is shut down "
+        "until its world is written.", slot=_appmod.clusterctl.STOP_SLOT)
+    _time_dead.sleep(0.4)
+    say("cluster.closed",
+        "2 of 2 worlds saved and closed. Stopping the servers now - nothing is left "
+        "writing.", slot=_appmod.clusterctl.STOP_SLOT)
+    return True, "Cluster stopped. Saves and settings are untouched; Launch brings it back."
+
+
+async def _post_stop(players, data=None, wait_done=True):
+    _stop_calls.clear()
+    _appmod.clusterctl.players_online = lambda store, **k: players
+    _appmod.clusterctl.stop = _slow_stop
+    client = TestClient(TestServer(build_app(_sstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_sstore.get("admin_token"))})
+    began = _time_dead.monotonic()
+    r = await client.post("/admin/stop", data=data or {}, allow_redirects=False)
+    took = _time_dead.monotonic() - began
+    body = await r.text()
+    status = await (await client.get("/admin/cluster/status")).json()
+    if wait_done:
+        for _ in range(60):
+            later = await (await client.get("/admin/cluster/status")).json()
+            if later.get("state") != "running":
+                break
+            await _aio2.sleep(0.05)
+    await client.close()
+    return r, body, took, status
+
+
+_t7 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    # nobody on: it just goes
+    _r_ok, _b_ok, _took_ok, _mid = _t7.run_until_complete(
+        _post_stop((0, {}, []), wait_done=False))
+    check("a stop with nobody on is not refused", _r_ok.status == 302, _r_ok.status)
+    check("the page comes straight back rather than being held open",
+          _took_ok < 0.3, _took_ok)
+    check("while the stop is still running behind it",
+          _mid.get("state") == "running", _mid)
+    check("and the status endpoint says where it has got to",
+          "step" in _mid and "elapsed" in _mid, sorted(_mid))
+    check("carrying the panel the page shows",
+          "Stopping the cluster" in (_mid.get("html") or ""), _mid.get("html"))
+    _t7.run_until_complete(_aio2.sleep(0.6))
+    _drain2()
+
+    # players on: refused, and nothing is stopped
+    _r_no, _b_no, _took_no, _idle = _t7.run_until_complete(
+        _post_stop((4, {"Ragnarok": 3, "The Island": 1}, [])))
+    _ev_no = _drain2()
+    check("a stop with players on is refused", _r_no.status == 200, _r_no.status)
+    check("the cluster was never asked to stop", _stop_calls == [], _stop_calls)
+    check("no stop job was started", _idle.get("state") != "running", _idle)
+    check("the page names who is on",
+          "4 players are on Ragnarok and The Island" in _b_no, _b_no[:400])
+    check("in the amber block, not the red one",
+          "<div class=warn>" in _b_no, "refusal is not amber")
+    check("and offers Stop anyway", "Stop anyway" in _b_no, "no way through")
+    _no_names = [(i["event"], i["level"]) for i in _ev_no]
+    check("the refusal is announced as a refusal, at warning",
+          ("cluster.stop_refused", "warning") in _no_names, _no_names)
+    check("and never as a stop that happened",
+          not any(e.startswith("cluster.stop.") for e, _l in _no_names), _no_names)
+
+    # a map that did not answer counts as occupied
+    _r_q, _b_q, _took_q, _idle_q = _t7.run_until_complete(
+        _post_stop((0, {}, [("Valguero", "timed out")])))
+    _drain2()
+    check("a map that did not answer blocks the stop too", _r_q.status == 200,
+          _r_q.status)
+    check("nothing was stopped", _stop_calls == [], _stop_calls)
+    check("and it says why rather than implying the cluster was empty",
+          "did not answer" in _b_q, _b_q[:400])
+
+    # force goes through
+    _r_f, _b_f, _took_f, _mid_f = _t7.run_until_complete(
+        _post_stop((4, {"Ragnarok": 3, "The Island": 1}, []), data={"force": "1"},
+                   wait_done=False))
+    check("force stops it anyway", _r_f.status == 302, _r_f.status)
+    check("and hands the page straight back as well", _took_f < 0.3, _took_f)
+    check("with the stop actually running", _mid_f.get("state") == "running", _mid_f)
+    _t7.run_until_complete(_aio2.sleep(0.6))
+    _ev_f = _drain2()
+
+    # 4. Discord is unchanged: one slot for the whole stop, ended at the result
+    _slots = [(i["event"], i["slot"], i["slot_end"]) for i in _ev_f
+              if i["event"].startswith("cluster.")]
+    check("every stage of the stop goes into one slot",
+          _slots and all(sl == _appmod.clusterctl.STOP_SLOT for _e2, sl, _se in _slots),
+          _slots)
+    check("so the channel carries one message rather than a scroll",
+          len({sl for _e2, sl, _se in _slots}) == 1, _slots)
+    check("and the result ends it, so the next stop starts a fresh one",
+          [se for _e2, _sl, se in _slots][-1] is True, _slots)
+    check("the request itself is part of the same story",
+          _slots and _slots[0][0] == "cluster.stop", _slots)
+    check("the stop still reports its result",
+          any(e == "cluster.stop.done" for e, _sl, _se in _slots), _slots)
+finally:
+    _t7.close()
+    _appmod.clusterctl.players_online = _real_players
+    _appmod.clusterctl.stop = _real_stop
+
+# the page has to actually poll, or none of the above is visible to anybody
+check("the cluster page carries the stop poller",
+      "/admin/cluster/status" in ui.STOP_JS, "no poller")
+check("which swaps in the panel the server rendered",
+      "wrap.innerHTML=j.html" in ui.STOP_JS, "panel is rebuilt in the browser")
+check("and reloads once the stop is done rather than polling for ever",
+      "location.reload()" in ui.STOP_JS, "never reloads")
+check("a stop that is not running renders no panel",
+      ui.render_stop_job({"state": "idle"}) == "",
+      ui.render_stop_job({"state": "idle"}))
+check("a running one renders the stepper",
+      "stepper" in ui.render_stop_job({"state": "running", "step": _STOP_EMITS[0]}),
+      "no stepper")
 
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
