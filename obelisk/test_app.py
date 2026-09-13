@@ -2695,6 +2695,115 @@ check("and every surface now names a comma'd player the same way",
       [p["name"] for p in _bot_s1.parse_players("0. Cha,rlie, 123")] == ["Cha,rlie"],
       _bot_s1.parse_players("0. Cha,rlie, 123"))
 
+# ---- and it reaches the real Cluster page, from the same poll as the count
+_t13 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    class _RosterRelay(_LiveRelay):
+        online_names = {
+            "The Island": [{"name": "Bob", "netid": "7656119800000001"},
+                           {"name": "Cha,rlie", "netid": "000255a1b2"},
+                           {"name": "Dee", "netid": "19000000000000001"},
+                           {"name": "Eve", "netid": "0002a1b2c3d4"}],
+            "Ragnarok": [{"name": "unreadable row", "netid": ""}]}
+
+    _rr = _RosterRelay()
+    _rr.online_by_map = {"The Island": 4, "Ragnarok": 1}
+    _rr.map_up = {"The Island": True, "Ragnarok": True}
+    _rr.online_total = 5
+    _rr.last_refresh = _time_dead.time() - 25
+    _front_r, _cluster_r = _t13.run_until_complete(_page_with(_rr))
+
+    _rr_quiet = _RosterRelay()
+    _rr_quiet.online_by_map = {"The Island": 4, "Ragnarok": 1}
+    _rr_quiet.map_up = {"The Island": True, "Ragnarok": False}
+    _rr_quiet.last_refresh = _time_dead.time() - 25
+    _front_q2, _cluster_q2 = _t13.run_until_complete(_page_with(_rr_quiet))
+
+    _front_nr, _cluster_nr = _t13.run_until_complete(_page_with(None))
+finally:
+    _t13.close()
+    _appmod.clusterctl.status = _real_status_s1
+    _bot_s1.LIVE = _real_live
+
+check("the Cluster page carries the who's-online section",
+      "Who\u2019s online" in _cluster_r, _cluster_r[-1200:])
+check("listing the people by map",
+      ">Bob<" in _cluster_r and ">Dee<" in _cluster_r, _cluster_r[-1500:])
+check("with the comma'd name intact", "Cha,rlie" in _cluster_r, _cluster_r[-1500:])
+check("and the unreadable row marked rather than dropped",
+      "unreadable row" in _cluster_r and "name not readable" in _cluster_r,
+      _cluster_r[-1500:])
+check("the section says how old the list is",
+      "25s ago" in _cluster_r or "just now" in _cluster_r, _cluster_r[-900:])
+
+# the count column and the name list are the same poll, so they agree on screen
+check("a map counted at four lists four names",
+      ">4</td>" in _cluster_r and _cluster_r.count("<span class=chip") >= 4,
+      _cluster_r.count("<span class=chip"))
+check("and the two headers give the same population",
+      "<b>5 players online</b>" in _cluster_r and "5 players on 2 maps" in _cluster_r,
+      _cluster_r[:0] or "headers disagree")
+
+# a map that went quiet leaves both views at once
+check("a quiet map is absent from the roster",
+      "unreadable row" not in _cluster_q2, _cluster_q2[-1200:])
+check("and dashed in the count, not zeroed",
+      "&mdash;</td>" in _cluster_q2, _cluster_q2[-1500:])
+check("with the section counting only what it could see",
+      "4 players on 1 map " in _cluster_q2, _cluster_q2[-1200:])
+
+check("no relay gives the section the same sentence as the count",
+      _cluster_nr.count("chat relay is not running") == 2, 
+      _cluster_nr.count("chat relay is not running"))
+check("and points at Discord in Settings",
+      "Discord" in _cluster_nr and "Settings" in _cluster_nr, "no pointer")
+
+# the front page is the status table only - the roster lives with the actions to come
+check("the Status page is not given a second copy of the roster",
+      "Who\u2019s online" not in _front_r, _front_r[-800:])
+
+# ---- read-only, and it cannot reach back into the relay
+_appsrc_2b = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
+                     encoding="utf-8").read()
+_rn = _appsrc_2b.split("def _roster_now")[1].split(chr(10) + "    def ")[0]
+check("the roster reader reads and does not ask",
+      "online_roster()" in _rn and "rcon" not in _rn and "ListPlayers" not in _rn, _rn)
+check("and never a blank page if it cannot",
+      "except Exception" in _rn, _rn)
+
+_before = {"The Island": [{"name": "Bob", "netid": "1"}]}
+
+
+class _Mutable:
+    online_by_map = {"The Island": 1}
+    online_names = {"The Island": [{"name": "Bob", "netid": "1"}]}
+    map_up = {"The Island": True}
+    online_total = 1
+    last_refresh = 0.0
+
+
+_mu = _Mutable()
+_mu.last_refresh = _time_dead.time() - 5
+_bot_s1.LIVE = _mu
+try:
+    _got, _ = _bot_s1.online_roster()
+    _got["The Island"][0]["name"] = "rendered over"
+    _got["The Island"].append({"name": "ghost", "netid": "x"})
+    check("rendering cannot edit the relay's roster",
+          _mu.online_names == _before, _mu.online_names)
+finally:
+    _bot_s1.LIVE = _real_live
+
+# ---- nothing that touches the cluster moved
+for _what, _frag in sorted({
+        "the apply gate": "def verify_every_map(store):",
+        "the restore gate": "def verify_restored(store, key, note=None):",
+        "the stop guard": "ui.render_stop_warning(counts, silent)",
+        "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
+        "the save-before-stop": "save=lambda: clusterctl.save_and_settle(",
+}.items()):
+    check("%s is untouched by the display" % _what, _frag in _appsrc_2b, _frag)
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

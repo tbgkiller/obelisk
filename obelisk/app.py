@@ -320,6 +320,22 @@ def build_app(store, docker=None):
             svc["label"] = by_instance.get(svc.get("service"), "")
         return st
 
+    def _roster_now():
+        """Who the relay last saw, for the page. Read, never measured.
+
+        The same poll the count comes from, so the two cannot disagree about a map.
+        """
+        from . import bot
+        try:
+            snap = bot.online_roster()
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.info("could not read the player roster: %s", e)
+            return None
+        if snap is None:
+            return None
+        by_map, age = snap
+        return {"by_map": by_map, "age": age}
+
     def _players_now():
         """The relay's cached population, or None when there is no relay to have asked.
 
@@ -379,7 +395,7 @@ def build_app(store, docker=None):
         return (banner + _pending_panel() + _update_panel() +
                 ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
                 ui.render_cluster(store, plan, status=_label_services(st),
-                                  players=_players_now()))
+                                  players=_players_now(), roster=_roster_now()))
 
     # The last poll, so opening the page does not go to the network before it renders.
     # A panel that takes two round trips to CurseForge to appear is a panel people

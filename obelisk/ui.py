@@ -66,6 +66,8 @@ tr:last-child td{border-bottom:none}
    red of a thing that broke. Collapsing it into either one is how a cloud nobody
    ever connected reads as an outage, or as a completed upload. */
 .warn{background:#2a2519;color:#e8c37a;border:1px solid #4a3f22}
+.chip{display:inline-block;background:#1d2530;border:1px solid #2b3542;border-radius:6px;padding:2px 8px;margin:2px 4px 2px 0;font-size:12px}
+.chip.dim{color:#8b94a3;border-style:dashed}
 /* Three states, three colours. "Could not check" is deliberately not green and not
    quiet - the failure this panel answers was a checker that said "up to date" about a
    question it never asked, and an unknown that looks like a pass repeats it. */
@@ -1167,6 +1169,21 @@ STALE_AFTER = 300
 # table, and written to cover both ways of getting one: the map did not answer, or
 # there is no relay to have asked it. Either way it is "not known", which is the whole
 # distinction this column exists to draw.
+# The two reasons a population question has no answer, written once. The count and the
+# roster are two views of one poll, so they have to give the same reason when it did not
+# happen - and a second copy of a sentence is a second copy that drifts.
+NO_RELAY_WHY = ("the chat relay is not running, and it is what asks the maps. "
+                "Set it up under <b>Discord</b> in Settings.")
+NOTHING_ANSWERED_WHY = ("no map answered the last poll, so this is not an empty "
+                        "cluster, it is an unanswered question. Check the maps are "
+                        "reachable before restarting anything.")
+
+
+def _unavailable(subject, why):
+    """"<subject> are not available - <why>", in the amber that means "not set up"."""
+    return '<div class=warn>%s are not available &mdash; %s</div>' % (subject, why)
+
+
 DASH_MEANS = ("\u2014 means that map's player count is not known: it did not answer "
               "the last poll, or the chat relay that asks is not running.")
 
@@ -1256,9 +1273,7 @@ def render_status(status, players=None):
     # same set of maps or the sentence is not about anything.
     covered = len(seen) if players is not None else 0
     if players is None:
-        head = ('<div class=warn>Player counts are not available &mdash; the chat relay '
-                'is not running, and it is what counts them. Set it up under '
-                '<b>Discord</b> in Settings.</div>')
+        head = _unavailable("Player counts", NO_RELAY_WHY)
     elif not covered:
         # Nothing answered. The filter that stops one silent map showing a remembered
         # number removes every map when the whole cluster goes quiet - which it does,
@@ -1267,10 +1282,7 @@ def render_status(status, players=None):
         # empty measurement rendered as "0 players online" is the ghost zero again at
         # cluster scale. It is also the worst one: a glance at "0 online, just now" is
         # exactly what precedes restarting maps that were perfectly fine.
-        head = ('<div class=warn>Player counts are not available &mdash; no map answered '
-                'the last poll, so this is not an empty cluster, it is an unanswered '
-                'question. Check the maps are reachable before restarting anything.'
-                '</div>')
+        head = _unavailable("Player counts", NOTHING_ANSWERED_WHY)
     else:
         stale = int(players.get("age") or 0) > STALE_AFTER
         head = ('<div class="%s"><b>%d player%s online</b> across %d map%s '
@@ -1498,7 +1510,73 @@ def render_held_down(maps, states=None):
                "world" if one else "worlds", advice))
 
 
-def render_cluster(store, plan, status=None, players=None):
+NAME_UNREADABLE = ("this line of the server's answer could not be read as a name and "
+                   "an id, so there is nothing here to act on")
+
+
+def render_whos_online(roster):
+    """Who is on, by map, from the poll that already counted them.
+
+    Grouped by map because that is the unit everything else here works in - a kick goes
+    to one map, a ban goes to all of them - and because "seven people online" is not a
+    thing anybody can act on while "four on Ragnarok" is.
+
+    Only maps that answered the last poll, which is online_roster's rule rather than
+    this function's: a name list built from a map that has gone quiet would offer up
+    people who may have left, and the actions coming in the next slices would be aimed
+    at them.
+
+    Read-only. Nothing here writes, and nothing here asks a server anything - the names
+    were in the answer the relay already had.
+    """
+    if roster is None:
+        return ('<fieldset><legend>Who\u2019s online</legend>%s</fieldset>'
+                % _unavailable("Player names", NO_RELAY_WHY))
+    by_map = roster.get("by_map") or {}
+    if not by_map:
+        return ('<fieldset><legend>Who\u2019s online</legend>%s</fieldset>'
+                % _unavailable("Player names", NOTHING_ANSWERED_WHY))
+
+    blocks, total = [], 0
+    for label in sorted(by_map):
+        people = by_map[label] or []
+        total += len(people)
+        if not people:
+            blocks.append('<tr><td>%s</td><td class=help>nobody on it</td></tr>'
+                          % _e(label))
+            continue
+        names = []
+        for row in people:
+            name = _e(row.get("name") or "?")
+            if row.get("netid"):
+                names.append('<span class=chip>%s</span>' % name)
+            else:
+                # Someone the parser could see and could not key on. Shown, because a
+                # person on a server is a fact whatever we can do about them - and
+                # marked, because the actions in the next slices will have no id to use.
+                names.append('<span class="chip dim" title="%s">%s <span class=help>'
+                             '(name not readable)</span></span>'
+                             % (_e(NAME_UNREADABLE), name))
+        blocks.append('<tr><td>%s</td><td>%s</td></tr>'
+                      % (_e(label), " ".join(names)))
+
+    age = _ago(roster.get("age"))
+    stale = int(roster.get("age") or 0) > STALE_AFTER
+    return ('<fieldset><legend>Who\u2019s online</legend>'
+            '<div class="%s">%d player%s on %d map%s '
+            '<span class=help>&middot; %s%s</span></div>'
+            '<table>%s</table>'
+            '<div class=help style="margin-top:10px">From the same check that counts '
+            'them above, so a map listing three names is the map showing three '
+            'players.</div></fieldset>'
+            % ("warn" if stale else "note", total, "" if total == 1 else "s",
+               len(by_map), "" if len(by_map) == 1 else "s", _e(age),
+               " &middot; the list refreshes every minute, so this is out of date"
+               if stale else "",
+               "".join(blocks)))
+
+
+def render_cluster(store, plan, status=None, players=None, roster=None):
     selected = set(str(store.get("maps")).split(","))
     presets = "".join(
         '<button class=ghost type=button name=preset value="%s" title="%s">%s</button>'
@@ -1532,6 +1610,7 @@ def render_cluster(store, plan, status=None, players=None):
                   plan["total_memory"], plan["obelisk_port"]))
 
     return (render_status(status, players=players) +
+            render_whos_online(roster) +
             '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '

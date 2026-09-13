@@ -1140,5 +1140,102 @@ check("not Container, which is a longer name it does not show",
 check("and it still shows the instance underneath",
       "<td class=help>island</td>" in _live, _live[:700])
 
+
+# ---- who's online, grouped by the map you would act on
+#
+# The names were always in the ListPlayers answer and were always discarded. Slice 2a
+# kept them; this shows them. Read-only: nothing here writes, and nothing here asks a
+# server anything - the names came back with the count.
+_ROSTER = {"by_map": {
+    "The Island": [{"name": "Bob", "netid": "7656119800000001"},
+                   {"name": "Cha,rlie", "netid": "000255a1b2"}],
+    "Ragnarok": [{"name": "Dana", "netid": "19000000000000001"}],
+    "Valguero": [{"name": "some line we could not read", "netid": ""}],
+    "Astraeos": []}, "age": 30}
+
+_who = ui.render_whos_online(_ROSTER)
+
+check("the section is on the page under its own heading",
+      "Who’s online" in _who, _who[:120])
+check("every map that answered is listed",
+      all(("<td>%s</td>" % m) in _who for m in
+          ("The Island", "Ragnarok", "Valguero", "Astraeos")), _who[:600])
+check("with its people beside it",
+      ">Bob<" in _who and ">Dana<" in _who, _who[:600])
+check("grouped, so the map a kick would go to is the map the name sits on",
+      _who.index("Ragnarok") < _who.index("Dana") < _who.index("The Island"),
+      [_who.index("Ragnarok"), _who.index("Dana"), _who.index("The Island")])
+check("a name with a comma in it survives all the way to the page",
+      "Cha,rlie" in _who, _who[:700])
+check("a map that answered with nobody on it says so, rather than vanishing",
+      "nobody on it" in _who, _who[:600])
+check("the total and the map count are both stated",
+      "4 players on 4 maps" in _who, _who[:250])
+
+# a person the parser could see and could not key on
+check("an unreadable row still shows the person",
+      "some line we could not read" in _who, _who[:900])
+check("marked, because there will be no id to act on",
+      "name not readable" in _who, _who[:900])
+check("and it says what that means, not just that it is odd",
+      "nothing here to act on" in _who, _who[:900])
+check("visibly different from a name that is fine",
+      'class="chip dim"' in _who and "<span class=chip>Bob</span>" in _who, _who[:900])
+
+# ---- the age, the same way the count shows it
+check("the roster says how old it is", "30s ago" in _who, _who[:250])
+check("a stale roster says so rather than looking current",
+      "out of date" in ui.render_whos_online(dict(_ROSTER, age=7200)),
+      ui.render_whos_online(dict(_ROSTER, age=7200))[:300])
+check("and turns amber when it does",
+      '<div class="warn">' in ui.render_whos_online(dict(_ROSTER, age=7200)),
+      ui.render_whos_online(dict(_ROSTER, age=7200))[:200])
+check("a fresh one is a quiet note",
+      '<div class="note">' in _who, _who[:200])
+check("an hour-old roster reads in hours, not minutes",
+      "1h ago" in ui.render_whos_online(dict(_ROSTER, age=3600)),
+      ui.render_whos_online(dict(_ROSTER, age=3600))[:250])
+
+# ---- the two ways there is nothing to show, told the way slice 1 tells them
+_who_norelay = ui.render_whos_online(None)
+check("no relay says so and says where to fix it",
+      "chat relay is not running" in _who_norelay
+      and "Discord" in _who_norelay and "Settings" in _who_norelay, _who_norelay)
+check("in amber", "<div class=warn>" in _who_norelay, _who_norelay)
+_who_dark = ui.render_whos_online({"by_map": {}, "age": 5})
+check("nothing answering is not an empty cluster here either",
+      "no map answered" in _who_dark and "0 players" not in _who_dark, _who_dark)
+check("and still says not to restart on the strength of it",
+      "before restarting anything" in _who_dark, _who_dark)
+
+# one copy of each sentence, because two copies drift
+check("the relay sentence is written once and shared",
+      ui.NO_RELAY_WHY in _who_norelay
+      and ui.NO_RELAY_WHY in ui.render_status(_ST, players=None),
+      "the two sections have their own copies")
+check("and so is the nothing-answered one",
+      ui.NOTHING_ANSWERED_WHY in _who_dark
+      and ui.NOTHING_ANSWERED_WHY in ui.render_status(
+          _ST, players={"by_map": {}, "total": 0, "age": 5}),
+      "the two sections have their own copies")
+
+# ---- the count and the list cannot contradict each other
+#
+# They are two views of one poll. A map showing three players has to list three names,
+# or one of the two numbers is a lie and there is no way to tell which.
+_PAIRED = {"The Island": 2, "Ragnarok": 1, "Valguero": 1, "Astraeos": 0}
+_paired_status = {"docker_ok": True, "compose_exists": True, "running": 4, "services": [
+    {"service": m.lower().replace(" ", ""), "label": m, "level": "ok",
+     "says": "Online", "status": "Up"} for m in sorted(_PAIRED)]}
+_both = ui.render_status(_paired_status,
+                         players={"by_map": _PAIRED, "total": 4, "age": 30}) + _who
+for _m, _n in sorted(_PAIRED.items()):
+    _listed = len([x for x in (_ROSTER["by_map"].get(_m) or [])])
+    check("%s lists as many names as it counts players" % _m, _listed == _n,
+          [_m, _listed, _n])
+check("and the two headers agree on the population",
+      "<b>4 players online</b>" in _both and "4 players on 4 maps" in _both,
+      _both[:300])
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
