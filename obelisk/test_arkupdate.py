@@ -20,7 +20,7 @@ fails = []
 
 
 def check(name, cond, detail=""):
-    print(("PASS " if cond else "FAIL ") + name + ("" if cond else " :: %s" % detail))
+    print(("PASS " if cond else "FAIL ") + name + ("" if cond else " :: %s" % (detail,)))
     if not cond:
         fails.append(name)
 
