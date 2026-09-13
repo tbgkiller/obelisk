@@ -414,12 +414,20 @@ class Relay:
 
     async def maintenance_loop(self):
         """Fire scheduled wild-dino wipes with in-game countdown warnings."""
-        targets = [t for t in (_hhmm_to_min(x) for x in WIPE_TIMES) if t is not None]
-        if not targets:
-            return
-        log.info("wild-dino wipes at %s (warn %s min before)", ", ".join(WIPE_TIMES), WIPE_WARN_MINUTES)
-        fired = set()
+        # Read every pass, not once on the way in. Obelisk seeds these globals from the
+        # store, and the store is edited while this is running - so capturing the
+        # schedule at startup meant an operator who set a wipe time after the manager
+        # booted got nothing until they restarted it, which is not what "no restart
+        # needed" on the settings page says. An empty schedule is a pass that does
+        # nothing, not a loop that ends and cannot come back.
+        fired, said = set(), None
         while True:
+            targets = [t for t in (_hhmm_to_min(x) for x in WIPE_TIMES) if t is not None]
+            if tuple(WIPE_TIMES) != said:
+                said = tuple(WIPE_TIMES)
+                log.info("wild-dino wipes at %s (warn %s min before)",
+                         ", ".join(WIPE_TIMES) or "never - no times set",
+                         WIPE_WARN_MINUTES)
             now = time.localtime()
             day = now.tm_yday
             cur = now.tm_hour * 60 + now.tm_min

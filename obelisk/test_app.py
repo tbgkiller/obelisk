@@ -1037,6 +1037,71 @@ for _fn, _label in ((_appmod.build_app, "the Apply button"),
           _label)
 
 
+
+# ---- the wild-dino schedule reaches the thing that runs it
+#
+# It saved, it validated, it was in the docs, and it never fired once. generate_env
+# wrote WIPE_TIMES into the .env the *maps* read, where POK has no idea what it means;
+# the relay that does know is in this process, whose own environment has never had it
+# set. Two rows missing from _RELAY_SETTINGS, and a feature that was entirely absent
+# while looking entirely present.
+_wst = Store(os.path.join(tempfile.mkdtemp(), "settings.json")).load()
+_wst.patch({"appdata": "/srv/ark", "status_port": 8088}, source="install")
+_wst.patch({"maps": "island", "admin_password": "pw", "cluster_id": "wipetest",
+            "wipe_times": "03:15,21:45", "wipe_warn_minutes": "10,5,1"})
+
+
+class _WipeBot(_Bot):
+    WIPE_TIMES = []
+    WIPE_WARN_MINUTES = []
+
+
+_saved_running2 = clusterctl_t.running_instances
+clusterctl_t.running_instances = lambda store: [("The Island", "asa-wipetest-island", 27020)]
+_wb = _WipeBot()
+appmod._wire_relay(_wst, _wb)
+clusterctl_t.running_instances = _saved_running2
+
+check("the wipe schedule reaches the relay that runs it",
+      _wb.WIPE_TIMES == ["03:15", "21:45"], _wb.WIPE_TIMES)
+check("in the shape the scheduler parses, not one comma-joined string",
+      all(":" in t for t in _wb.WIPE_TIMES), _wb.WIPE_TIMES)
+check("and so do the warnings, as numbers",
+      _wb.WIPE_WARN_MINUTES == [10, 5, 1], _wb.WIPE_WARN_MINUTES)
+
+# largest first is not cosmetic: the loop warns in the order it is given.
+_wst.patch({"wipe_warn_minutes": "1,5,10"})
+clusterctl_t.running_instances = lambda store: [("The Island", "asa-wipetest-island", 27020)]
+_wb2 = _WipeBot()
+appmod._wire_relay(_wst, _wb2)
+clusterctl_t.running_instances = _saved_running2
+check("warnings come out largest first however they were stored",
+      _wb2.WIPE_WARN_MINUTES == [10, 5, 1], _wb2.WIPE_WARN_MINUTES)
+
+# blank is the ordinary case - most clusters do not wipe - and must not raise.
+_wst.patch({"wipe_times": "", "wipe_warn_minutes": ""})
+clusterctl_t.running_instances = lambda store: [("The Island", "asa-wipetest-island", 27020)]
+_wb3 = _WipeBot()
+_okw = appmod._wire_relay(_wst, _wb3)
+clusterctl_t.running_instances = _saved_running2
+check("a cluster that does not wipe still wires", _okw, _okw)
+check("and gets an empty schedule rather than a crash",
+      _wb3.WIPE_TIMES == [] and _wb3.WIPE_WARN_MINUTES == [],
+      (_wb3.WIPE_TIMES, _wb3.WIPE_WARN_MINUTES))
+
+# the schedule is read on every pass, not captured once. It used to be captured at
+# entry and the loop returned outright when it was empty - which is every fresh
+# install, because the manager's environment never had WIPE_TIMES in it. Setting a
+# time in the UI then did nothing until somebody restarted the manager, under a
+# settings page that says no restart is needed.
+from . import bot as _botmod                                     # noqa: E402
+_ml_src = _insp_dead.getsource(_botmod.Relay.maintenance_loop)
+check("the scheduler re-reads the schedule inside its loop",
+      _ml_src.index("while True:") < _ml_src.index("for x in WIPE_TIMES"), _ml_src[:300])
+check("and an empty schedule no longer ends the loop for good",
+      "if not targets:" not in _ml_src and "return" not in _ml_src, _ml_src[:600])
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

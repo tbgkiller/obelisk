@@ -1866,6 +1866,20 @@ def _text(v):
     return str(v or "").strip()
 
 
+def _times(v):
+    """"03:15, 21:45" as the relay's list of clock strings."""
+    return [x.strip() for x in str(v or "").split(",") if x.strip()]
+
+
+def _minutes(v):
+    """"1,5,10" as the relay's minutes, largest first - the order it warns in.
+
+    Sorted here as well as in the validator, because the validator only sees values
+    that came through the settings page and this also reads a store edited by hand.
+    """
+    return sorted({int(x) for x in str(v or "").split(",") if x.strip()}, reverse=True)
+
+
 # store key -> the relay's own global, and how to read it. Spelled out rather than
 # derived from the schema's env: targets, because three of them are named differently on
 # the two sides and a silent near-miss is exactly the bug above.
@@ -1878,6 +1892,13 @@ _RELAY_SETTINGS = (
     ("discord_invite", "DISCORD_INVITE", _text),
     ("join_leave", "JOIN_LEAVE", bool),
     ("welcome_enabled", "WELCOME_ENABLED", bool),
+    # The wild-dino schedule was the last thing still crossing by environment variable.
+    # generate_env writes WIPE_TIMES into the .env the *maps* read, and POK has no idea
+    # what it means; the relay that does is in this process, whose own environment has
+    # never had it set. So the setting saved, validated, appeared in the docs, and the
+    # wipe never happened - on any Obelisk install, ever.
+    ("wipe_times", "WIPE_TIMES", _times),
+    ("wipe_warn_minutes", "WIPE_WARN_MINUTES", _minutes),
 )
 
 
