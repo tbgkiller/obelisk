@@ -105,6 +105,23 @@ async def rcon(host, port, command, timeout=6.0):
     return await rcon_with(host, port, RCON_PASSWORD, command, timeout)
 
 
+def can_whisper(player):
+    """Is this name one a ServerChatToPlayer line can actually address?
+
+    The name goes inside double quotes and ARK's console has no escape for a double
+    quote inside them - so a name containing one ends the quoted section early and the
+    rest becomes part of the message. A newline ends the command outright.
+
+    There is no encoding that fixes this, which is why the answer is a question rather
+    than a sanitiser: stripping the quote would build a well-formed command addressed
+    to a *different* name, and a command that reaches nobody while reporting success is
+    the failure this whole feature is built to avoid.
+    """
+    name = str(player or "")
+    return bool(name.strip()) and '"' not in name and not any(
+        c in name for c in "\r\n\x00")
+
+
 def whisper_command(player, text):
     """The RCON line that says `text` to one player by name.
 
@@ -112,8 +129,18 @@ def whisper_command(player, text):
     UI existed - name quoted because names have spaces in them, message bare to the end
     of the line - and a second spelling of it somewhere else is a second spelling that
     is subtly wrong on a Tuesday.
+
+    Raises for a name this cannot address. Callers refuse; they do not send something
+    malformed and call it sent.
     """
-    return 'ServerChatToPlayer "%s" %s' % (str(player), str(text))
+    if not can_whisper(player):
+        raise ValueError("a player name containing a quote or a line break cannot be "
+                         "addressed by ServerChatToPlayer")
+    # Whitespace in the message is collapsed rather than rejected: a newline would end
+    # the command and leave the rest hanging, and nobody typing into a one-line box
+    # means anything by one.
+    return 'ServerChatToPlayer "%s" %s' % (str(player).strip(),
+                                           " ".join(str(text).split()))
 
 
 async def rcon_with(host, port, password, command, timeout=6.0):

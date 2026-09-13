@@ -3008,6 +3008,149 @@ for _what, _frag in sorted({
 }.items()):
     check("%s is untouched" % _what, _frag in _appsrc_2c, _frag)
 
+# ---- forgetting to type is not an error
+#
+# All four refusals rendered the same red as a send that actually broke. The page has
+# had an amber refusal channel since the stop guard, and the restore guards use it for
+# exactly this: nothing happened, and nothing is wrong.
+for _name_r, _body_r in (("blank text", _blank_body),
+                         ("a player who has left", _gone_body),
+                         ("a map that went quiet", _quiet_body),
+                         ("no relay at all", _norelay_body)):
+    check("%s is refused in amber" % _name_r,
+          "<div class=warn>" in _body_r, _body_r[:300])
+    check("and not in the red kept for a send that broke" ,
+          "<div class=problem>" not in _body_r, _body_r[:300])
+
+check("a send that actually failed is still red",
+      "<div class=problem>" in _fail_body and "<div class=warn>" not in _fail_body,
+      _fail_body[:300])
+
+# ---- a refresh must not send it again
+#
+# The POST answered with a rendered page while every sibling action on this page
+# answers with a redirect, so a refresh re-posted it - and a re-sent message is a
+# second line of chat the player sees, from somebody who pressed F5.
+_t15 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _send_no_follow():
+        _sent[:] = []
+        _bot_s1.LIVE = _msg_relay()
+        _bot_s1.rcon_with = _fake_rcon
+        _appmod.clusterctl.status = lambda store: dict(
+            _lstatus, services=[dict(x) for x in _lstatus["services"]])
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        r = await client.post("/admin/player/message",
+                              data={"map": "The Island", "name": "Bob",
+                                    "text": "once only"},
+                              allow_redirects=False)
+        after = len(_sent)
+        # the refresh a person actually does: re-request the page they landed on
+        page1 = await (await client.get("/admin/cluster")).text()
+        page2 = await (await client.get("/admin/cluster")).text()
+        await client.close()
+        return r.status, after, len(_sent), page1, page2
+
+    _status, _after_post, _after_reload, _p1, _p2 = _t15.run_until_complete(
+        _send_no_follow())
+
+    async def _refuse_no_follow():
+        _bot_s1.LIVE = _msg_relay()
+        _bot_s1.rcon_with = _fake_rcon
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        r = await client.post("/admin/player/message",
+                              data={"map": "The Island", "name": "Bob", "text": ""},
+                              allow_redirects=False)
+        body = await r.text()
+        await client.close()
+        return r.status, body
+
+    _rstatus, _rbody = _t15.run_until_complete(_refuse_no_follow())
+finally:
+    _t15.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+check("a successful send answers with a redirect, like its siblings",
+      _status == 302, _status)
+check("having sent exactly once", _after_post == 1, _after_post)
+check("and reloading the page afterwards sends nothing more",
+      _after_reload == 1, _after_reload)
+check("the result is waiting on the page it redirects to",
+      "Message sent to Bob on The Island." in _p1,
+      _p1[_p1.find("Message sent") - 60:][:200])
+check("shown once, not on every later view",
+      "Message sent to Bob on The Island." not in _p2, _p2[:400])
+check("a refusal still answers with the page, since nothing was sent to repeat",
+      _rstatus == 200 and "Type a message first" in _rbody, [_rstatus, _rbody[:200]])
+
+# ---- a name the command cannot address
+#
+# ServerChatToPlayer puts the name in quotes and the console has no escape for one
+# inside them, so a name containing a quote ended the quoted section early: the message
+# addressed somebody else or nobody, while the page said it was sent.
+check("a quote in a name is refused by the command builder",
+      not _bot_s1.can_whisper('Bob" X'), 'Bob" X')
+check("as is a line break, which would end the command outright",
+      not _bot_s1.can_whisper("Bob\nX") and not _bot_s1.can_whisper("Bob\rX"),
+      "a newline got through")
+check("an ordinary name with spaces is fine", _bot_s1.can_whisper("Big Tim"))
+_raised = ""
+try:
+    _bot_s1.whisper_command('Bob" X', "hello")
+except ValueError as e:
+    _raised = str(e)
+check("and building that command raises rather than returning something malformed",
+      "cannot be addressed" in _raised, _raised or "it built one anyway")
+check("a message's own newlines are collapsed, not left to end the command",
+      _bot_s1.whisper_command("Bob", "a\nb") == 'ServerChatToPlayer "Bob" a b',
+      _bot_s1.whisper_command("Bob", "a\nb"))
+
+_t16 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    class _QuoteRelay(_MsgRelay):
+        online_names = {"The Island": [{"name": 'Bob" X', "netid": "1"}],
+                        "Ragnarok": []}
+
+    _qr = _QuoteRelay()
+    _qr.online_by_map = {"The Island": 1, "Ragnarok": 0}
+    _qr.map_up = {"The Island": True, "Ragnarok": True}
+    _qr.last_refresh = _time_dead.time() - 10
+    _drain2()
+    _q_body = _t16.run_until_complete(_post_message(
+        _qr, {"map": "The Island", "name": 'Bob" X', "text": "hi"}))
+    _q_sent = list(_sent)
+    _q_ev = _drain2()
+    _q_page = _t16.run_until_complete(_post_message(
+        _qr, {"map": "The Island", "name": "nobody", "text": "hi"}))
+    _drain2()
+finally:
+    _t16.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+_q_banner = _q_body[:_q_body.find("Who’s online")]
+check("a player whose name has a quote is refused, not sent to",
+      "cannot be messaged" in _q_banner, _q_banner[-400:])
+check("and the refusal is the banner, not merely the row's own marker",
+      "<div class=warn>" in _q_banner and "nothing was sent" in _q_banner.lower(),
+      _q_banner[-400:])
+check("nothing went to RCON", _q_sent == [], _q_sent)
+check("and it was never announced as sent",
+      not any(i["event"] == "player.message_sent" for i in _q_ev),
+      [i["event"] for i in _q_ev])
+check("the refusal says why, in amber",
+      "quote or a line break" in _q_banner and "<div class=warn>" in _q_banner,
+      _q_banner[-400:])
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

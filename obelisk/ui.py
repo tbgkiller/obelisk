@@ -1194,6 +1194,17 @@ NOTHING_ANSWERED_WHY = ("no map answered the last poll, so this is not an empty 
                         "reachable before restarting anything.")
 
 
+def warn_block(text):
+    """A sentence in the amber that means "this did not happen, and nothing broke".
+
+    _cluster_body's refusal slot takes finished markup, because the stop guard builds
+    its own block with a button in it. Everything else refusing on that page is one
+    sentence, and this is how it gets into the same slot without each caller writing
+    its own div.
+    """
+    return '<div class=warn>%s</div>' % _e(text)
+
+
 def _unavailable(subject, why):
     """"<subject> are not available - <why>", in the amber that means "not set up"."""
     return '<div class=warn>%s are not available &mdash; %s</div>' % (subject, why)
@@ -1600,8 +1611,18 @@ def render_whos_online(roster, maps=()):
         out.append('<div class=whomap>%s</div>' % _e(label))
         for row in people:
             name = _e(row.get("name") or "?")
-            if row.get("netid"):
+            from .bot import can_whisper
+            if row.get("netid") and can_whisper(row.get("name")):
                 flag, acts = "", _message_form(label, row.get("name") or "")
+            elif row.get("netid"):
+                # A name with a quote or a line break in it cannot be put inside a
+                # ServerChatToPlayer line - see can_whisper. The row is real and the
+                # player is real; the message box is the thing that cannot work.
+                flag = ('<span class=whoflag title="%s">cannot be messaged &mdash; the '
+                        'name has a quote or a line break in it</span>'
+                        % _e("ServerChatToPlayer puts the name in quotes and the "
+                            "console has no way to escape one inside them"))
+                acts = ""
             else:
                 # The consequence, in text, not only in a tooltip - a title attribute
                 # is invisible on a touch screen, which is where half of this gets read.

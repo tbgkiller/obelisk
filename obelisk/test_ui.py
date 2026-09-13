@@ -1409,9 +1409,9 @@ _botsrc_2c = _io_s1.open(os.path.join(os.path.dirname(__file__), "bot.py"),
                          encoding="utf-8").read()
 check("the relay's own welcome whisper goes through the same helper",
       "whisper_command(player, line)" in _botsrc_2c, "the whisper has its own spelling")
-check("so there is one spelling of ServerChatToPlayer in the product",
-      _botsrc_2c.count("ServerChatToPlayer") == 1,
-      _botsrc_2c.count("ServerChatToPlayer"))
+_CMD_TEMPLATE = '''ServerChatToPlayer "%s" %s'''
+check("so there is one place that builds a ServerChatToPlayer line",
+      _botsrc_2c.count(_CMD_TEMPLATE) == 1, _botsrc_2c.count(_CMD_TEMPLATE))
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

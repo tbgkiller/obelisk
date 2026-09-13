@@ -354,7 +354,21 @@ def build_app(store, docker=None):
         by_map, total, age = snap
         return {"by_map": by_map, "total": total, "age": age}
 
+    # What the last one-shot action on this page said, shown once on the way back.
+    # The slower actions redirect and leave their result in a job dict; this is the
+    # same idea for a command that finishes inside the request - without it the action
+    # would have to answer with a rendered page, and a refresh would run it again.
+    _said = {"message": "", "problem": "", "refusal": ""}
+
+    def _say_next(**kw):
+        _said.update(message="", problem="", refusal="")
+        _said.update(kw)
+
     def _cluster_body(request, message="", problem="", refusal=""):
+        if not (message or problem or refusal):
+            message, problem, refusal = (_said["message"], _said["problem"],
+                                         _said["refusal"])
+            _said.update(message="", problem="", refusal="")
         try:
             in_use = clusterctl.other_ports_in_use(store)
         except Exception:
@@ -740,6 +754,10 @@ def build_app(store, docker=None):
         async with cluster_busy:
             return await asyncio.to_thread(_act, fn, request)
 
+    def bot_can_whisper(name):
+        from . import bot
+        return bot.can_whisper(name)
+
     # ---- saying something to one player
     #
     # The first of the moderation actions, and the only one that affects nobody: a line
@@ -758,15 +776,26 @@ def build_app(store, docker=None):
         name = str(form.get("name") or "").strip()
         text = " ".join(str(form.get("text") or "").split())
 
-        def back(message="", problem=""):
-            return chrome(_cluster_body(request, message=message, problem=problem),
+        def refuse(text_):
+            """Nothing happened and nothing is broken - the amber the stop guard and
+            the restore guards already use for exactly this."""
+            return chrome(_cluster_body(request, refusal=ui.warn_block(text_)),
+                          "Cluster", "/admin/cluster")
+
+        def broke(text_):
+            """Red is for a command that went to the server and did not work."""
+            return chrome(_cluster_body(request, problem=text_),
                           "Cluster", "/admin/cluster")
 
         if not text:
-            return back(problem="Type a message first - nothing was sent.")
+            return refuse("Type a message first - nothing was sent.")
         if not name or not label:
-            return back(problem="That row did not say who to message. Reload the page "
-                                "and try again - nothing was sent.")
+            return refuse("That row did not say who to message. Reload the page "
+                          "and try again - nothing was sent.")
+        if not bot_can_whisper(name):
+            return refuse("%s cannot be messaged: the name has a quote or a line break "
+                          "in it, and the in-game command puts the name in quotes with "
+                          "no way to escape one. Nothing was sent." % name)
 
         # The page was describing a moment. Between rendering it and pressing Send the
         # poll may have run again, the player may have left, the map may have stopped
@@ -775,24 +804,23 @@ def build_app(store, docker=None):
         # so asking it again is asking whether the page is still true.
         snap = _roster_now()
         if snap is None:
-            return back(problem="The chat relay is not running, so there is nobody to "
-                                "message - nothing was sent.")
+            return refuse("The chat relay is not running, so there is nobody to "
+                          "message - nothing was sent.")
         on_map = (snap.get("by_map") or {}).get(label)
         if on_map is None:
-            return back(problem="%s did not answer the last check, so who is on it is "
-                                "not known - nothing was sent to %s."
-                                % (label, name))
+            return refuse("%s did not answer the last check, so who is on it is "
+                          "not known - nothing was sent to %s." % (label, name))
         if not any(p.get("name") == name for p in on_map):
-            return back(problem="%s is no longer listed on %s - nothing was sent."
-                                % (name, label))
+            return refuse("%s is no longer listed on %s - nothing was sent."
+                          % (name, label))
 
         target = None
         for lbl, host, port in clusterctl.rcon_targets(store):
             if lbl == label:
                 target = (host, port)
         if target is None:
-            return back(problem="%s is not a map this cluster runs - nothing was sent."
-                                % label)
+            return refuse("%s is not a map this cluster runs - nothing was sent."
+                          % label)
 
         from . import bot
         try:
@@ -804,8 +832,8 @@ def build_app(store, docker=None):
             announce.say("player.message_failed",
                          "A message to %s on %s did NOT send: %s" % (name, label, why),
                          level="error", map=label, player=name)
-            return back(problem="The message did NOT send to %s on %s: %s. Nothing "
-                                "reached the server." % (name, label, why))
+            return broke("The message did NOT send to %s on %s: %s. Nothing "
+                         "reached the server." % (name, label, why))
 
         # Accepted. ARK answers most writes with "Server received, But no response!!",
         # which is the server saying it took the command and has nothing to add - not
@@ -813,7 +841,11 @@ def build_app(store, docker=None):
         announce.say("player.message_sent",
                      "Message sent to %s on %s from the web UI." % (name, label),
                      map=label, player=name, detail=text)
-        return back(message="Message sent to %s on %s." % (name, label))
+        # Redirect, like every other action on this page. Answering a POST with a page
+        # means a refresh re-posts it - and a re-sent message is a second line of chat
+        # the player sees, from somebody who pressed F5.
+        _say_next(message="Message sent to %s on %s." % (name, label))
+        raise web.HTTPFound("/admin/cluster")
 
     async def cluster_launch(request):
         if not authed(request):
