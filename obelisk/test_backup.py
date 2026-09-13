@@ -219,8 +219,9 @@ st9, root9 = fresh(backup_keep=2)
 populate(root9)
 for i in range(3):
     backupctl.create(st9, when=time.time() - (3 - i) * 3600)
-ok9, msg9 = backupctl.run_scheduled(st9)
+ok9, msg9, offsite9 = backupctl.run_scheduled(st9)
 check("a scheduled run backs up and prunes", ok9 and "Removed" in msg9, msg9)
+check("and reports no off-site attempt when off-site is off", offsite9 is None, offsite9)
 check("and leaves exactly the retention limit", len(backupctl.listing(st9)) == 2,
       len(backupctl.listing(st9)))
 

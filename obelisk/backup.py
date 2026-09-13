@@ -345,35 +345,64 @@ def prune(store, keep=None):
 
 
 def run_scheduled(store, flush=None, when=None, push=True):
-    """One scheduled run: create, verify, prune, and send off-site. (ok, message).
+    """One scheduled run: create, verify, prune, and send off-site.
 
-    The upload is reported separately and never turns a good local backup into a
-    failure: a copy on this disk is worth having even on a night the network is out.
+    Returns (ok, message, offsite), where `offsite` is push_offsite's own (ok, message)
+    or None when no upload was attempted.
+
+    The docstring always said the upload is reported separately. It was not: the
+    sentence was appended to this message and handed back under one `ok`, so a caller
+    with two slots - a green one and a red one - had one string and no way to tell
+    which half belonged where. A night when the network was out reported a successful
+    backup whose text happened to contain the word "failed".
+
+    So `ok` and `message` describe the local archive and nothing else, which is what
+    makes "the upload failed but your backup is fine" sayable as two sentences in two
+    colours. A copy on this disk is worth having on a night the network is out, and
+    saying so is not the same as pretending the other copy exists.
     """
     ok, msg, path = create(store, when=when, flush=flush)
     if not ok:
-        return False, msg
+        return False, msg, None
     removed = prune(store)
     if removed:
         msg += " Removed %d older backup%s." % (len(removed), "" if len(removed) == 1 else "s")
+    offsite = None
     if push and store.get("cloud_enabled"):
-        msg += " " + push_offsite(store, path)
-    return True, msg
+        offsite = push_offsite(store, path)
+    return True, msg, offsite
 
 
 def push_offsite(store, path):
-    """Upload one archive and prune the remote. Returns a sentence for the log/UI."""
+    """Upload one archive and prune the remote. (ok, message).
+
+    It used to return the sentence alone, and every caller put that sentence in the
+    slot it uses for good news - so "the upload failed" arrived in the same grey box,
+    in the same voice, as "the upload worked". A backup feature whose failures look
+    like successes is worse than one that does not run: the operator stops checking.
+
+    `ok` is about the off-site copy and nothing else. A failed upload does not make a
+    local backup a failed backup - a copy on this disk is worth having on a night the
+    network is out - and callers are expected to say both things rather than pick one.
+    """
     from . import cloud
     if not cloud.configured(store):
-        return "Off-site is on but no cloud is connected, so nothing was uploaded."
+        # Not a failure: nothing was attempted, because nothing was set up. Said as a
+        # warning so it does not read as a completed upload, and not as an error so it
+        # does not read as one that broke.
+        return False, ("Off-site is on but no cloud is connected, so nothing was "
+                       "uploaded. Connect one on the Cloud page, or turn off-site off.")
     ok, detail = cloud.push(store, path)
     if not ok:
-        return "The local backup is fine, but the upload failed: %s" % detail
+        return False, ("The off-site copy did NOT happen: %s. The local backup is fine "
+                       "and is on this disk; there is no copy off this machine."
+                       % detail)
     out = detail
     gone = cloud.prune(store, store.get("cloud_keep"))
     if gone:
-        out += " Removed %d older copy from the cloud." % len(gone) if len(gone) == 1                else " Removed %d older copies from the cloud." % len(gone)
-    return out
+        out += (" Removed %d older copy from the cloud." % len(gone) if len(gone) == 1
+                else " Removed %d older copies from the cloud." % len(gone))
+    return True, out
 
 
 def due(store, now=None, last=None):

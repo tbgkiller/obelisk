@@ -949,7 +949,7 @@ try:
     check("both new events have an icon of their own",
           _ann2.ICONS.get("map_looping") == "\u274c"
           and _ann2.ICONS.get("map_settled") == "\u2705",
-          (_ann2.ICONS.get("map_looping"), _ann2.ICONS.get("map_settled")))
+          [_ann2.ICONS.get("map_looping"), _ann2.ICONS.get("map_settled")])
 finally:
     _t2.close()
 
@@ -1087,7 +1087,7 @@ clusterctl_t.running_instances = _saved_running2
 check("a cluster that does not wipe still wires", _okw, _okw)
 check("and gets an empty schedule rather than a crash",
       _wb3.WIPE_TIMES == [] and _wb3.WIPE_WARN_MINUTES == [],
-      (_wb3.WIPE_TIMES, _wb3.WIPE_WARN_MINUTES))
+      [_wb3.WIPE_TIMES, _wb3.WIPE_WARN_MINUTES])
 
 # the schedule is read on every pass, not captured once. It used to be captured at
 # entry and the loop returned outright when it was empty - which is every fresh
@@ -1134,7 +1134,7 @@ check("and neither is something with a colon and no numbers",
       _botmod._hhmm_to_min("ab:cd") is None and _botmod._hhmm_to_min("25:99x") is None)
 check("and a number that is not an hour of the day is not a time either",
       _botmod._hhmm_to_min("-1:00") is None and _botmod._hhmm_to_min("30:00") is None,
-      (_botmod._hhmm_to_min("-1:00"), _botmod._hhmm_to_min("30:00")))
+      [_botmod._hhmm_to_min("-1:00"), _botmod._hhmm_to_min("30:00")])
 check("while both ends of a real day still are",
       _botmod._hhmm_to_min("00:00") == 0 and _botmod._hhmm_to_min("23:59") == 1439)
 
@@ -1145,10 +1145,10 @@ check("a mixed schedule keeps the times that parse and drops the rest",
       appmod._times("03:15, ab:cd, 21:45"))
 check("a blank schedule is a cluster that does not wipe, not an error",
       appmod._times("") == [] and appmod._times(None) == [],
-      (appmod._times(""), appmod._times(None)))
+      [appmod._times(""), appmod._times(None)])
 check("a schedule with nothing usable in it is unreadable, not empty",
       appmod._times("ab:cd") is None and appmod._times("0315") is None,
-      (appmod._times("ab:cd"), appmod._times("0315")))
+      [appmod._times("ab:cd"), appmod._times("0315")])
 
 # ...and unreadable means the relay keeps what it had, rather than losing the schedule
 # it was running or being handed something that raises on it twice a minute.
@@ -1211,6 +1211,137 @@ finally:
     _botmod.WIPE_TIMES, _botmod.WIPE_WARN_MINUTES = _real_wt, _real_ww
 check("a pass that raises does not end the loop, and so cannot end the manager",
       _alive, _alive)
+
+
+
+# ---- a failed off-site upload has to look like a failure
+#
+# The sentence went into the message slot whatever it said, so "the upload failed"
+# arrived in the same grey box, in the same voice, as "the upload worked" - on the one
+# page whose entire job is telling you whether a copy of your cluster exists anywhere
+# other than this machine. Same class as the Disconnect honesty fix: the styling was
+# the claim, and the claim was wrong.
+_cd = tempfile.mkdtemp()
+os.environ["OBELISK_ARK"] = os.path.join(_cd, "ark")
+_cstore, _cc, _ccode = bootstrap(os.path.join(_cd, "obelisk"), environ={})
+_cstore.patch({"maps": "island", "admin_password": "pw", "cluster_id": "pushtest"})
+
+_FAIL_TEXT = ("The off-site copy did NOT happen: the network is unreachable. The local "
+              "backup is fine and is on this disk; there is no copy off this machine.")
+_OK_TEXT = "Uploaded obelisk-backup-x.tar.gz."
+
+_real_listing, _real_push = _appmod.backupctl.listing, _appmod.backupctl.push_offsite
+_pushed = []
+
+
+async def _push_once(result):
+    _appmod.backupctl.listing = lambda store: [
+        {"name": "obelisk-backup-x.tar.gz", "path": "/tmp/obelisk-backup-x.tar.gz",
+         "bytes": 10, "mtime": 1, "when": "now"}]
+    _appmod.backupctl.push_offsite = lambda store, path: (_pushed.append(path) or result)
+    client = TestClient(TestServer(build_app(_cstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_cstore.get("admin_token"))})
+    body = await (await client.post("/admin/cloud/push")).text()
+    await client.close()
+    return body
+
+
+_t4 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _bad_body = _t4.run_until_complete(_push_once((False, _FAIL_TEXT)))
+    _bad_events = _drain2()
+    _ok_body = _t4.run_until_complete(_push_once((True, _OK_TEXT)))
+    _ok_events = _drain2()
+finally:
+    _t4.close()
+    _appmod.backupctl.listing = _real_listing
+    _appmod.backupctl.push_offsite = _real_push
+
+check("a failed upload renders in the problem slot, not the note slot",
+      ('<div class=problem>' + ui._e(_FAIL_TEXT)) in _bad_body,
+      _bad_body[:300])
+check("and says in as many words that it did not happen",
+      "did NOT" in _bad_body, "did NOT" in _bad_body)
+check("a failed upload is never dressed as a note",
+      ('<div class=note>' + ui._e(_FAIL_TEXT)) not in _bad_body)
+check("a successful upload renders in the note slot",
+      ('<div class=note>' + ui._e(_OK_TEXT)) in _ok_body, _ok_body[:300])
+check("and is not dressed as a problem",
+      ('<div class=problem>' + ui._e(_OK_TEXT)) not in _ok_body)
+check("the upload was actually attempted in both cases", len(_pushed) == 2, _pushed)
+
+# and the channel hears about it either way, at the right level.
+_bad_names = [(i["event"], i["level"]) for i in _bad_events]
+_ok_names = [(i["event"], i["level"]) for i in _ok_events]
+check("a failed upload reaches Discord and the log as an error",
+      ("cloud.push_failed", "error") in _bad_names, _bad_names)
+check("a successful one is reported too, as information",
+      ("cloud.push_done", "info") in _ok_names, _ok_names)
+
+
+# ---- the nightly backup was silent, pass or fail
+#
+# It is the thing this product exists to keep, and it announced nothing either way - so
+# a schedule that had been failing for a week looked exactly like one that had been
+# working. The local result and the off-site result are two facts and get two lines,
+# because folding them into one is how a failure ends up with a tick beside it.
+_real_run, _real_due = _appmod.backupctl.run_scheduled, _appmod.backupctl.due
+
+
+async def _one_night(result):
+    _appmod.backupctl.due = lambda store, **k: (True, "scheduled backup is due")
+    _appmod.backupctl.run_scheduled = lambda store, **k: result
+    task = _aio2.create_task(_appmod.backup_scheduler(_cstore, interval=0.01))
+    await _aio2.sleep(0.05)
+    task.cancel()
+    try:
+        await task
+    except _aio2.CancelledError:
+        pass
+
+
+_t5 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _t5.run_until_complete(_one_night((True, "Wrote obelisk-backup-x.tar.gz.",
+                                       (False, _FAIL_TEXT))))
+    _night = _drain2()
+finally:
+    _t5.close()
+    _appmod.backupctl.run_scheduled, _appmod.backupctl.due = _real_run, _real_due
+
+_by_event = {}
+for _i in _night:
+    _by_event.setdefault(_i["event"], _i)
+check("a scheduled backup now says so in the channel",
+      "backup.done" in _by_event, sorted(_by_event))
+check("the local backup is still reported as good, because it was",
+      _by_event.get("backup.done", {}).get("level") == "info",
+      _by_event.get("backup.done"))
+check("and its message is about the local backup, not the upload",
+      "did NOT" not in (_by_event.get("backup.done", {}).get("text") or ""),
+      _by_event.get("backup.done", {}).get("text"))
+check("the failed upload gets its own line",
+      "backup.offsite_failed" in _by_event, sorted(_by_event))
+check("at error level", _by_event.get("backup.offsite_failed", {}).get("level") == "error",
+      _by_event.get("backup.offsite_failed"))
+check("carrying the consequence",
+      "did NOT" in (_by_event.get("backup.offsite_failed", {}).get("text") or ""),
+      _by_event.get("backup.offsite_failed", {}).get("text"))
+
+# every new event needs a glyph of its own, keyed on the tail the lookup actually
+# takes - "backup.offsite_failed" resolves as "offsite_failed", not "failed".
+for _tail, _want in (("offsite_failed", "\u274c"), ("offsite_done", "\u2705"),
+                     ("push_failed", "\u274c"), ("push_done", "\u2705")):
+    check("%s has an icon of its own, not a bullet" % _tail,
+          _ann2.ICONS.get(_tail) == _want, _ann2.ICONS.get(_tail))
+check("and they resolve through the real Discord formatter",
+      _ann2.format_for_discord({"event": "backup.offsite_failed", "text": "x",
+                                "fields": "", "detail": ""}).startswith("\u274c"),
+      _ann2.format_for_discord({"event": "backup.offsite_failed", "text": "x",
+                                "fields": "", "detail": ""})[:8])
 
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")

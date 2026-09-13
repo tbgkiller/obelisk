@@ -1125,7 +1125,14 @@ def build_app(store, docker=None):
         rows = backupctl.listing(store)
         if not rows:
             return _cloud_chrome("", "There is no local backup to upload yet.")
-        return _cloud_chrome(backupctl.push_offsite(store, rows[0]["path"]), "")
+        # The sentence used to go into the message slot whatever it said, so "the
+        # upload failed" arrived in the same grey box, in the same voice, as "the
+        # upload worked" - on the page whose entire job is telling you whether there
+        # is a copy of your cluster somewhere other than this machine.
+        ok_up, text = backupctl.push_offsite(store, rows[0]["path"])
+        announce.say("cloud.push_done" if ok_up else "cloud.push_failed", text,
+                     level="info" if ok_up else "error")
+        return _cloud_chrome(text, "") if ok_up else _cloud_chrome("", text)
 
     async def cloud_pull(request):
         if not authed(request):
@@ -1245,8 +1252,24 @@ async def backup_scheduler(store, interval=60):
             if due:
                 log.info("%s", why)
                 flush = (lambda: clusterctl.save_world(store)) if store.get("backup_flush") else None
-                ok, msg = backupctl.run_scheduled(store, flush=flush)
+                ok, msg, offsite = backupctl.run_scheduled(store, flush=flush)
                 (log.info if ok else log.error)("scheduled backup: %s", msg)
+                # The nightly backup is the thing this product exists to keep, and it
+                # said nothing to the channel either way - so a schedule that had been
+                # failing for a week looked exactly like one that had been working.
+                # The local result first, because it is the one that is usually good.
+                announce.say("backup.done" if ok else "backup.failed",
+                             "Scheduled backup: %s" % msg,
+                             level="info" if ok else "error")
+                if offsite is not None:
+                    ok_up, text = offsite
+                    # Separately, and in its own colour. A failed upload does not make
+                    # a good local backup a failed one, and folding it into that line
+                    # is how a failure ends up announced with a tick beside it.
+                    if ok_up:
+                        announce.say("backup.offsite_done", text)
+                    else:
+                        announce.say("backup.offsite_failed", text, level="error")
         except Exception as e:                    # a bad night must not kill the loop
             log.error("scheduled backup failed: %s", e)
         await asyncio.sleep(interval)

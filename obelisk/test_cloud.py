@@ -239,9 +239,18 @@ check("and it says nothing will be pushed", "nothing will be pushed" in msg, msg
 install(FakeRclone())
 st4, root4 = fresh(cloud_enabled=True)
 populate(root4)
-ok, msg = backupctl.run_scheduled(st4, push=True)
+ok, msg, offsite = backupctl.run_scheduled(st4, push=True)
 check("a scheduled run with no cloud connected still backs up locally", ok, msg)
-check("and says the upload did not happen", "no cloud is connected" in msg, msg)
+# The off-site outcome is handed back separately rather than appended to that
+# message, because the two belong in different colours. A good local backup whose
+# text happens to contain the word "failed" is how a failure gets announced with a
+# tick beside it.
+check("and the upload is reported apart from it, not folded into it",
+      offsite is not None and offsite[0] is False, offsite)
+check("saying plainly that no cloud is connected",
+      "no cloud is connected" in offsite[1], offsite)
+check("while the local backup's own message stays about the local backup",
+      "no cloud is connected" not in msg, msg)
 
 # ---- disconnecting is the one action nothing can undo
 #
@@ -301,6 +310,43 @@ check("a cloud connected to a custom folder", ok_f, _m)
 _ok_d, msg_d = cloudlib.disconnect(st_f, confirmed=True)
 check("the message names the folder that was actually configured",
       '"ark-offsite"' in msg_d and '"obelisk-backups"' not in msg_d, msg_d)
+
+
+# ---- push_offsite says whether it worked, rather than only what happened
+#
+# It returned the sentence alone, so every caller put it in the slot it uses for good
+# news. The boolean existed inside the function and was thrown away one line later.
+st5, root5 = fresh(cloud_enabled=True)
+populate(root5)
+install(FakeRclone())
+ok5, msg5 = cloudlib.connect(st5, provider="drive", password="phrase",
+                             token='{"access_token":"x"}')
+check("a cloud connects for this test", ok5, msg5)
+ok_b5, msg_b5, path5 = backupctl.create(st5)
+check("and there is something to upload", ok_b5, msg_b5)
+
+up_ok, up_msg = backupctl.push_offsite(st5, path5)
+check("a successful upload answers True", up_ok is True, [up_ok, up_msg])
+
+install(FakeRclone(rc=1, out="Failed to copy: network is unreachable"))
+bad_ok, bad_msg = backupctl.push_offsite(st5, path5)
+check("a failed upload answers False", bad_ok is False, [bad_ok, bad_msg])
+check("and says the off-site copy did NOT happen",
+      "did NOT" in bad_msg, bad_msg)
+check("naming the consequence, not just the error",
+      "no copy off this machine" in bad_msg, bad_msg)
+check("while saying the local backup is still fine",
+      "local backup is fine" in bad_msg, bad_msg)
+
+# Off-site turned on with nothing connected is a thing somebody has not finished
+# setting up. It is not a completed upload, and it is not a broken one either.
+st6, _root6 = fresh(cloud_enabled=True)
+none_ok, none_msg = backupctl.push_offsite(st6, path5)
+check("off-site on with no cloud connected does not claim an upload",
+      none_ok is False, [none_ok, none_msg])
+check("and says what to do about it",
+      "no cloud is connected" in none_msg and "Connect one" in none_msg, none_msg)
+install(FakeRclone())
 
 print("\nFAILURES: %s" % fails if fails else "\nall cloud tests passed")
 sys.exit(1 if fails else 0)
