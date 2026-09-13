@@ -873,6 +873,100 @@ def build_app(store, docker=None):
             "/admin/cluster?said=%s"
             % _say_next(message="Message sent to %s on %s." % (name, label)))
 
+    # ---- disconnecting one player
+    #
+    # The first action here that affects somebody. It is guarded by a page rather than
+    # a dialog, the way the stop guard is: the answer comes back from the server, it
+    # survives a second tab, and it can be tested without a browser.
+    #
+    # A click-through rather than a typed name. A kick costs the walk back from a spawn
+    # point and nothing that was built; making an operator type a name for this and for
+    # a ban would teach them to type it without reading, which is the guard the ban
+    # needs to keep.
+    async def player_kick(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+        label = str(form.get("map") or "").strip()
+        name = str(form.get("name") or "").strip()
+        netid = str(form.get("netid") or "").strip()
+        confirmed = bool(form.get("confirm"))
+
+        def refuse(text_):
+            """Nothing happened and nothing is broken."""
+            return chrome(_cluster_body(request, refusal=ui.warn_block(text_)),
+                          "Cluster", "/admin/cluster")
+
+        def broke(text_):
+            """Red is for a command that went to the server and did not work."""
+            return chrome(_cluster_body(request, problem=text_),
+                          "Cluster", "/admin/cluster")
+
+        if not (name and label and netid):
+            return refuse("That row did not say who to kick. Reload the page and try "
+                          "again - nothing has been done.")
+
+        # The page was describing a moment. Between rendering it and pressing Kick the
+        # poll may have run again, the player may have left, the map may have stopped
+        # answering. Checked before the confirmation as well as after it, so the
+        # question is never asked about somebody who has already gone.
+        def still_there():
+            snap = _roster_now()
+            if snap is None:
+                return None, ("The chat relay is not running, so there is nobody to "
+                              "kick - nothing has been done.")
+            on_map = (snap.get("by_map") or {}).get(label)
+            if on_map is None:
+                return None, ("%s did not answer the last check, so who is on it is "
+                              "not known - %s has not been kicked." % (label, name))
+            if not any(p.get("netid") == netid for p in on_map):
+                return None, ("%s is no longer listed on %s - nothing has been done."
+                              % (name, label))
+            return on_map, ""
+
+        _on, why_not = still_there()
+        if why_not:
+            return refuse(why_not)
+
+        if not confirmed:
+            return chrome(
+                _cluster_body(request,
+                              refusal=ui.render_kick_confirm(label, name, netid)),
+                "Cluster", "/admin/cluster")
+
+        target = None
+        for lbl, host, port in clusterctl.rcon_targets(store):
+            if lbl == label:
+                target = (host, port)
+        if target is None:
+            return refuse("%s is not a map this cluster runs - nothing has been done."
+                          % label)
+
+        from . import bot
+        try:
+            await bot.rcon_with(target[0], target[1],
+                                str(store.get("admin_password") or ""),
+                                "KickPlayer %s" % netid, timeout=10)
+        except Exception as e:                       # noqa: BLE001 - reported as itself
+            why = str(e).strip() or e.__class__.__name__
+            announce.say("player.kick_failed",
+                         "A kick for %s on %s did NOT send: %s" % (name, label, why),
+                         level="error", map=label, player=name)
+            return broke("The kick did NOT send to %s on %s: %s. Nothing reached the "
+                         "server, and they are still on it." % (name, label, why))
+
+        # Accepted. ARK answers most writes with "Server received, But no response!!",
+        # which is the server taking the command and having nothing to add. What we can
+        # say is that it was sent; whether the player is off is the server's business
+        # and the next poll's answer.
+        announce.say("player.kick_sent",
+                     "Kick sent for %s on %s from the web UI." % (name, label),
+                     map=label, player=name)
+        raise web.HTTPFound(
+            "/admin/cluster?said=%s"
+            % _say_next(message="Kick sent for %s on %s. The next check will show "
+                                "whether they are off." % (name, label)))
+
     async def cluster_launch(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
@@ -1545,6 +1639,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/launch", cluster_launch)
     app.router.add_post("/admin/stop", cluster_stop)
     app.router.add_post("/admin/player/message", player_message)
+    app.router.add_post("/admin/player/kick", player_kick)
     app.router.add_get("/admin/cluster/status", cluster_status)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)

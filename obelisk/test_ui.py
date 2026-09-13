@@ -1447,5 +1447,75 @@ _CMD_TEMPLATE = '''ServerChatToPlayer "%s" %s'''
 check("so there is one place that builds a ServerChatToPlayer line",
       _botsrc_2c.count(_CMD_TEMPLATE) == 1, _botsrc_2c.count(_CMD_TEMPLATE))
 
+
+# ---- kicking one player
+#
+# The first action here that affects somebody. It keys on the netid rather than the
+# name, which is the id KickPlayer takes and the id ListPlayers hands back - no mapping
+# between them, and nothing here parses either.
+_KICK = {"by_map": {
+    "Ragnarok": [{"name": "Dana", "netid": "76561198000000001"},
+                 {"name": 'Bad" Name', "netid": "0002a1b2"},
+                 {"name": "some raw line we could not split", "netid": ""}],
+    "The Island": []}, "age": 20}
+_kick_who = ui.render_whos_online(_KICK, maps=["Ragnarok", "The Island", "Valguero"])
+
+check("a clean player row has a Kick control",
+      '<form method=post action="/admin/player/kick"' in _kick_who, _kick_who[:900])
+check("carrying the netid the command takes",
+      'name=netid value="76561198000000001"' in _kick_who, _kick_who[:900])
+check("and the map, because the kick goes to that map's server",
+      'name=map value="Ragnarok"' in _after(_kick_who, "/admin/player/kick")[:200],
+      _after(_kick_who, "/admin/player/kick")[:300])
+check("and the name, so the confirmation can say who",
+      'name=name value="Dana"' in _kick_who, _kick_who[:900])
+check("beside the message box rather than instead of it",
+      _in_order(_kick_who, "/admin/player/message", "/admin/player/kick"),
+      _kick_who[:900])
+
+# a name that cannot be quoted can still be kicked - the id has no such problem
+_bad_row = _after(_kick_who, 'Bad&quot; Name</span>')
+check("a player who cannot be messaged can still be kicked",
+      "/admin/player/kick" in _from(_bad_row, "<span class=whoacts>")[:400],
+      _bad_row[:400])
+check("and is still not offered a message box",
+      "/admin/player/message" not in _bad_row.split("</div>")[0], _bad_row[:400])
+
+# ---- and nothing that has no id is offered one
+_raw_row = _after(_kick_who, "some raw line we could not split")
+check("a row with no id gets no Kick",
+      "/admin/player/kick" not in _raw_row.split("</div>")[0], _raw_row[:300])
+check("a map that did not answer gets no Kick",
+      "/admin/player/kick" not in _from(_kick_who, '<div class="whorow quiet">'),
+      _from(_kick_who, '<div class="whorow quiet">')[:300])
+check("nor the collapsed empty-maps line",
+      "/admin/player/kick" not in _from(_kick_who, "Nobody on:"),
+      _from(_kick_who, "Nobody on:"))
+check("and no relay means no Kick at all",
+      "/admin/player/kick" not in ui.render_whos_online(None, maps=["Ragnarok"]),
+      ui.render_whos_online(None, maps=["Ragnarok"]))
+check("one Kick per real player, not one per map",
+      _kick_who.count("/admin/player/kick") == 2,
+      _kick_who.count("/admin/player/kick"))
+
+# ---- the confirmation is a page, and it says what will happen
+_confirm = ui.render_kick_confirm("Ragnarok", "Dana", "76561198000000001")
+check("the confirmation names the player", "Dana" in _confirm, _confirm)
+check("and the map they are on", "Ragnarok" in _confirm, _confirm)
+check("it says they can come straight back",
+      "rejoin immediately" in _confirm, _confirm)
+check("and that nothing they own is touched",
+      "nothing they own is affected" in _confirm, _confirm)
+check("it says nothing has happened yet",
+      "Nothing has been done yet" in _confirm, _confirm)
+check("in amber, because this is a question rather than a fault",
+      "<div class=warn>" in _confirm, _confirm[:120])
+check("the way through carries the same three fields back",
+      all(('name=%s value=' % f) in _confirm for f in ("map", "name", "netid")),
+      _confirm)
+check("and says it is confirmed", 'name=confirm value="1"' in _confirm, _confirm)
+check("it is not a typed-name gate - that is what a ban is for",
+      "type" not in _confirm.lower().split("<form")[0], _confirm[:400])
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

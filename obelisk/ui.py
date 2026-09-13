@@ -1558,6 +1558,48 @@ def _message_form(label, name):
             % (_e(label), _e(name), _e(name)))
 
 
+def _kick_form(label, name, netid):
+    """Disconnect one player, from the row they are on.
+
+    The netid travels with them because that is what KickPlayer takes - the same
+    platform id ListPlayers hands back, whatever form the player's platform gives it.
+    Nothing here parses it or cares.
+
+    One button. The confirmation is a page, not a dialog: see kick_confirm below and
+    the stop guard it copies.
+    """
+    return ('<form method=post action="/admin/player/kick" class=whoform>'
+            '<input type=hidden name=map value="%s">'
+            '<input type=hidden name=name value="%s">'
+            '<input type=hidden name=netid value="%s">'
+            '<button class=ghost type=submit>Kick</button></form>'
+            % (_e(label), _e(name), _e(netid)))
+
+
+def render_kick_confirm(label, name, netid):
+    """Ask before disconnecting somebody, on a page rather than in a dialog.
+
+    The same shape the stop guard uses: the answer comes back as a page, so it is the
+    server that decided, it survives a second tab, and it can be tested without a
+    browser.
+
+    Lighter than the restore guard on purpose. A kick costs somebody the walk back from
+    the spawn point; it does not cost them anything they built. Making the operator
+    type a name for this and for a ban both would teach them to type it without
+    reading, which is what the ban guard is for.
+    """
+    return ('<div class=warn><b>Kick %s from %s?</b> They are disconnected now and can '
+            'rejoin immediately - nothing they own is affected. Nothing has been done '
+            'yet.</div>'
+            '<form method=post action="/admin/player/kick" style="margin:-4px 0 14px">'
+            '<input type=hidden name=map value="%s">'
+            '<input type=hidden name=name value="%s">'
+            '<input type=hidden name=netid value="%s">'
+            '<input type=hidden name=confirm value="1">'
+            '<button class=ghost type=submit>Yes, kick %s</button></form>'
+            % (_e(name), _e(label), _e(label), _e(name), _e(netid), _e(name)))
+
+
 def render_whos_online(roster, maps=()):
     """Who is on, one row per player, under the map they are on.
 
@@ -1612,9 +1654,16 @@ def render_whos_online(roster, maps=()):
         for row in people:
             name = _e(row.get("name") or "?")
             from .bot import can_whisper
-            if row.get("netid") and can_whisper(row.get("name")):
-                flag, acts = "", _message_form(label, row.get("name") or "")
-            elif row.get("netid"):
+            netid = row.get("netid") or ""
+            if netid and can_whisper(row.get("name")):
+                flag = ""
+                acts = (_message_form(label, row.get("name") or "")
+                        + _kick_form(label, row.get("name") or "", netid))
+            elif netid:
+                # No message box - the name cannot go inside a quoted argument - but a
+                # kick keys on the id, which has no such problem. The row keeps the one
+                # action it can actually take.
+                acts = _kick_form(label, row.get("name") or "", netid)
                 # A name with a quote or a line break in it cannot be put inside a
                 # ServerChatToPlayer line - see can_whisper. The row is real and the
                 # player is real; the message box is the thing that cannot work.
@@ -1622,7 +1671,6 @@ def render_whos_online(roster, maps=()):
                         'name has a quote or a line break in it</span>'
                         % _e("ServerChatToPlayer puts the name in quotes and the "
                             "console has no way to escape one inside them"))
-                acts = ""
             else:
                 # The consequence, in text, not only in a tooltip - a title attribute
                 # is invisible on a touch screen, which is where half of this gets read.

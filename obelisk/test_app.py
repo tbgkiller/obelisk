@@ -3295,6 +3295,192 @@ check("the result is taken out when it is read, not copied",
       "_said.pop(" in _appsrc_n11.split("def _cluster_body")[1][:600],
       _appsrc_n11.split("def _cluster_body")[1][:600])
 
+
+# ---- the kick route: asked first, sent once, and only ever called "sent"
+_kicked = []
+
+
+class _KickRelay(_LiveRelay):
+    online_names = {"The Island": [{"name": "Bob", "netid": "76561198000000001"},
+                                   {"name": "Cha,rlie", "netid": "0002a1b2"}],
+                    "Ragnarok": [{"name": "Dana", "netid": "19000000000000001"}]}
+
+
+def _kick_relay(quiet=()):
+    r = _KickRelay()
+    r.online_by_map = {"The Island": 2, "Ragnarok": 1}
+    r.map_up = {m: (m not in quiet) for m in ("The Island", "Ragnarok")}
+    r.online_total = 3
+    r.last_refresh = _time_dead.time() - 10
+    return r
+
+
+async def _boom_kick(host, port, password, command, timeout=6.0):
+    _kicked.append({"host": host, "port": port, "command": command})
+    raise TimeoutError("timed out after 10s")
+
+
+async def _post_kick(relay, data, rcon=None, follow=True):
+    _kicked[:] = []
+    _bot_s1.LIVE = relay
+    _bot_s1.rcon_with = rcon or (
+        lambda h, p, pw, c, timeout=6.0: _fake_kick(h, p, pw, c, timeout))
+    _appmod.clusterctl.status = lambda store: dict(
+        _lstatus, services=[dict(x) for x in _lstatus["services"]])
+    client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+    await client.start_server()
+    client.session.cookie_jar.update_cookies({COOKIE: str(_lstore.get("admin_token"))})
+    r = await client.post("/admin/player/kick", data=data, allow_redirects=False)
+    body = await r.text()
+    landed = ""
+    if follow and r.status == 302:
+        landed = await (await client.get(r.headers.get("Location",
+                                                       "/admin/cluster"))).text()
+    await client.close()
+    return r.status, body, landed
+
+
+async def _fake_kick(host, port, password, command, timeout=6.0):
+    _kicked.append({"host": host, "port": port, "command": command})
+    return "Server received, But no response!!"
+
+
+_ISLAND = {"map": "The Island", "name": "Bob", "netid": "76561198000000001"}
+_t19 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _ask_st, _ask_body, _ = _t19.run_until_complete(
+        _post_kick(_kick_relay(), dict(_ISLAND)))
+    _ask_sent = list(_kicked)
+    _ask_ev = _drain2()
+
+    _go_st, _go_body, _go_landed = _t19.run_until_complete(
+        _post_kick(_kick_relay(), dict(_ISLAND, confirm="1")))
+    _go_sent = list(_kicked)
+    _go_ev = _drain2()
+
+    _gone_st, _gone_body, _ = _t19.run_until_complete(
+        _post_kick(_kick_relay(), {"map": "The Island", "name": "Ghost",
+                                   "netid": "99999", "confirm": "1"}))
+    _gone_sent = list(_kicked)
+    _drain2()
+
+    _quiet_st, _quiet_body, _ = _t19.run_until_complete(
+        _post_kick(_kick_relay(quiet=("Ragnarok",)),
+                   {"map": "Ragnarok", "name": "Dana",
+                    "netid": "19000000000000001", "confirm": "1"}))
+    _quiet_sent = list(_kicked)
+    _drain2()
+
+    _blank_st, _blank_body, _ = _t19.run_until_complete(
+        _post_kick(_kick_relay(), {"map": "The Island", "name": "Bob",
+                                   "netid": "", "confirm": "1"}))
+    _blank_sent = list(_kicked)
+    _drain2()
+
+    _fail_st, _fail_body, _ = _t19.run_until_complete(
+        _post_kick(_kick_relay(), dict(_ISLAND, confirm="1"), rcon=_boom_kick))
+    _fail_ev = _drain2()
+finally:
+    _t19.close()
+    _bot_s1.rcon_with = _real_rw
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+# ---- the first press asks, and does nothing
+check("pressing Kick asks before it acts", _ask_st == 200, _ask_st)
+check("naming the player and the map",
+      _in_order(_ask_body, "Kick Bob from The Island?"), _after(_ask_body, "class=warn")[:200])
+check("nothing was sent while it was asking", _ask_sent == [], _ask_sent)
+check("and nothing was announced either", _ask_ev == [], [i["event"] for i in _ask_ev])
+check("the question is amber, not red",
+      "<div class=warn><b>Kick Bob" in _ask_body, _after(_ask_body, "class=warn")[:120])
+
+# ---- the confirmed press sends, once, to that map only
+check("confirming sends the kick", len(_go_sent) == 1, _go_sent)
+check("as KickPlayer keyed on the netid",
+      _go_sent[0]["command"] == "KickPlayer 76561198000000001", _go_sent[0]["command"])
+check("to the map that player is on and no other",
+      _go_sent[0]["port"] == [p for l, h, p in
+                              _appmod.clusterctl.rcon_targets(_lstore)
+                              if l == "The Island"][0],
+      _go_sent[0])
+check("and it answers with a redirect, so a refresh cannot kick twice",
+      _go_st == 302, _go_st)
+check("the result lands on the page it redirects to",
+      "Kick sent for Bob on The Island." in _go_landed,
+      _after(_go_landed, "Kick sent")[:160] or _go_landed[:200])
+check("it says sent, never kicked",
+      "kicked" not in _go_landed.lower().split("Who")[0], "the page claimed the effect")
+check("and says the next check will show whether they are off",
+      "next check will show" in _go_landed, _after(_go_landed, "Kick sent")[:200])
+_go_names = [(i["event"], i["level"]) for i in _go_ev]
+check("the kick is announced at info", ("player.kick_sent", "info") in _go_names,
+      _go_names)
+check("naming who, where, and that it came from the web UI",
+      any("Bob" in (i.get("text") or "") and "The Island" in (i.get("text") or "")
+          and "web UI" in (i.get("text") or "") for i in _go_ev),
+      [i.get("text") for i in _go_ev])
+
+# "Server received, But no response!!" is acceptance, not refusal
+check("the accepted-but-no-output reply counts as sent",
+      "Kick sent for Bob" in _go_landed, "the usual ARK reply was read as a failure")
+
+# ---- the refusals, none of which send anything
+for _label_r, _st, _body, _sent_r, _phrase in (
+        ("a player who is no longer listed", _gone_st, _gone_body, _gone_sent,
+         "no longer listed on The Island"),
+        ("a map that went quiet", _quiet_st, _quiet_body, _quiet_sent,
+         "did not answer the last check"),
+        ("a row with no id", _blank_st, _blank_body, _blank_sent,
+         "did not say who to kick")):
+    check("%s is refused" % _label_r, _st == 200 and _phrase in _body,
+          [_st, _after(_body, "class=warn")[:160]])
+    check("in amber, because nothing is broken",
+          "<div class=warn>" in _body and "<div class=problem>" not in _body,
+          _after(_body, "class=warn")[:160])
+    check("and nothing was sent", _sent_r == [], _sent_r)
+
+# ---- a kick that did not send is never reported as one
+check("an RCON failure says the kick did NOT send",
+      "did NOT send" in _fail_body, _after(_fail_body, "did NOT")[:200])
+check("naming the reason", "timed out" in _fail_body, _after(_fail_body, "did NOT")[:200])
+check("and saying they are still on the map",
+      "still on it" in _fail_body, _after(_fail_body, "did NOT")[:200])
+check("in red", "<div class=problem>" in _fail_body, _fail_body[:300])
+check("announced as a failure, at error",
+      ("player.kick_failed", "error") in [(i["event"], i["level"]) for i in _fail_ev],
+      [(i["event"], i["level"]) for i in _fail_ev])
+check("and never announced as a kick that was sent",
+      not any(i["event"] == "player.kick_sent" for i in _fail_ev),
+      [i["event"] for i in _fail_ev])
+
+for _tail, _want in (("kick_sent", "✅"), ("kick_failed", "❌")):
+    check("%s has an icon of its own" % _tail, _ann2.ICONS.get(_tail) == _want,
+          _ann2.ICONS.get(_tail))
+
+# ---- the roster is re-checked, and this added a kick and nothing else
+_appsrc_2d = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
+                     encoding="utf-8").read()
+_kicksrc = _after(_appsrc_2d, "async def player_kick").split(
+    chr(10) + "    async def ")[0]
+check("the route checks the roster before it asks the question",
+      _in_order(_kicksrc, "_roster_now()", "if not confirmed", "KickPlayer"),
+      _kicksrc[:600])
+check("it only ever sends a kick",
+      "KickPlayer" in _kicksrc and "BanPlayer" not in _kicksrc
+      and "ServerChat" not in _kicksrc, _kicksrc[:400])
+check("keyed on the id, not the name",
+      'KickPlayer %s" % netid' in _kicksrc, _after(_kicksrc, "KickPlayer")[:120])
+for _what, _frag in sorted({
+        "the apply gate": "def verify_every_map(store):",
+        "the restore gate": "def verify_restored(store, key, note=None):",
+        "the stop guard": "ui.render_stop_warning(counts, silent)",
+        "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
+        "the message action": "async def player_message",
+}.items()):
+    check("%s is untouched" % _what, _frag in _appsrc_2d, _frag)
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 
