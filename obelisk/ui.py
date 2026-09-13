@@ -91,6 +91,9 @@ tr:last-child td{border-bottom:none}
 /* The by-id field is the one control here that is not about a row, so it gets
    the space a form gets rather than sitting in the list. */
 .whoform.byid{margin-top:10px;padding-top:10px;border-top:1px solid #232b36}
+.jump{display:flex;flex-wrap:wrap;gap:14px;margin:0 0 12px;font-size:12px}
+.jump a{color:#8b94a3;text-decoration:none;border-bottom:1px dotted #303845}
+.jump a:hover{color:#e6e9ef}
 .whoform.byid input{width:260px;flex:1 1 200px}
 /* Three actions, three weights. Talking to somebody and removing them should not
    be the same button, and Kick sitting beside Ban in identical grey is the
@@ -1354,7 +1357,7 @@ def render_status(status, players=None):
     # "Container" was the header over s["service"], which is the instance - the
     # container name is a longer thing built from the cluster and the instance. The
     # column was right and the word over it was not.
-    return (banner + head + '<fieldset><legend>Running now</legend><table>'
+    return (banner + head + '<fieldset id=run><legend>Running now</legend><table>'
             '<tr><th>Map</th><th>Doing</th><th class=num>Players</th>'
             '<th>Service</th></tr>%s</table>%s'
             '<div class=help style="margin-top:10px">A first start downloads about 12 GB '
@@ -2080,7 +2083,20 @@ def render_cap(entries, notice=None, pending=None, now=None, total=None):
             % (notice or "", CAP_DOES, CAP_ARE, "".join(out), byid))
 
 
-def render_cluster(store, plan, status=None, players=None, roster=None,
+# Ten fieldsets and twenty-odd thousand characters of page. The section anchors were
+# already there for the redirects to land on; this is the only thing that offers them to
+# the person reading, which costs one line and saves a scroll through the roster to
+# reach the maps.
+JUMPS = (("#run", "Running"), ("#who", "Players"), ("#bans", "Bans"),
+         ("#cap", "Cap"), ("#maps", "Maps"), ("#connect", "Connect"))
+
+
+def render_jump():
+    return ('<div class=jump>%s</div>'
+            % " ".join('<a href="%s">%s</a>' % (h, _e(t)) for h, t in JUMPS))
+
+
+def render_cluster(store, plan, status=None, roster=None,
                    pending=None, notice=None, bans=None,
                    bans_pending=None, bans_notice=None,
                    bans_total=None,
@@ -2121,18 +2137,24 @@ def render_cluster(store, plan, status=None, players=None, roster=None,
     # The same sequence the status table renders, so the two read down together.
     running = [x.get("label") or x.get("service") or ""
                for x in ((status or {}).get("services") or [])]
-    return (render_status(status, players=players) +
+    # Who is on, what is banned, who is let past - and the form that defines the
+    # cluster. Which comes first depends on whether there IS a cluster: on a machine
+    # that has never launched one, the three moderation sections are three empty boxes
+    # about servers that do not exist, sitting above the only controls that would
+    # create them.
+    moderation = (
             render_whos_online(roster, maps=[m for m in running if m],
                                pending=pending, notice=notice) +
             render_bans(bans, notice=bans_notice, pending=bans_pending,
                         total=bans_total) +
             render_cap(caps, notice=caps_notice, pending=caps_pending,
-                       total=caps_total) +
+                       total=caps_total))
+    form = (
             '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
             '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
             '<div class=help>A preset just ticks boxes - it carries no settings of its '
             'own. Trim it afterwards.</div></fieldset>'
-            '<fieldset><legend>Maps</legend><div class=maps>%s</div>'
+            '<fieldset id=maps><legend>Maps</legend><div class=maps>%s</div>'
             '<button type=submit class=ghost>Update plan</button></fieldset>'
             '<fieldset><legend>Plan</legend>'
             '<table><tr><th>Map</th><th class=num>Game</th><th class=num>RCON</th>'
@@ -2140,6 +2162,8 @@ def render_cluster(store, plan, status=None, players=None, roster=None,
             '<div class=help style="margin-top:10px">%s</div>%s'
             '<div style="margin-top:14px">%s</div></fieldset></form>'
             % (presets, boxes, rows, _e(summary), msgs, launch))
+    launched = bool((status or {}).get("compose_exists"))
+    return (moderation + form) if launched else (form + moderation)
 
 
 def render_setup(setup_needed=True, error=""):
@@ -2892,7 +2916,7 @@ def render_connect(entries, web_address="", host_known=True):
     if web_address:
         web = ('<div class=help style="margin-bottom:8px">Obelisk itself: '
                '<code>%s</code></div>' % _e(web_address))
-    return ('<fieldset><legend>Connect</legend>%s'
+    return ('<fieldset id=connect><legend>Connect</legend>%s'
             '<table><tr><th>Map</th><th>Address</th></tr>%s</table>'
             '<div class=help style="margin-top:10px">In game: <b>Join ARK</b> &rarr; '
             '<b>Unofficial</b>, or open the console and type '

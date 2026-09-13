@@ -451,10 +451,11 @@ def build_app(store, docker=None):
         # One panel. render_stop_job owns #stopwrap and the poller replaces what is
         # inside it, so the server-rendered paint and the polled one are the same
         # element rather than two of them stacked.
-        return (banner + _summary_band(st) + _pending_panel() + _update_panel() +
+        return (banner + ui.render_jump() + _summary_band(st)
+                + _pending_panel() + _update_panel() +
                 ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
                 ui.render_cluster(store, plan, status=_label_services(st),
-                                  players=_players_now(), roster=_roster_now(),
+                                  roster=_roster_now(),
                                   pending=_asking(pending, "who"), notice=notice,
                                   bans=bansctl.recent(store),
                                   bans_pending=_asking(pending, "bans"),
@@ -559,20 +560,28 @@ def build_app(store, docker=None):
             return ""
 
     def _summary_band(st):
-        """The at-a-glance half of the page, above everything operational.
+        """The at-a-glance half of the page, in the order the questions are asked.
 
-        What Status was for, minus the table it shared with this page: is anything
-        wrong, is anything running, what has just happened. Compact on purpose - it
-        sits above the controls, so every line here is a line between the operator and
-        the button they came for.
+        Is anything wrong, is anything running, who is on, and only then what has
+        happened. The first version of this put the events feed above the running-maps
+        table, so a cluster with a map crash-looping opened on a history log and the
+        failing banner was the third thing down the page - the merge had inverted the
+        one job a landing page has.
+
+        The running-maps block carries the failing banner and the player count as well
+        as the table, which is why it sits here rather than with the sections that act
+        on maps: it is the answer, not an operation.
         """
         note = ""
         if not (st or {}).get("running"):
             todo = store.readiness()
             note = ('<div class=note>Cluster not running. %s</div>'
                     % (("Still to set: " + ", ".join(b["label"] for b in todo))
-                       if todo else "Launch it below."))
-        return note + _dashboard() + _recent_panel()
+                       if todo else "Launch it below \u2014 the addresses people "
+                       "connect to are at the foot of this page."))
+        return (note + _dashboard()
+                + ui.render_status(_label_services(st), players=_players_now())
+                + _recent_panel())
 
     def _reference_foot():
         """Where to connect and what this is - at the foot, where reference belongs.

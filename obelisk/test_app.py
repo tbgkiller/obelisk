@@ -2393,9 +2393,10 @@ check("it sends people to the one page that does",
 check("and still sends a stranger to setup first",
       _in_order(_rootsrc, "authed(request)", '"/setup"', '"/admin/cluster"'), _rootsrc)
 _cbsrc = _s1src.split("def _cluster_body")[1].split(chr(10) + "    def ")[0]
-check("the cluster page does both too",
-      "_label_services(st)" in _cbsrc and "players=_players_now()" in _cbsrc,
-      _cbsrc[-300:])
+check("the page still names its maps and asks for the count",
+      "_label_services(st)" in _cbsrc
+      and "players=_players_now()" in _after(_s1src, "def _summary_band"),
+      _window(_s1src, "def _summary_band", 900))
 check("the count is read, never measured, on a page render",
       "online_snapshot" in _s1src and "players_online" not in
       _s1src.split("def _players_now")[1].split("    def ")[0],
@@ -4659,15 +4660,18 @@ check("the running-maps table is drawn once",
       _merged_pg.count("<legend>Running now</legend>"))
 check("and the player-count header states the population once",
       _merged_pg.count("players online") == 1, _merged_pg.count("players online"))
+# One call in the whole program. It moved out of render_cluster and into the page's
+# own composition so it could sit above the events feed - which is a different place,
+# not a second one.
 check("the duplication is gone at the call, not merely on the page",
-      "ui.render_status(" not in _s1src, "app.py still calls render_status")
-check("one caller remains, and it is the cluster renderer",
-      _uisrc_merge.count("render_status(") == 2,     # the def, and render_cluster's call
-      _uisrc_merge.count("render_status("))
-check("which is the page that has the controls under it",
-      _in_order(_after(_uisrc_merge, "def render_cluster("), "render_status(",
-                "render_whos_online("),
-      _window(_after(_uisrc_merge, "def render_cluster("), "render_status(", 200))
+      _s1src.count("ui.render_status(") + _uisrc_merge.count("render_status(") == 2,
+      [_s1src.count("ui.render_status("), _uisrc_merge.count("render_status(")])
+check("and the one that remains is the page composing its own summary",
+      "ui.render_status(" in _after(_s1src, "def _summary_band"),
+      _window(_s1src, "def _summary_band", 900))
+check("the cluster renderer no longer draws it a second time",
+      "render_status(" not in _after(_uisrc_merge, "def render_cluster("),
+      _window(_after(_uisrc_merge, "def render_cluster("), "return", 300))
 
 # ---- and no way back to a page that no longer exists
 check("the nav has no Status tab", ">Status</a>" not in _merged_pg,
@@ -4748,14 +4752,118 @@ for _sec, _mark in (("the running-maps table", "<legend>Running now</legend>"),
                     ("the launch controls", 'formaction="/admin/launch"')):
     check("%s is still on the page" % _sec, _mark in _merged_pg, _sec)
 
-check("the summary sits above the operational half",
-      _in_order(_merged_pg, "<div id=feed", "<legend>Running now</legend>",
-                "<fieldset id=who>", "<legend>Plan</legend>"),
-      "the band is not above the sections")
+# The page answers, top to bottom: is it up, who is on, is anything broken, what has
+# just happened - and then offers the things that act on any of it. The first cut of
+# this merge put the events feed above the running-maps block, so a cluster with a map
+# crash-looping opened on a history log with the failing banner third.
+check("the page is in the order the questions are asked",
+      _in_order(_merged_pg,
+                "<fieldset id=run>",                  # is it up
+                "<div id=feed",                       # what just happened
+                "ARK build and mods",                 # the operations
+                "<fieldset id=who>", "<fieldset id=bans>", "<fieldset id=cap>",
+                "<legend>Presets</legend>", "<legend>Plan</legend>",
+                "<fieldset id=connect>"),
+      "the page is out of order")
+check("the population is stated before the history, not after it",
+      _in_order(_merged_pg, "players online", "<div id=feed"),
+      "the count is below the feed")
+check("and the running table is above the update panel, not below it",
+      _in_order(_merged_pg, "<fieldset id=run>", "ARK build and mods"),
+      "the table is below the panel")
 check("and the reference material sits below it, not between",
       _in_order(_merged_pg, "<legend>Plan</legend>", "<legend>Connect</legend>",
                 "<legend>Obelisk version</legend>"),
       "connect and version are not at the foot")
+
+# ---- what a page is FOR, when something is wrong
+#
+# The whole argument for a landing page: a map is crash-looping and the operator opens
+# Obelisk. What they must not meet is a history log, with the red banner third.
+_t26 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _BROKE = {"docker_ok": True, "compose_exists": True, "running": 2, "services": [
+        {"service": _linst["The Island"], "name": "asa-labeltest-island",
+         "level": "ok", "says": "Online", "status": "Up"},
+        {"service": _linst["Ragnarok"], "name": "asa-labeltest-ragnarok",
+         "level": "bad", "says": "Restarting", "status": "Restarting",
+         "log_tail": "Fatal error: could not read the world"}]}
+
+    async def _page_when(status_dict, relay=None):
+        _appmod.clusterctl.status = lambda store: dict(
+            status_dict, services=[dict(x) for x in status_dict["services"]])
+        _bot_s1.LIVE = relay
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        page = await (await client.get("/admin/cluster")).text()
+        await client.close()
+        return page
+
+    _broke_pg = _t26.run_until_complete(_page_when(_BROKE, _kick_relay()))
+    _fresh_pg = _t26.run_until_complete(_page_when(
+        {"docker_ok": True, "compose_exists": False, "running": 0, "services": []}))
+finally:
+    _t26.close()
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+check("a failing map is announced in red", "failing to start" in _broke_pg,
+      _window(_broke_pg, "failing", 200))
+check("above the history, not below it",
+      _in_order(_broke_pg, "failing to start", "<div id=feed"),
+      "the failing banner is below the feed")
+check("above the update panel too",
+      _in_order(_broke_pg, "failing to start", "ARK build and mods"),
+      "the failing banner is below the update panel")
+check("and above every section that acts on a map",
+      _in_order(_broke_pg, "failing to start", "<fieldset id=who>",
+                "<legend>Plan</legend>"),
+      "the failing banner is below the sections")
+check("with the reason still one click away",
+      "could not read the world" in _broke_pg, _window(_broke_pg, "why it is", 200))
+check("and the table it belongs to right under it",
+      _in_order(_broke_pg, "failing to start", "<fieldset id=run>", "<div id=feed"),
+      "the table is not under its own banner")
+
+# ---- a machine that has never launched anything
+#
+# Three moderation sections about servers that do not exist, above the only controls
+# that would create them. Empty boxes are not the first thing to read on day one.
+check("the first thing offered is the thing to do",
+      _in_order(_fresh_pg, "<legend>Presets</legend>", "<fieldset id=maps>",
+                "<fieldset id=who>"),
+      "the empty sections come first on a fresh install")
+check("the moderation sections are still there, underneath",
+      _in_order(_fresh_pg, "<fieldset id=who>", "<fieldset id=bans>",
+                "<fieldset id=cap>"),
+      "a section went missing on a fresh install")
+check("and it says there is nothing running yet",
+      "has been launched from this Obelisk yet" in _fresh_pg,
+      _window(_fresh_pg, "launched", 200))
+check("a launched cluster keeps the order the other way round",
+      _in_order(_merged_pg, "<fieldset id=who>", "<legend>Presets</legend>"),
+      "a running cluster leads with the form")
+
+# ---- and a way around a page this long
+check("the page offers its own sections",
+      '<div class=jump>' in _merged_pg, _window(_merged_pg, "class=jump", 300))
+check("near the top, where somebody deciding where to go is looking",
+      _in_order(_merged_pg, "class=jump", "<fieldset id=run>"),
+      "the jump row is not at the top")
+for _href, _target in (("#run", "<fieldset id=run>"), ("#who", "<fieldset id=who>"),
+                       ("#bans", "<fieldset id=bans>"), ("#cap", "<fieldset id=cap>"),
+                       ("#maps", "<fieldset id=maps>"),
+                       ("#connect", "<fieldset id=connect>")):
+    check("%s is offered and lands somewhere" % _href,
+          ('href="%s"' % _href) in _merged_pg and _target in _merged_pg,
+          [_href, _target])
+
+# ---- the note that used to send people to a tab that no longer exists
+check("and the readiness note says where the addresses went",
+      "addresses people" in _idle_pg and "foot of this page" in _idle_pg,
+      _window(_idle_pg, "not running", 260))
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
