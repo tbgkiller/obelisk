@@ -239,11 +239,12 @@ def page(title, body, nav_on=""):
     # running-maps table this one does - the same function, the same data, two pages -
     # so it was two places to look for one answer and two places for that answer to
     # disagree with itself.
+    # Backups, Cloud, Restore and Mods were four tabs for one subject: the copies of
+    # this cluster and what loads into it. Three of them are one story told in order,
+    # and telling it took three tabs - with the archive being restored listed on one
+    # page and the thing that wrote it on another.
     tabs = [("/admin/cluster", "Cluster"), ("/admin", "Settings"),
-            ("/admin/mods", "Mods"), ("/admin/activity", "Activity"),
-            ("/admin/backups", "Backups"),
-            ("/admin/restore", "Restore"),
-            ("/admin/cloud", "Cloud")]
+            ("/admin/data", "Data"), ("/admin/activity", "Activity")]
     nav = "".join('<a href="%s"%s>%s</a>' % (h, ' class=on' if h == nav_on else "", _e(t))
                   for h, t in tabs)
     return ("<!doctype html><html><head><meta charset=utf-8>"
@@ -2105,9 +2106,19 @@ JUMPS = (("#run", "Running"), ("#who", "Players"), ("#bans", "Bans"),
          ("#cap", "Cap"), ("#maps", "Maps"), ("#connect", "Connect"))
 
 
-def render_jump():
+def render_jump_row(items):
+    """A row of links to the sections of a long page.
+
+    Shared, because the Data page has the same problem the cluster page has: several
+    fieldsets, a screen and a half of scrolling, and anchors that existed only for
+    redirects to land on.
+    """
     return ('<div class=jump>%s</div>'
-            % " ".join('<a href="%s">%s</a>' % (h, _e(t)) for h, t in JUMPS))
+            % " ".join('<a href="%s">%s</a>' % (_e(h), _e(t)) for h, t in items))
+
+
+def render_jump():
+    return render_jump_row(JUMPS)
 
 
 def render_map(name, key, row=None, address="", host_known=True, points=None,

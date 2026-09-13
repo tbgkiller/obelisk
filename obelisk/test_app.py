@@ -278,7 +278,13 @@ async def run():
     check("retention applies to UI backups too", len(backupctl.listing(store)) == 2,
           backupctl.listing(store))
 
-    check("Backups is in the nav", "/admin/backups" in body)
+    # The nav element alone: the forms on the page still post to /admin/mods and the
+    # rest of the old paths, which is the point - only the tabs collapsed.
+    nav = _from(body, "<nav>").split("</nav>")[0]
+    check("the Data area is in the nav", "/admin/data" in nav, nav)
+    check("and the four old tabs are not", not any(
+        ('"%s"' % t) in nav for t in ("/admin/backups", "/admin/restore",
+                                      "/admin/cloud", "/admin/mods")), nav)
 
     # ---- the cloud page, including the connect step the owner drives
     from . import cloud as cloudctl
@@ -4695,8 +4701,11 @@ check("the nav has no Status tab", ">Status</a>" not in _merged_pg,
       _window(_merged_pg, "<nav>", 400))
 check("cluster is the first tab",
       _in_order(_window(_merged_pg, "<nav>", 500), "/admin/cluster", "/admin\"",
-                "/admin/mods"),
+                "/admin/data", "/admin/activity"),
       _window(_merged_pg, "<nav>", 500))
+_merged_nav = _from(_merged_pg, "<nav>").split("</nav>")[0]
+check("and there are four of them, not seven",
+      _merged_nav.count("<a href=") == 4, _merged_nav)
 check("and it is the one marked as where you are",
       '<a href="/admin/cluster" class=on>Cluster</a>' in _merged_pg,
       _window(_merged_pg, "<nav>", 400))
@@ -4936,8 +4945,10 @@ try:
         _map_get("/admin/cluster/map/nosuchmap"))
     _mp_unplanned_st, _, _mp_unplanned_body = _t27.run_until_complete(
         _map_get("/admin/cluster/map/valguero"))
-    _mp_rest_st, _, _mp_rest_body = _t27.run_until_complete(
+    _mp_rest_st, _mp_rest_where, _mp_rest_body = _t27.run_until_complete(
         _map_get("/admin/restore", points=_FAKE_POINTS))
+    _data_st, _, _data_pg = _t27.run_until_complete(
+        _map_get("/admin/data", points=_FAKE_POINTS))
 
     _real_st27 = _appmod.clusterctl.status
 
@@ -5031,12 +5042,15 @@ check("carrying the consent sentence, not a tooltip",
 check("a map with no saves yet says so rather than showing nothing",
       "No dated saves for The Island yet" in _mp_none_body,
       _window(_mp_none_body, "Quick restore", 300))
-check("the restore page still offers the archives",
-      _mp_rest_st == 200 and "obelisk-2026-09-13.tar.zst" in _mp_rest_body,
-      _window(_mp_rest_body, "<legend>Restore", 300))
+check("the restore section still offers the archives",
+      _mp_rest_st == 302 and _mp_rest_where == "/admin/data#restore",
+      [_mp_rest_st, _mp_rest_where])
+check("the archives are on the Data page it points at",
+      _data_st == 200 and "obelisk-2026-09-13.tar.zst" in _data_pg,
+      _window(_data_pg, "<legend>Restore", 300))
 check("and no longer carries the per-map grid",
-      "Quick restore points" not in _mp_rest_body and "pointform" not in _mp_rest_body,
-      _window(_mp_rest_body, "Quick restore", 200))
+      "Quick restore points" not in _data_pg and "pointform" not in _data_pg,
+      _window(_data_pg, "Quick restore", 200))
 check("nor gathers the points it would need for one",
       "_points_by_map" not in _s1src, "the restore page still collects save points")
 
@@ -5100,6 +5114,166 @@ check("and a never-launched one from the maps it has chosen",
       _window(_fresh_pg, "<fieldset id=maps>", 900))
 check("which is the only way in before anything is running",
       "<fieldset id=run>" not in _fresh_pg, _window(_fresh_pg, "Running", 200))
+
+# ---- four tabs become one page, and every form keeps its own address
+#
+# Backups, off-site, restore and mods were four tabs for one subject. Three of them are
+# one story told in order - make a copy, put it somewhere else, put it back - and
+# reading it took three tabs, with the archive being restored listed on one page and the
+# thing that wrote it on another.
+_t28 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _data_and_redirects():
+        _appmod.clusterctl.status = lambda store: dict(
+            _lstatus, services=[dict(x) for x in _lstatus["services"]])
+        _real_list4 = _appmod.backupctl.listing
+        _appmod.backupctl.listing = lambda store: [
+            {"name": "obelisk-2026-09-13.tar.zst", "path": "/tmp/x.tar.zst",
+             "bytes": 1234567, "mtime": 1789000000.0, "when": "2026-09-13 04:00"}]
+        # Connected, because half the cloud section only exists once it is: push, pull
+        # and the disconnect guard are what this slice has to carry across intact, and
+        # an unconnected fixture renders none of them.
+        _real_cst = _appmod.cloudctl.status
+        _real_cls = _appmod.cloudctl.listing
+        _appmod.cloudctl.status = lambda store: {
+            "rclone_ok": True, "rclone_detail": "", "encryption_ok": True,
+            "connected": True, "provider": "Backblaze B2", "path": "obelisk/",
+            "reachable": True, "reachable_detail": ""}
+        _appmod.cloudctl.listing = lambda store: (True, [
+            {"name": "obelisk-2026-09-12.tar.zst.age", "bytes": 999,
+             "when": "2026-09-12 04:00"}])
+        try:
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            page = await (await client.get("/admin/data")).text()
+            # and again with no cloud connected, because the connect form and the
+            # disconnect guard are never on the page at the same time
+            _appmod.cloudctl.status = lambda store: {
+                "rclone_ok": True, "rclone_detail": "", "encryption_ok": True,
+                "connected": False, "provider": "", "path": "", "reachable": None,
+                "reachable_detail": ""}
+            off = await (await client.get("/admin/data")).text()
+            olds = {}
+            for path in ("/admin/backups", "/admin/restore", "/admin/cloud",
+                         "/admin/mods"):
+                r = await client.get(path, allow_redirects=False)
+                olds[path] = (r.status, r.headers.get("Location", ""))
+            bk = await client.get("/admin/backup/status")
+            rs = await client.get("/admin/restore/status")
+            codes = (bk.status, rs.status)
+            health = await client.get("/healthz")
+            await client.close()
+        finally:
+            _appmod.backupctl.listing = _real_list4
+            _appmod.cloudctl.status = _real_cst
+            _appmod.cloudctl.listing = _real_cls
+        return page, off, olds, codes, health.status
+
+    (_data_pg4, _data_off4, _olds4, _poll_codes,
+     _health4) = _t28.run_until_complete(_data_and_redirects())
+finally:
+    _t28.close()
+    _appmod.clusterctl.status = _real_status_s1
+
+# ---- one page, four sections, in the order the story runs
+for _sec in ("backups", "cloud", "restore", "mods"):
+    check("the Data page has a %s section to land on" % _sec,
+          ('<div id=%s>' % _sec) in _data_pg4, _window(_data_pg4, "id=%s" % _sec, 120))
+check("in the order the work happens in",
+      _in_order(_data_pg4, "<div id=backups>", "<div id=cloud>", "<div id=restore>",
+                "<div id=mods>"), "the sections are out of order")
+check("each one still renders what its page rendered",
+      _in_order(_data_pg4, "Back up now", "Off-site copies", "1. Choose an archive",
+                "Mods, in load order"), "a section lost its content")
+check("with a row of links to them",
+      _in_order(_from(_data_pg4, "<div class=jump>"), '"#backups"', '"#cloud"',
+                '"#restore"', '"#mods"'),
+      _window(_data_pg4, "<div class=jump>", 300))
+check("and the archive it holds is listed under restore",
+      "obelisk-2026-09-13.tar.zst" in _data_pg4,
+      _window(_data_pg4, "<div id=restore>", 600))
+
+# ---- the old addresses still work
+for _old, _want in (("/admin/backups", "/admin/data#backups"),
+                    ("/admin/restore", "/admin/data#restore"),
+                    ("/admin/cloud", "/admin/data#cloud"),
+                    ("/admin/mods", "/admin/data#mods")):
+    _st, _where = _olds4[_old]
+    check("%s still resolves" % _old, _st == 302, [_old, _st])
+    check("landing on its own section", _where == _want, [_where, _want])
+
+# ---- and every form still posts where it always did
+for _action in ("/admin/backup", "/admin/mods", "/admin/mods/find", "/admin/mods/key",
+                "/admin/restore/inspect", "/admin/restore/run",
+                "/admin/cloud/disconnect", "/admin/cloud/push", "/admin/cloud/pull"):
+    check("a form still posts to %s" % _action,
+          ('action="%s"' % _action) in _data_pg4, _action)
+# The connect form only exists while no cloud is connected - the two are never on the
+# page together, which is why this one is checked against the other render.
+check("and the connect form still posts to /admin/cloud/connect",
+      'action="/admin/cloud/connect"' in _data_off4,
+      _window(_data_off4, "<div id=cloud>", 600))
+check("which is the only cloud form offered when none is connected",
+      'action="/admin/cloud/disconnect"' not in _data_off4,
+      _window(_data_off4, "<div id=cloud>", 600))
+check("no form posts to the page it happens to be rendered on",
+      'action="/admin/data"' not in _data_pg4, "a form was re-addressed")
+
+# ---- both jobs still report themselves, on one page, without colliding
+check("the backup job has its panel", 'id="bkwrap"' in _data_pg4 or "id=bkwrap"
+      in _data_pg4, _window(_data_pg4, "bkwrap", 160))
+check("and the restore job has its own", "id=rswrap" in _data_pg4,
+      _window(_data_pg4, "rswrap", 160))
+check("both pollers are wired",
+      "/admin/backup/status" in _data_pg4 and "/admin/restore/status" in _data_pg4,
+      "a poller is missing")
+check("and both still answer", _poll_codes == (200, 200), _poll_codes)
+check("their element ids do not collide",
+      not ({"bkwrap", "bkbar", "bkbtn", "bkphase", "bkdetail", "bkresult"}
+           & {"rswrap", "rsstep", "rselapsed"}), "ids overlap")
+check("each id appears once on the page",
+      all(_data_pg4.count("id=%s" % i) == 1 for i in ("bkwrap", "rswrap")),
+      [_data_pg4.count("id=bkwrap"), _data_pg4.count("id=rswrap")])
+
+# ---- the guards came across unchanged
+check("disconnecting a cloud still takes the typed word",
+      "DISCONNECT" in _from(_data_pg4, "<div id=cloud>"),
+      _window(_from(_data_pg4, "<div id=cloud>"), "disconnect", 400))
+_discsrc = _after(_s1src, "async def cloud_disconnect").split(
+    chr(10) + "    async def ")[0]
+check("and the route still compares it rather than trusting a click",
+      "cloudctl.DISCONNECT_WORD" in _discsrc and "confirmed=confirmed" in _discsrc,
+      _discsrc[:400])
+_runsrc = _after(_s1src, "async def restore_run").split(chr(10) + "    async def ")[0]
+check("restoring still needs the archive to have been looked inside",
+      "posted != looked" in _runsrc, _window(_runsrc, "looked", 300))
+check("and still needs the map's name typed",
+      "restorectl.confirms(map_key, confirm)" in _runsrc,
+      _window(_runsrc, "confirms", 200))
+# The secrets the connect form takes are typed in, never rendered back: the inputs are
+# password fields and neither carries a value= for the browser or a screenshot to keep.
+_cloud_off = _from(_data_off4, "<div id=cloud>").split("<div id=restore>")[0]
+check("the passphrase field is a password field",
+      "<input type=password name=password autocomplete=new-password>" in _cloud_off,
+      _window(_cloud_off, "password", 200))
+check("and it is never rendered back with a value",
+      "name=password value" not in _cloud_off and 'name="password" value' not in
+      _cloud_off, _window(_cloud_off, "password", 200))
+check("nor is the provider's secret key",
+      "name=secret_access_key value" not in _cloud_off,
+      _window(_cloud_off, "secret_access_key", 200))
+
+# ---- and nothing else moved
+check("healthz is unaffected", _health4 == 200, _health4)
+for _what, _frag in sorted({
+        "the cluster page": 'add_get("/admin/cluster", cluster_page)',
+        "the map drill-down": 'add_get("/admin/cluster/map/{key}", map_page)',
+        "the ban action": 'add_post("/admin/player/ban", player_ban)',
+        "the restore point action": 'add_post("/admin/restore/point", restore_point)',
+}.items()):
+    check("%s is untouched" % _what, _frag in _s1src, _frag)
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

@@ -1656,11 +1656,69 @@ def build_app(store, docker=None):
             return None
         return lambda: clusterctl.save_world(store_)
 
+    # ---- one place for the copies of this cluster, and what loads into it
+    #
+    # Backups, off-site, restore and mods were four tabs and four pages. Three of them
+    # are one story told in order - make a copy, put the copy somewhere else, put it
+    # back - and reading it meant three tabs, with the archive you were restoring listed
+    # on one page and the thing that made it on another. They are sections now, in the
+    # order the story runs.
+    #
+    # Every form still posts where it always did. The addresses are the contract this
+    # page does not get to change: what moved is where a result is rendered, not where
+    # it is sent.
+    DATA_SECTIONS = (("#backups", "Back up"), ("#cloud", "Off-site"),
+                     ("#restore", "Restore"), ("#mods", "Mods"))
+
+    def _cloud_section(msg="", problem="", warning=""):
+        st = cloudctl.status(store)
+        rows = []
+        if st.get("connected"):
+            ok, res = cloudctl.listing(store)
+            rows = res if ok and isinstance(res, list) else []
+        return ui.render_cloud(store, st, rows, message=msg, problem=problem,
+                               warning=warning)
+
+    def _mods_section(problem=""):
+        # Names and categories come from the check the watcher already did, so the
+        # page renders without waiting on anybody's API.
+        known = {r["id"]: r for r in (ARK_UPDATE.get("mods") or [])}
+        return ui.render_mods(store, modsctl.measure(layout.mods_dir(store)),
+                              found=_found["card"],
+                              problem=problem or _found["problem"], known=known)
+
+    def _data_body(backups=None, cloud=None, restore=None, mods=None):
+        """The four sections, each with its own result slot.
+
+        A result belongs to the section that caused it, the same rule the cluster
+        page's actions follow: the operator pressed a button in one of four places and
+        the answer has to come back where they are looking.
+        """
+        b, c, r, m = (backups or {}), (cloud or {}), (restore or {}), (mods or {})
+        return (ui.render_jump_row(DATA_SECTIONS)
+                + '<div id=backups>%s</div>' % ui.render_backups(
+                    store, backupctl.listing(store),
+                    message=b.get("message", ""), problem=b.get("problem", ""))
+                + '<div id=cloud>%s</div>' % _cloud_section(
+                    msg=c.get("message", ""), problem=c.get("problem", ""),
+                    warning=c.get("warning", ""))
+                + '<div id=restore>%s</div>' % _restore_body(
+                    message=r.get("message", ""), problem=r.get("problem", ""),
+                    refusal=r.get("refusal", ""))
+                + '<div id=mods>%s</div>' % _mods_section(problem=m.get("problem", "")))
+
+    def _data(**kw):
+        return chrome(_data_body(**kw), "Data", "/admin/data")
+
+    async def data_page(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        return _data()
+
     async def backups_page(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        return chrome(ui.render_backups(store, backupctl.listing(store)),
-                      "Backups", "/admin/backups")
+        raise web.HTTPFound("/admin/data#backups")
 
     # One backup at a time, and what it is currently doing. Held here rather than in
     # backup.py because it is a property of this running manager, not of the archive.
@@ -1701,7 +1759,7 @@ def build_app(store, docker=None):
         if not authed(request):
             raise web.HTTPFound("/setup")
         if job["state"] == "running":
-            raise web.HTTPFound("/admin/backups")
+            raise web.HTTPFound("/admin/data#backups")
         # Started, not awaited. Compressing the data root takes minutes, and doing that
         # inside the request handler ran it on the event loop - which stopped the chat
         # relay, dropped Discord's heartbeat and made the web UI itself unanswerable for
@@ -1709,7 +1767,7 @@ def build_app(store, docker=None):
         job.update(state="running", phase="starting", done=0, total=0,
                    message="", ok=None, started=time.time())
         asyncio.create_task(_backup_task())
-        raise web.HTTPFound("/admin/backups")
+        raise web.HTTPFound("/admin/data#backups")
 
     async def backup_status(request):
         if not authed(request):
@@ -1729,13 +1787,7 @@ def build_app(store, docker=None):
     async def mods_page(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        # Names and categories come from the check the watcher already did, so the
-        # page renders without waiting on anybody's API.
-        known = {r["id"]: r for r in (ARK_UPDATE.get("mods") or [])}
-        return chrome(ui.render_mods(store, modsctl.measure(layout.mods_dir(store)),
-                                     found=_found["card"], problem=_found["problem"],
-                                     known=known),
-                      "Mods", "/admin/mods")
+        raise web.HTTPFound("/admin/data#mods")
 
     async def mods_key(request):
         """Save or clear the CurseForge key, from the page where it is wanted.
@@ -1753,7 +1805,7 @@ def build_app(store, docker=None):
             announce.say("mods.key_cleared",
                          "The CurseForge API key was removed. Searching is off; adding "
                          "a mod by Project ID still works.")
-            raise web.HTTPFound("/admin/mods")
+            raise web.HTTPFound("/admin/data#mods")
         value = str(form.get("apikey") or "").strip()
         if value:
             try:
@@ -1767,7 +1819,7 @@ def build_app(store, docker=None):
                              "from the Mods page are now available.")
             except Invalid as e:
                 log.info("CurseForge key rejected: %s", e)
-        raise web.HTTPFound("/admin/mods")
+        raise web.HTTPFound("/admin/data#mods")
 
     async def mods_find(request):
         """Look a mod up before it can be added. Never writes anything."""
@@ -1779,7 +1831,7 @@ def build_app(store, docker=None):
         card, problem = await asyncio.to_thread(
             lambda: cfctl.lookup(form.get("ref"), store=store))
         _found.update(card=card, problem=problem)
-        raise web.HTTPFound("/admin/mods")
+        raise web.HTTPFound("/admin/data#mods")
 
     async def mods_edit(request):
         if not authed(request):
@@ -1808,7 +1860,7 @@ def build_app(store, docker=None):
             store.save()
         except Exception as e:                       # noqa: BLE001 - shown to the user
             log.warning("mod list rejected: %s", e)
-        raise web.HTTPFound("/admin/mods")
+        raise web.HTTPFound("/admin/data#mods")
 
 
     # ---- restore
@@ -1862,7 +1914,7 @@ def build_app(store, docker=None):
     async def restore_page(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        return chrome(_restore_body(), "Restore", "/admin/restore")
+        raise web.HTTPFound("/admin/data#restore")
 
     async def restore_inspect(request):
         if not authed(request):
@@ -1870,16 +1922,14 @@ def build_app(store, docker=None):
         form = await request.post()
         path = _archive_path(form.get("archive"))
         if not path:
-            return chrome(_restore_body(problem="No such archive."), "Restore",
-                          "/admin/restore")
+            return _data(restore={"problem": "No such archive."})
         # Off the loop regardless: an archive written before the manifest carried a map
         # list still has to be decompressed to describe it, and the relay, Discord and
         # this page all live on the thread that would be doing it.
         info = await asyncio.to_thread(restorectl.inspect, path)
         _looked.update(archive=os.path.basename(path), info=info if info["ok"] else None,
                        notes=restorectl.compare(store, info) if info["ok"] else [])
-        return chrome(_restore_body(problem="" if info["ok"] else info["problem"]),
-                      "Restore", "/admin/restore")
+        return _data(restore={"problem": "" if info["ok"] else info["problem"]})
 
     async def restore_run(request):
         if not authed(request):
@@ -1891,8 +1941,7 @@ def build_app(store, docker=None):
         confirm = str(form.get("confirm") or "")
         force = bool(form.get("force"))
         if not path:
-            return chrome(_restore_body(problem="No such archive."), "Restore",
-                          "/admin/restore")
+            return _data(restore={"problem": "No such archive."})
 
         # The archive that was looked inside is the only archive this will restore.
         # The page has two forms - one to inspect, one to run - and the run form used
@@ -1907,21 +1956,19 @@ def build_app(store, docker=None):
                          "Restore refused: no archive has been looked inside yet, so "
                          "there is nothing proven to restore from. Nothing has been "
                          "changed.", level="warning", map=map_key)
-            return chrome(_restore_body(
-                refusal="Look inside an archive first - nothing is restored from an "
-                        "archive that has not been opened and checked."),
-                "Restore", "/admin/restore")
+            return _data(restore={
+                "refusal": "Look inside an archive first - nothing is restored from an "
+                           "archive that has not been opened and checked."})
         if posted != looked:
             announce.say("restore.refused",
                          "Restore refused: the page asked to restore %s but %s is the "
                          "archive that was looked inside. Nothing has been changed."
                          % (posted, looked), level="warning", map=map_key)
-            return chrome(_restore_body(
-                refusal="The archive shown is not the one that was looked inside: you "
-                        "asked for %s, and %s is what was opened and checked. Look "
-                        "inside %s again before restoring from it."
-                        % (posted, looked, posted)),
-                "Restore", "/admin/restore")
+            return _data(restore={
+                "refusal": "The archive shown is not the one that was looked inside: "
+                           "you asked for %s, and %s is what was opened and checked. "
+                           "Look inside %s again before restoring from it."
+                           % (posted, looked, posted)})
 
         # Typed, not clicked, and it is the map's own name rather than a fixed word:
         # this replaces one map's entire world, and the mistake worth preventing is
@@ -1935,20 +1982,19 @@ def build_app(store, docker=None):
                          "Restore of %s refused: the confirmation did not match. "
                          "Nothing has been changed." % (want or "that map"),
                          level="warning", map=map_key, archive=posted)
-            return chrome(_restore_body(
-                refusal="Type %s to confirm. This replaces that map's whole world with "
-                        "the one in the archive, and there is no undo - so the name is "
-                        "typed rather than clicked." % (want or "the map's name")),
-                "Restore", "/admin/restore")
+            return _data(restore={
+                "refusal": "Type %s to confirm. This replaces that map's whole world "
+                           "with the one in the archive, and there is no undo - so the "
+                           "name is typed rather than clicked."
+                           % (want or "the map's name")})
 
         if cluster_busy.locked():
-            return chrome(_restore_body(problem="Something else is already working on "
-                                                "the cluster - this was ignored rather "
-                                                "than run alongside it."),
-                          "Restore", "/admin/restore")
+            return _data(restore={
+                "problem": "Something else is already working on the cluster - this "
+                           "was ignored rather than run alongside it."})
 
         if rjob["state"] == "running":
-            raise web.HTTPFound("/admin/restore")
+            raise web.HTTPFound("/admin/data#restore")
 
         def note(text):
             rjob["step"] = text
@@ -2003,7 +2049,7 @@ def build_app(store, docker=None):
                     map=map_key, archive=os.path.basename(path),
                     started=time.time(), detail={})
         asyncio.create_task(run_it())
-        raise web.HTTPFound("/admin/restore")
+        raise web.HTTPFound("/admin/data#restore")
 
     async def restore_point(request):
         """Roll one map back to one of the game's own dated saves."""
@@ -2013,9 +2059,9 @@ def build_app(store, docker=None):
         map_key, _, name = str(form.get("point") or "").partition("|")
         force = bool(form.get("force"))
         if not map_key or not name:
-            raise web.HTTPFound("/admin/restore")
+            raise web.HTTPFound("/admin/data#restore")
         if rjob["state"] == "running" or cluster_busy.locked():
-            raise web.HTTPFound("/admin/restore")
+            raise web.HTTPFound("/admin/data#restore")
 
         def note(text):
             rjob["step"] = text
@@ -2060,7 +2106,7 @@ def build_app(store, docker=None):
         rjob.update(state="running", ok=None, message="", step="starting",
                     map=map_key, archive=name, started=time.time(), detail={})
         asyncio.create_task(run_it())
-        raise web.HTTPFound("/admin/restore")
+        raise web.HTTPFound("/admin/data#restore")
 
     async def restore_status(request):
         if not authed(request):
@@ -2074,22 +2120,10 @@ def build_app(store, docker=None):
     async def cloud_page(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        st = cloudctl.status(store)
-        rows = []
-        if st.get("connected"):
-            ok, res = cloudctl.listing(store)
-            rows = res if ok and isinstance(res, list) else []
-        return chrome(ui.render_cloud(store, st, rows), "Cloud", "/admin/cloud")
+        raise web.HTTPFound("/admin/data#cloud")
 
     def _cloud_chrome(msg="", problem="", warning=""):
-        st = cloudctl.status(store)
-        rows = []
-        if st.get("connected"):
-            ok, res = cloudctl.listing(store)
-            rows = res if ok and isinstance(res, list) else []
-        return chrome(ui.render_cloud(store, st, rows, message=msg, problem=problem,
-                                      warning=warning),
-                      "Cloud", "/admin/cloud")
+        return _data(cloud={"message": msg, "problem": problem, "warning": warning})
 
     async def cloud_connect(request):
         if not authed(request):
@@ -2190,6 +2224,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/player/cap", player_cap)
     app.router.add_get("/admin/cluster/status", cluster_status)
     app.router.add_get("/admin/cluster/map/{key}", map_page)
+    app.router.add_get("/admin/data", data_page)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)
     app.router.add_get("/admin/backup/status", backup_status)
