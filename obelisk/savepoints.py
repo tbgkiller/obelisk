@@ -155,6 +155,11 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
     """
     ark = ark_root or layout.ark_root_of(store)
     map_id = mapcat.BY_KEY[map_key]["map_id"]
+    # The name for sentences, the id for paths and the log. This flow said "The Island"
+    # in its refusals and "TheIsland_WP" in its result two clicks later, while the
+    # archive restore beside it said The Island throughout. restore.restore_map keeps
+    # both, for the same reason.
+    map_name = mapcat.BY_KEY[map_key]["name"]
     detail = {"map": map_key, "map_id": map_id, "point": "", "steps": []}
 
     def step(text):
@@ -168,7 +173,7 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
     if not point:
         return False, ("there is no restore point called %s for %s any more - the game "
                        "prunes these, so it may have aged out since the page was loaded"
-                       % (os.path.basename(str(name or "")), map_id)), detail
+                       % (os.path.basename(str(name or "")), map_name)), detail
     detail["point"] = point["name"]
 
     if not force:
@@ -176,19 +181,18 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
         # reads to announce it at warning and the page reads to render it amber - the
         # archive restore beside this one has said it that way since the guards went
         # in, and this one was still announcing its refusals with a red cross.
-        name_of = mapcat.BY_KEY[map_key]["name"]
         total, counts, silent = (players or (lambda: (0, {}, [])))()
-        mine = counts.get(map_key, counts.get(name_of, 0))
-        if any(l in (map_key, name_of) for l, _w in silent):
+        mine = counts.get(map_key, counts.get(map_name, 0))
+        if any(l in (map_key, map_name) for l, _w in silent):
             detail["refused"] = "silent"
             return False, ("%s did not answer, so it is not known whether anyone is on "
                            "it. Nothing has been changed. Restore with force if you "
-                           "mean to anyway." % name_of), detail
+                           "mean to anyway." % map_name), detail
         if mine:
             detail["refused"] = "players"
             return False, ("%s on %s. Nothing has been changed. Restore with force, or "
                            "wait until they are off."
-                           % (cluster._are(mine), name_of)), detail
+                           % (cluster._are(mine), map_name)), detail
 
     ok, why = verify_point(point["path"])
     if not ok:
@@ -231,7 +235,7 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
     ok_s, why_s = stop(map_key)
     if not ok_s:
         return False, ("could not stop %s, so nothing was changed: %s"
-                       % (map_id, why_s)), detail
+                       % (map_name, why_s)), detail
     step("stopped %s" % map_key)
 
     # Any journal beside the world belongs to the world being replaced, not to the one
@@ -249,7 +253,7 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
     except OSError as e:
         _restart(start, map_key, detail, step)
         return False, ("could not put the world in place, so %s is starting again on "
-                       "the world it had: %s" % (map_id, e)), detail
+                       "the world it had: %s" % (map_name, e)), detail
     step("world replaced with %s" % point["name"])
 
     ok_v, why_v = verify_point(live)
@@ -264,8 +268,8 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
 
     ok_st, why_st = _restart(start, map_key, detail, step)
     if not ok_st:
-        return False, "the world was replaced but %s did not start: %s" % (map_id,
-                                                                           why_st), detail
+        return False, ("the world was replaced but %s did not start: %s"
+                       % (map_name, why_st)), detail
 
     if verify:
         step("checking it is really serving")
@@ -273,9 +277,17 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
         detail["gates"] = reasons
         if not ok_g:
             return False, ("%s came back on the restored world but did not pass "
-                           "verification: %s" % (map_id, "; ".join(reasons or []))), detail
+                           "verification: %s"
+                           % (map_name, "; ".join(reasons or []))), detail
 
-    return True, ("%s is back on its save from %s" % (map_id, point["local"])), detail
+    # What it kept, named, for the same reason the archive restore names it: the copy
+    # taken at the top of this function is the only way back from a rollback nobody
+    # wanted, and a folder somebody has to already know about is not a way back.
+    kept = os.path.basename(detail.get("kept") or "")
+    return True, ("%s is back on its save from %s.%s"
+                  % (map_name, point["local"],
+                     (" The world it replaced is kept as %s until you remove it." % kept)
+                     if kept else "")), detail
 
 
 def _restart(start, map_key, detail, step):

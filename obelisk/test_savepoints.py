@@ -402,5 +402,104 @@ check("and the warning text says what that means for players",
       "NOT" in savepoints.WARNING and "disappears from the world" in savepoints.WARNING,
       savepoints.WARNING)
 
+
+# ---- one name for the map, all the way through
+#
+# N7 converted the two refusals to the friendly name and left six other
+# operator-visible messages on the raw folder id, so the same flow said "The Island"
+# and then "TheIsland_WP" two clicks apart - while the archive restore beside it said
+# The Island throughout. The id is still what paths and the log use; it is not what a
+# sentence uses.
+import inspect as _insp_sp                                       # noqa: E402
+import ast as _ast_sp                                            # noqa: E402
+
+_sp_src = _insp_sp.getsource(savepoints.restore_point)
+_sp_tree = _ast_sp.parse(_sp_src)
+
+# Every string this function hands back as a message, found rather than listed, so a
+# seventh one added later is covered without anybody remembering to add it here.
+_returned = []
+for _n in _ast_sp.walk(_sp_tree):
+    if not (isinstance(_n, _ast_sp.Return) and isinstance(_n.value, _ast_sp.Tuple)):
+        continue
+    if len(_n.value.elts) < 2:
+        continue
+    _returned.append(_ast_sp.dump(_n.value.elts[1]))
+
+check("every message restore_point returns was found", len(_returned) >= 8,
+      len(_returned))
+_id_msgs = [d for d in _returned if "'map_id'" in d or '"map_id"' in d]
+check("none of them names the map by its folder id", _id_msgs == [],
+      [d[:120] for d in _id_msgs])
+
+# ...and the id is still doing the jobs it should
+check("the log line still carries the id, which is what a log is for",
+      'log.info("restore point %s: %s", map_id, text)' in _sp_src, "log lost the id")
+check("the pre-point backup is still named by id, because it is a path",
+      'pre-point-%s-%s.ark" % (map_id, stamp)' in _sp_src, "path lost the id")
+check("and the detail dict still carries both",
+      '"map_id": map_id' in _sp_src, "detail lost the id")
+check("the map's name is worked out once, not per message",
+      _sp_src.count('mapcat.BY_KEY[map_key]["name"]') == 1,
+      _sp_src.count('mapcat.BY_KEY[map_key]["name"]'))
+check("and it does not shadow the save point's own name",
+      "map_name" in _sp_src and "def restore_point(store, map_key, name," in _sp_src,
+      "the point's name was shadowed")
+
+# the messages themselves, end to end
+st_n, root_n, _ = fresh()
+c = Cluster()
+ok_n, msg_n, _d_n = savepoints.restore_point(
+    st_n, "ragnarok", "Ragnarok_WP_07.09.2026_19.02.33.ark", stop=c.stop, start=c.start,
+    players=lambda: (2, {"ragnarok": 2}, []), ark_root=root_n)
+check("a refusal names the map", "Ragnarok" in msg_n and "Ragnarok_WP" not in msg_n,
+      msg_n)
+
+st_n, root_n, _ = fresh()
+c = Cluster(stop_ok=False)
+ok_s2, msg_s2, _d = savepoints.restore_point(
+    st_n, "ragnarok", "Ragnarok_WP_07.09.2026_19.02.33.ark", stop=c.stop, start=c.start,
+    players=lambda: (0, {}, []), ark_root=root_n)
+check("a map that will not stop is named, not id'd",
+      not ok_s2 and "Ragnarok_WP" not in msg_s2 and "Ragnarok" in msg_s2, msg_s2)
+
+st_n, root_n, _ = fresh()
+c = Cluster()
+ok_g2, msg_g2, _d = savepoints.restore_point(
+    st_n, "ragnarok", "Ragnarok_WP_07.09.2026_19.02.33.ark", stop=c.stop, start=c.start,
+    verify=lambda k: (False, ["RCON is not answering"]),
+    players=lambda: (0, {}, []), ark_root=root_n)
+check("a map that fails its gates is named too",
+      not ok_g2 and "Ragnarok_WP" not in msg_g2 and "Ragnarok" in msg_g2, msg_g2)
+
+st_n, root_n, _ = fresh()
+c = Cluster()
+ok_m, msg_m, _d = savepoints.restore_point(
+    st_n, "ragnarok", "no-such-point.ark", stop=c.stop, start=c.start,
+    players=lambda: (0, {}, []), ark_root=root_n)
+check("a point that aged out names the map, not the folder",
+      not ok_m and "Ragnarok_WP" not in msg_m, msg_m)
+check("while still naming the point that is gone", "no-such-point.ark" in msg_m, msg_m)
+
+# ---- the success banner says what it kept
+st_k, root_k, _ = fresh()
+c = Cluster()
+ok_k, msg_k, det_k = savepoints.restore_point(
+    st_k, "ragnarok", "Ragnarok_WP_07.09.2026_19.02.33.ark", stop=c.stop, start=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), ark_root=root_k)
+check("the rollback succeeds", ok_k, msg_k)
+check("the success line names the map", msg_k.startswith("Ragnarok is back"), msg_k)
+check("not the folder", "Ragnarok_WP is back" not in msg_k, msg_k)
+check("it says which save it went back to",
+      "is back on its save from" in msg_k, msg_k)
+check("a world was copied aside before the swap", det_k.get("kept"), det_k)
+check("and the banner names it, so there is a way back from the rollback",
+      os.path.basename(det_k["kept"]) in msg_k, [msg_k, det_k.get("kept")])
+check("saying it is kept until somebody removes it, like the archive flow does",
+      "until you remove it" in msg_k, msg_k)
+check("and naming it as a pre-point copy rather than a mystery file",
+      "pre-point-" in msg_k, msg_k)
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall savepoints tests passed")
 sys.exit(1 if fails else 0)
