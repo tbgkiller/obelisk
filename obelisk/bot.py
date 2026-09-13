@@ -227,8 +227,56 @@ def parse_gamelog(text):
     return tribe, joins, admin
 
 # ---------------------------------------------------------------- relay core
+# One entry in a ListPlayers response: "0. Name, <netid>". The same expression the
+# count has always used, kept as one object so the count and the roster cannot come to
+# different conclusions about how many lines there are.
+_PLAYER_LINE = re.compile(r"(?m)^\s*\d+\.\s+\S")
+
+
+def parse_players(text):
+    """Who an RCON ListPlayers response says is connected. [{"name", "netid"}].
+
+    The netid was always in this text and was always thrown away one line later; the
+    moderation card keys kick and ban on it, and it is whatever the platform hands
+    over - 17 digits for Steam, 19 for Epic, 32 characters for EOS. Carried as an
+    opaque string, because nothing here has any business caring which.
+
+    **The count this produces has to be the count that was produced before**, on every
+    shape of input, because the apply gate refuses to restart a cluster somebody is
+    standing in and reads it through count_players. That is why the numbered form is
+    found with the original expression rather than a tidier one, and why the
+    comma-fallback is still here: a response this cannot read as numbered rows used to
+    fall back to counting lines with a comma in them, and dropping that would report a
+    busy cluster as empty. Those rows come back with the raw line as the name and no
+    netid - a person we can see and cannot act on, which is the honest shape for them.
+    """
+    if not text:
+        return []
+    if "no players" in text.lower():
+        return []
+
+    out = []
+    for m in _PLAYER_LINE.finditer(text):
+        # The line the match landed on. `^\s*` can eat the newline before it, so the
+        # line is found from the end of the match rather than its start.
+        start = text.rfind("\n", 0, m.end()) + 1
+        end = text.find("\n", m.end())
+        line = text[start:end if end != -1 else len(text)].strip()
+        body = line.split(".", 1)[1].strip() if "." in line else line
+        if "," in body:
+            name, _sep, netid = body.rpartition(",")
+        else:
+            name, netid = body, ""
+        out.append({"name": name.strip() or body, "netid": netid.strip()})
+    if out:
+        return out
+
+    return [{"name": ln.strip(), "netid": ""}
+            for ln in text.splitlines() if ln.strip() and "," in ln]
+
+
 def count_players(text):
-    """Count players in an RCON ListPlayers response.
+    """How many players an RCON ListPlayers response says are connected.
 
     Module level because it is a text parser and two unrelated things need it: the relay,
     which shows a cluster population, and the update flow, which must not restart a
@@ -236,17 +284,11 @@ def count_players(text):
     from outside as `bot.Bot._count_players` named a class that does not exist - so every
     map raised AttributeError, every map was reported as "did not answer", and Apply
     refused every time. Safe, and permanently broken.
+
+    One line now, over the parser, so the number and the names can never disagree about
+    how many people are on a map.
     """
-    if not text:
-        return 0
-    if "no players" in text.lower():
-        return 0
-    # ASA lists one player per line as "0. Name, <netid>"
-    n = len(re.findall(r"(?m)^\s*\d+\.\s+\S", text))
-    if n:
-        return n
-    # fall back: non-empty lines that look like entries
-    return sum(1 for ln in text.splitlines() if ln.strip() and "," in ln)
+    return len(parse_players(text))
 
 
 def _coalesce_slots(items):
@@ -286,6 +328,7 @@ class Relay:
         self.broken = {}                    # label -> next retry time
         self.recent = {}                    # (label, name, what) -> time, for join/leave de-dupe
         self.online_by_map = {}             # label -> player count (refreshed by poll_online)
+        self.online_names = {}              # label -> [{"name", "netid"}], same poll
         self.online_total = 0               # cluster-wide player count, cached
         self.map_up = {}                    # label -> bool, RCON reachable
         self.last_refresh = 0.0             # epoch of last successful refresh
@@ -473,23 +516,21 @@ class Relay:
                 log.warning("wipe schedule pass skipped: %s", e)
             await asyncio.sleep(20)
 
-    @staticmethod
-    def _count_players(text):
-        return count_players(text)
 
     async def refresh_online(self):
         """Ask every map who is connected; update the cached cluster count."""
         async def one(label, hp):
             try:
                 txt = await rcon(hp[0], hp[1], "ListPlayers")
-                return label, self._count_players(txt)
+                return label, parse_players(txt)
             except Exception:
                 return label, None            # unreachable: keep last known below
         results = await asyncio.gather(*(one(l, hp) for l, hp in SERVERS.items()))
-        for label, n in results:
-            self.map_up[label] = n is not None
-            if n is not None:
-                self.online_by_map[label] = n
+        for label, players in results:
+            self.map_up[label] = players is not None
+            if players is not None:
+                self.online_by_map[label] = len(players)
+                self.online_names[label] = players
         self.online_total = sum(self.online_by_map.values())
         self.last_refresh = time.time()
         return self.online_total
@@ -508,11 +549,26 @@ class Relay:
             await asyncio.sleep(ONLINE_POLL_SECONDS)
 
     def online_summary(self):
-        """One-line cluster population summary for in-game chat."""
-        total = self.online_total
+        """One-line cluster population summary for in-game chat.
+
+        Only maps that answered the last poll, the same rule the status page keeps.
+        online_by_map deliberately holds a map's last-known count when it goes quiet,
+        which is fine for a number nobody is deciding anything on - but the web UI
+        stopped serving those and this did not, so the page and the game could give a
+        player two different answers about who is on. One poll, one answer.
+
+        Nothing answering at all is not an empty cluster. It is the question not having
+        been asked, and saying "you have the cluster to yourself" to somebody standing
+        next to another player is a small lie the same shape as the big one.
+        """
+        live = {l: n for l, n in self.online_by_map.items() if self.map_up.get(l)}
+        if not live:
+            return ("I cannot tell who is online right now - no map answered the last "
+                    "check.")
+        total = sum(live.values())
         if total <= 0:
             return "No other survivors online right now - you have the cluster to yourself!"
-        busy = sorted(((n, l) for l, n in self.online_by_map.items() if n > 0), reverse=True)
+        busy = sorted(((n, l) for l, n in live.items() if n > 0), reverse=True)
         where = ", ".join(f"{l} {n}" for n, l in busy)
         s = "s" if total != 1 else ""
         return f"{total} survivor{s} online across the cluster: {where}"
@@ -804,7 +860,7 @@ async def run_discord(relay):
             for label, hp in SERVERS.items():
                 try:
                     r = (await rcon(hp[0], hp[1], "ListPlayers")).strip()
-                    names = [l.split(". ", 1)[-1].split(",")[0] for l in r.splitlines() if ". " in l]
+                    names = [p["name"] for p in parse_players(r)]
                     out.append(f"**{label}**: " + (", ".join(names) if names else "nobody"))
                 except Exception as e:
                     out.append(f"**{label}**: unreachable")
@@ -871,6 +927,26 @@ async def run_discord(relay):
 # cluster to relay between never starts one, and "no relay" has to be distinguishable
 # from "nobody is playing".
 LIVE = None
+
+
+def online_roster():
+    """Who the relay last saw, by map. ({label: [{"name","netid"}]}, age), or None.
+
+    online_snapshot's rule, applied to the names: only maps that answered the last
+    poll. A map that went quiet contributes nothing rather than the people who were
+    standing on it a minute ago - a moderation card built on a stale roster would offer
+    to kick somebody who may already be gone, from a map that is not answering anyway.
+
+    A copy, all the way down, so a page cannot edit the relay's idea of who is online.
+    """
+    relay = LIVE
+    if relay is None or not relay.last_refresh:
+        return None
+    up = getattr(relay, "map_up", None) or {}
+    names = getattr(relay, "online_names", None) or {}
+    return ({label: [dict(row) for row in rows]
+             for label, rows in names.items() if up.get(label)},
+            max(0.0, time.time() - relay.last_refresh))
 
 
 def online_snapshot():

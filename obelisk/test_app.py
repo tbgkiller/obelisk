@@ -2584,6 +2584,117 @@ check("and the no-relay page points at where to set one up",
       "Discord" in _front_off and "Settings" in _front_off,
       _front_off[_front_off.find("not available") - 40:][:300])
 
+# ---- the roster keeps the snapshot's honesty rule
+#
+# A moderation card built on a stale roster would offer to kick somebody who may have
+# left, from a map that is not answering anyway - and would then report the kick as
+# sent. Same rule as the count: only maps that answered this poll.
+class _Rostered:
+    def __init__(self):
+        self.online_by_map = {"The Island": 2, "Ragnarok": 1}
+        self.online_names = {
+            "The Island": [{"name": "Bob", "netid": "7656119800000001"},
+                           {"name": "Cha,rlie", "netid": "000255a1b2"}],
+            "Ragnarok": [{"name": "Dana", "netid": "19000000000000001"}]}
+        self.map_up = {"The Island": True, "Ragnarok": True}
+        self.online_total = 3
+        self.last_refresh = _time_dead.time() - 12
+
+
+_real_live_2a = _bot_s1.LIVE
+try:
+    _bot_s1.LIVE = None
+    check("no relay means no roster at all",
+          _bot_s1.online_roster() is None, _bot_s1.online_roster())
+
+    _ro = _Rostered()
+    _bot_s1.LIVE = _ro
+    _by, _age = _bot_s1.online_roster()
+    check("both maps' people come back", sorted(_by) == ["Ragnarok", "The Island"], _by)
+    check("with their names", [p["name"] for p in _by["The Island"]] == ["Bob", "Cha,rlie"],
+          _by["The Island"])
+    check("and the netid a kick would key on",
+          _by["Ragnarok"][0]["netid"] == "19000000000000001", _by["Ragnarok"])
+    check("the age travels with it, as it does for the count", 10 <= _age <= 25, _age)
+
+    # a page must not be able to edit what the relay thinks is going on
+    _by["The Island"][0]["name"] = "tampered"
+    _by["Ragnarok"] = []
+    check("the roster is a copy, rows and all",
+          _ro.online_names["The Island"][0]["name"] == "Bob"
+          and _ro.online_names["Ragnarok"] != [],
+          _ro.online_names)
+
+    _ro.map_up["Ragnarok"] = False
+    _by2, _ = _bot_s1.online_roster()
+    check("a map that stopped answering contributes nobody",
+          "Ragnarok" not in _by2, _by2)
+    check("rather than the people who were standing on it a minute ago",
+          _ro.online_names.get("Ragnarok"), "the relay forgot them entirely")
+    check("the map that did answer is unaffected", "The Island" in _by2, _by2)
+
+    _ro.map_up["The Island"] = False
+    check("a total blackout is an empty roster, and the caller can see it is empty",
+          _bot_s1.online_roster()[0] == {}, _bot_s1.online_roster())
+
+    # the roster and the count are taken from one poll, so they cannot disagree
+    _ro.map_up = {"The Island": True, "Ragnarok": False}
+    _rby, _ = _bot_s1.online_roster()
+    _sby, _stot, _ = _bot_s1.online_snapshot()
+    check("roster and count cover the same maps", sorted(_rby) == sorted(_sby),
+          [sorted(_rby), sorted(_sby)])
+    check("and agree on how many people are on each",
+          all(len(_rby[m]) == _sby[m] for m in _rby), [_rby, _sby])
+    check("and on the total", sum(len(v) for v in _rby.values()) == _stot,
+          [_rby, _stot])
+
+    # ---- N9: the in-game answer is the same answer
+    _ro.map_up = {"The Island": True, "Ragnarok": False}
+    _said = _bot_s1.Relay.online_summary(_ro)
+    check("the in-game summary counts only maps that answered",
+          "2 survivors" in _said, _said)
+    check("and does not mention the map that went quiet",
+          "Ragnarok" not in _said, _said)
+    check("so the game and the page agree about the population",
+          str(sum(len(v) for v in _rby.values())) in _said, [_said, _rby])
+
+    _ro.map_up = {"The Island": False, "Ragnarok": False}
+    _dark_said = _bot_s1.Relay.online_summary(_ro)
+    check("nothing answering is not told to a player as an empty cluster",
+          "cluster to yourself" not in _dark_said, _dark_said)
+    check("it says the question could not be asked",
+          "cannot tell" in _dark_said and "no map answered" in _dark_said, _dark_said)
+
+    _ro.map_up = {"The Island": True, "Ragnarok": True}
+    _ro.online_by_map = {"The Island": 0, "Ragnarok": 0}
+    check("a measured empty cluster is still told as an empty cluster",
+          "cluster to yourself" in _bot_s1.Relay.online_summary(_ro),
+          _bot_s1.Relay.online_summary(_ro))
+finally:
+    _bot_s1.LIVE = _real_live_2a
+
+# the accessor reads; it never asks
+_botsrc_2a = io.open(os.path.join(os.path.dirname(__file__), "bot.py"),
+                     encoding="utf-8").read()
+_ros_src = _botsrc_2a.split("def online_roster")[1].split(chr(10) + "def ")[0]
+check("the roster accessor does no I/O of its own",
+      "await" not in _ros_src and "rcon" not in _ros_src, _ros_src[:300])
+# There is one other place that asks - the Discord !players command, which is an admin
+# asking for the live answer rather than the cached one. That is fine; what was not is
+# that it had its own splitter, cutting each name at the first comma, so a player called
+# "Cha,rlie" came back as "Cha" in Discord and "Cha,rlie" on every other surface.
+_players_cmd = _botsrc_2a.split('if cmd == "!players"')[1].split("if cmd ==")[0]
+check("the !players command reads through the one parser",
+      "parse_players(r)" in _players_cmd, _players_cmd[:400])
+check("and no longer cuts names at the first comma",
+      'split(",")[0]' not in _players_cmd, _players_cmd[:400])
+check("the background poll is still the only thing that asks on a schedule",
+      _botsrc_2a.count('rcon(hp[0], hp[1], "ListPlayers")') == 2,
+      _botsrc_2a.count('rcon(hp[0], hp[1], "ListPlayers")'))
+check("and every surface now names a comma'd player the same way",
+      [p["name"] for p in _bot_s1.parse_players("0. Cha,rlie, 123")] == ["Cha,rlie"],
+      _bot_s1.parse_players("0. Cha,rlie, 123"))
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

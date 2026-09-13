@@ -1693,6 +1693,7 @@ clusterctl.dockerctl = FakeDocker()
 #
 # So only the RCON call is faked below. Everything from the answer onwards is the code
 # that runs on the host.
+import inspect as _insp
 from . import bot as _bot
 
 check("the parser the update flow reaches for exists at module level",
@@ -1700,8 +1701,12 @@ check("the parser the update flow reaches for exists at module level",
 check("an empty server counts nobody", _bot.count_players("No Players Connected") == 0)
 check("and a listing counts them",
       _bot.count_players("0. Alice, 1234\n1. Bob, 5678") == 2)
-check("the relay still gets the same answer through its own name",
-      _bot.Relay._count_players("0. Alice, 1234") == 1)
+check("the relay counts through the very same parser, not a copy of it",
+      "parse_players(txt)" in _insp.getsource(_bot.Relay.refresh_online),
+      _insp.getsource(_bot.Relay.refresh_online)[:300])
+check("and the count is that parser's length, so they cannot disagree",
+      "len(parse_players(text))" in _insp.getsource(_bot.count_players),
+      _insp.getsource(_bot.count_players)[-200:])
 
 
 class _PlayerStore:
@@ -1838,6 +1843,107 @@ check("nor in what the relay would be pointed at",
       all("staging" not in n for n in _names), _names)
 check("because it is a compose project of its own",
       _stg.project_name(clusterctl.project(_ten)) != clusterctl.project(_ten))
+
+
+# ---- the roster: the names that were always in the answer and always thrown away
+#
+# ListPlayers returns "N. Name, <netid>" and count_players counted the rows. The netid
+# is what a kick or a ban keys on, so the moderation card needs no new data source -
+# only for the parser to stop discarding two thirds of each line.
+#
+# The risk this block exists for is not the card. It is the apply gate: it refuses to
+# restart a cluster somebody is standing in, and it asks through count_players. If the
+# rewritten parser counts even one shape of input differently, a busy cluster gets
+# restarted under the people on it. So the count is checked against a verbatim copy of
+# the implementation it replaced, on every shape either of them can meet.
+import re as _re_2a                                              # noqa: E402
+
+
+def _count_as_it_was(text):
+    """The pre-slice-2a count_players, character for character, as the oracle."""
+    if not text:
+        return 0
+    if "no players" in text.lower():
+        return 0
+    n = len(_re_2a.findall(r"(?m)^\s*\d+\.\s+\S", text))
+    if n:
+        return n
+    return sum(1 for ln in text.splitlines() if ln.strip() and "," in ln)
+
+
+_SHAPES = {
+    "nothing at all": "",
+    "None": None,
+    "the empty-server sentence": "No Players Connected",
+    "that sentence in another case": "  no players connected  ",
+    "one numbered row": "0. Bob, 76561198000000001",
+    "several numbered rows":
+        "0. Bob, 7656119800000001\n1. Alice, 000255a1b2c3d4e5f6\n2. Dana, 19000000000001",
+    "a name with a comma in it": "0. Cha,rlie, 19000000000000001",
+    "blank lines around the rows": "\n\n0. Bob, 123\n\n1. Al, 456\n",
+    "indented rows": "  0. Bob, 123\n  1. Al, 456",
+    "windows line endings": "0. Bob, 123\r\n1. Al, 456\r\n",
+    "a numbered row with no netid": "0. LoneWolf",
+    "a name with a full stop in it": "0. Mr. X, 999",
+    "the comma fallback": "Bob, 123\nAlice, 456",
+    "the comma fallback with noise": "header line\nBob, 123\n\nAlice, 456\n",
+    "lines that are neither": "something\nelse\n",
+}
+_drift = [(name, _count_as_it_was(t), _bot.count_players(t))
+          for name, t in _SHAPES.items()
+          if _count_as_it_was(t) != _bot.count_players(t)]
+check("the count is unchanged on every shape of ListPlayers output", _drift == [],
+      _drift)
+check("and there were shapes to check", len(_SHAPES) >= 12, len(_SHAPES))
+
+# the fallback is the one that would have cost a cluster
+check("the comma fallback still counts, rather than reporting an empty map",
+      _bot.count_players("Bob, 123\nAlice, 456") == 2,
+      _bot.count_players("Bob, 123\nAlice, 456"))
+_fb = _bot.parse_players("Bob, 123\nAlice, 456")
+check("its rows come back as people, not as nothing", len(_fb) == 2, _fb)
+check("with no netid, because none was readable",
+      all(r["netid"] == "" for r in _fb), _fb)
+check("and the raw line kept as the name, so they are visible if not actionable",
+      _fb[0]["name"] == "Bob, 123", _fb)
+
+# the numbered form, which is what a real map sends
+_rows = _bot.parse_players("0. Bob, 7656119800000001\n1. Cha,rlie, 000255a1b2")
+check("a numbered row yields a name", _rows[0]["name"] == "Bob", _rows)
+check("and the netid beside it", _rows[0]["netid"] == "7656119800000001", _rows)
+check("a name containing a comma survives, because the id is taken from the end",
+      _rows[1]["name"] == "Cha,rlie", _rows)
+check("and its netid is still the netid", _rows[1]["netid"] == "000255a1b2", _rows)
+check("a row with no netid is a person with no id, not a person named by their id",
+      _bot.parse_players("0. LoneWolf") == [{"name": "LoneWolf", "netid": ""}],
+      _bot.parse_players("0. LoneWolf"))
+check("the netid is carried as written, whatever form it is in",
+      [r["netid"] for r in _bot.parse_players(
+          "0. S, 76561198000000001\n1. E, 19000000000000001\n2. O, 0002a1b2c3d4e5f6")]
+      == ["76561198000000001", "19000000000000001", "0002a1b2c3d4e5f6"],
+      _bot.parse_players("0. S, 76561198000000001"))
+check("an empty server yields nobody", _bot.parse_players("No Players Connected") == [])
+
+# ---- players_online, which the gates go through, is untouched
+_pl_src = _insp.getsource(clusterctl.players_online)
+check("players_online still asks with ListPlayers",
+      '"ListPlayers"' in _pl_src, _pl_src[:400])
+check("and still counts through count_players",
+      "bot.count_players(" in _pl_src, _pl_src[-400:])
+check("it does not know the roster exists",
+      "parse_players" not in _pl_src and "roster" not in _pl_src, _pl_src[:400])
+check("and still returns a map that did not answer separately from an empty one",
+      "silent.append" in _pl_src, _pl_src[-500:])
+
+_appsrc_2a = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
+                     encoding="utf-8").read()
+for _what, _frag in sorted({
+        "the apply gate": "players=lambda: clusterctl.players_online(store), force=force",
+        "the stop guard": "clusterctl.players_online, store)",
+        "the archive restore guard": "players=lambda: clusterctl.players_online(store), save=_save_one)",
+        "the save-point guard": "players=lambda: clusterctl.players_online(store),",
+}.items()):
+    check("%s still asks the same question" % _what, _frag in _appsrc_2a, _frag)
 
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)
