@@ -1077,7 +1077,11 @@ def build_app(store, docker=None):
         # read what this does can type it, and nobody reaches it by clicking.
         confirmed = typed.upper() == cloudctl.DISCONNECT_WORD
         ok, msg = cloudctl.disconnect(store, confirmed=confirmed)
-        return _cloud_chrome(msg if ok else "", "" if ok else msg)
+        # Both outcomes are severe, so both are rendered severe. Success used to go to
+        # `message`, which is the grey note "Connected to Google Drive" uses - the
+        # single most consequential and least reversible screen in the product, styled
+        # as routine chatter. Refusing is a warning; succeeding is worse.
+        return _cloud_chrome("", msg)
 
     async def cloud_push(request):
         if not authed(request):

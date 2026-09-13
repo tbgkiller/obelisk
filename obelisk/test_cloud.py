@@ -277,5 +277,30 @@ check("and that it is not recoverable", "not recoverable" in msg, msg)
 check("and it does not claim the backups are fine",
       "what is already there stays" not in msg, msg)
 
+# The message used to stop at "still on the provider", which left the worse half unsaid.
+# Once the vault is gone `configured()` is false, so listing() and prune() decline and
+# _rclone has no config to run with - Obelisk cannot see, tidy or delete that folder
+# again. The files stay, keep being billed for, and their names are encrypted, so there
+# is nothing to pick through. Only the operator can clear it, and only if told.
+check("it says Obelisk can no longer manage what is left",
+      "no longer list, prune or delete" in msg, msg)
+check("and names the folder to go and delete",
+      '"obelisk-backups"' in msg, msg)
+check("and says the file names are encrypted, so the whole folder has to go",
+      "encrypted" in msg and "whole folder" in msg, msg)
+check("and does not leave the operator thinking it is handled",
+      "yourself" in msg, msg)
+
+# The folder is read from the credentials rather than assumed, so an operator who chose
+# their own path is told to delete *their* folder and not a default that does not exist.
+st_f, _root_f = fresh()
+install(FakeRclone())
+ok_f, _m = cloudlib.connect(st_f, provider="drive", password="synthetic-phrase",
+                            token='{"access_token":"synthetic"}', path="ark-offsite")
+check("a cloud connected to a custom folder", ok_f, _m)
+_ok_d, msg_d = cloudlib.disconnect(st_f, confirmed=True)
+check("the message names the folder that was actually configured",
+      '"ark-offsite"' in msg_d and '"obelisk-backups"' not in msg_d, msg_d)
+
 print("\nFAILURES: %s" % fails if fails else "\nall cloud tests passed")
 sys.exit(1 if fails else 0)

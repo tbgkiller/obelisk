@@ -303,6 +303,17 @@ async def run():
     check("and it is honest that the off-site copies can no longer be read",
           "no longer be decrypted" in body, body[:600])
 
+    # Severity has to run the right way round. The success banner used to be
+    # `class=note` - the same grey "Connected to Google Drive" uses - on the one screen
+    # in the product that cannot be undone.
+    _banner = body[body.index("no longer be decrypted") - 400:
+                   body.index("no longer be decrypted")]
+    check("the result is rendered severe, not as a grey note",
+          "class=problem" in _banner and "class=note" not in _banner, _banner[-200:])
+    check("and it tells the operator the folder is now theirs to clear",
+          "no longer list, prune or delete" in body and "obelisk-backups" in body,
+          body[:900])
+
     # ---- a save must not be blocked by fields the user cannot change
     # The live failure: the settings form rendered status_port and appdata read-only but
     # still submitted them, and the save rejected the whole request because those keys

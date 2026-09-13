@@ -232,6 +232,15 @@ def disconnect(store, confirmed=False):
         return False, ("Disconnecting deletes the passphrase that decrypts your "
                        "off-site backups, and nothing can read them back without it. "
                        "That was not confirmed, so nothing was changed.")
+    # Which folder to name in the message, read while the credentials still exist.
+    # Best-effort on purpose: naming the folder is a courtesy and must never be what
+    # stops a disconnect the operator has already confirmed.
+    folder = "obelisk-backups"
+    try:
+        folder = str((vault.load(store) or {}).get("path") or folder).strip("/") or folder
+    except Exception:                               # noqa: BLE001 - for the wording only
+        pass
+
     vault.clear(store)
     try:
         os.remove(conf_path(store))
@@ -241,11 +250,22 @@ def disconnect(store, confirmed=False):
     # there stays", which was true of the bytes and false about everything the operator
     # cared about - it read as reassurance at the exact moment the archives became
     # unreadable.
+    #
+    # And it stopped there, which left the worse half unsaid. Once the vault is gone
+    # `configured()` is false, so listing() and prune() both decline and _rclone has no
+    # config to run with: Obelisk cannot see, tidy or delete that folder ever again. The
+    # files stay, and keep being billed for, and their names are encrypted by design -
+    # so there is nothing to pick through. Somebody has to remove the folder by hand at
+    # the provider, and they can only know that if they are told.
     return True, ("Cloud disconnected and the passphrase deleted. The archives already "
                   "off-site are still on the provider but can no longer be decrypted "
                   "by anyone, including Obelisk - unless you kept a copy of the "
                   "passphrase elsewhere, they are not recoverable. Nothing further "
-                  "will be sent.")
+                  "will be sent. Obelisk can no longer list, prune or delete them "
+                  "either, so they will sit there and keep costing you until you "
+                  "remove them yourself: delete the \"%s\" folder at the provider. The "
+                  "file names inside it are encrypted, so there is no way to tell one "
+                  "archive from another - remove the whole folder." % folder)
 
 
 def configured(store):
