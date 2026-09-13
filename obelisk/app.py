@@ -1841,9 +1841,19 @@ def _wire_relay(store, bot):
     # stored in one place and read from another, and nothing says so.
     for key, attr, cast in _RELAY_SETTINGS:
         try:
-            setattr(bot, attr, cast(store.get(key)))
+            value = cast(store.get(key))
         except (TypeError, ValueError):
             log.warning("ignoring unusable value for %s", key)
+            continue
+        # None is a cast saying "there was something here and I could not read it".
+        # Leaving the relay on what it already had beats replacing a schedule somebody
+        # meant to set with silence - and beats handing the scheduler a value that
+        # will raise on it once every twenty seconds.
+        if value is None:
+            log.warning("ignoring unusable value for %s - keeping the last good one",
+                        key)
+            continue
+        setattr(bot, attr, value)
 
     # The relay still carries the standalone status page from when it was its own
     # container, and it binds the same port the web UI is already serving on - so the
@@ -1867,8 +1877,29 @@ def _text(v):
 
 
 def _times(v):
-    """"03:15, 21:45" as the relay's list of clock strings."""
-    return [x.strip() for x in str(v or "").split(",") if x.strip()]
+    """"03:15, 21:45" as the relay's list of clock strings, junk dropped.
+
+    Entries the scheduler cannot read are left out rather than passed through. They
+    used to be passed through: the settings page rejects "ab:cd", but settings.json is
+    a file a person edits, and a value that arrives that way is read back unvalidated.
+    It then reached a scheduling loop that called int() on it every twenty seconds.
+
+    A value that is blank is a cluster that does not wipe, and returns an empty list.
+    A value that is not blank but has nothing usable in it returns None, which means
+    "I could not read this" - see _wire_relay. Silently turning a mistyped schedule
+    into no schedule at all is the failure that looks most like success.
+    """
+    raw = [x.strip() for x in str(v or "").split(",") if x.strip()]
+    good = [t for t in raw if _clock_minutes(t) is not None]
+    if raw and not good:
+        return None
+    return good
+
+
+def _clock_minutes(text):
+    """The relay's own clock parser, so the two cannot disagree about what is valid."""
+    from . import bot as _bot
+    return _bot._hhmm_to_min(text)
 
 
 def _minutes(v):
@@ -1876,8 +1907,19 @@ def _minutes(v):
 
     Sorted here as well as in the validator, because the validator only sees values
     that came through the settings page and this also reads a store edited by hand.
+    Junk is dropped for the same reason, and a value that is entirely junk is None
+    rather than an empty list: no warnings at all is a decision, not a typo.
     """
-    return sorted({int(x) for x in str(v or "").split(",") if x.strip()}, reverse=True)
+    raw = [x.strip() for x in str(v or "").split(",") if x.strip()]
+    good = set()
+    for x in raw:
+        try:
+            good.add(int(x))
+        except (TypeError, ValueError):
+            continue
+    if raw and not good:
+        return None
+    return sorted(good, reverse=True)
 
 
 # store key -> the relay's own global, and how to read it. Spelled out rather than

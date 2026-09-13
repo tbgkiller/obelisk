@@ -773,12 +773,22 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
     # Two or three: verify_every_map hands back the reasons as well, and everything
     # older hands back the pass/fail map on its own. Tolerated rather than required so
     # a caller that only knows whether a map passed still works.
-    if not isinstance(gates, tuple):
-        ok_gates, per_map, why_map = True, {}, {}
-    elif len(gates) >= 3:
-        ok_gates, per_map, why_map = gates[0], gates[1], gates[2] or {}
+    #
+    # Anything else refuses. It used to read "not a tuple, so assume it passed", which
+    # is the one answer this step is not allowed to give: the build has just been
+    # swapped and the cluster has just been started, and "I could not read the verdict"
+    # is not "every map is fine". It is the same rule the world gate keeps a few lines
+    # up - an unknown is never a pass - and it was inverted here in the same file.
+    if (isinstance(gates, tuple) and len(gates) >= 2
+            and isinstance(gates[1], dict)):
+        ok_gates = bool(gates[0])
+        per_map = gates[1]
+        why_map = (gates[2] or {}) if len(gates) >= 3 else {}
     else:
-        ok_gates, per_map, why_map = gates[0], gates[1], {}
+        ok_gates = False
+        per_map = {"the verify step": False}
+        why_map = {"the verify step":
+                   ["could not read the verify result: %.200r" % (gates,)]}
 
     if swap_files:
         remember(store, primed=None, applied={"build": build, "when": int(now()),

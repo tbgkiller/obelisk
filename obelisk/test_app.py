@@ -1098,8 +1098,119 @@ from . import bot as _botmod                                     # noqa: E402
 _ml_src = _insp_dead.getsource(_botmod.Relay.maintenance_loop)
 check("the scheduler re-reads the schedule inside its loop",
       _ml_src.index("while True:") < _ml_src.index("for x in WIPE_TIMES"), _ml_src[:300])
+_ml_stmts = [l.strip() for l in _ml_src.splitlines() if not l.strip().startswith("#")]
 check("and an empty schedule no longer ends the loop for good",
-      "if not targets:" not in _ml_src and "return" not in _ml_src, _ml_src[:600])
+      "if not targets:" not in _ml_src
+      and not any(l == "return" or l.startswith("return ") for l in _ml_stmts),
+      [l for l in _ml_stmts if l.startswith("return")])
+
+
+
+# ---- a hand-edited clock time must not be able to kill the manager
+#
+# The settings page rejects "ab:cd". settings.json is a file a person edits, and a
+# value that arrives that way is read back unvalidated - so it reached a loop that
+# called int() on it every twenty seconds. bot.main() gathers its tasks without
+# return_exceptions and main() gathers those, so one mistyped time did not stop the
+# wipes: it stopped the web UI, the backup scheduler, the world sweep and the relay.
+import time as _time_dead                                        # noqa: E402
+_junk = ["ab:cd", "25:99x", "3:15", "0315", "", None, ":", "::", "1:2:3", " ", "12:",
+         ":30", "-1:00", "3.5:00"]
+_raised = []
+for _bad in _junk:
+    for _fn, _name in ((_botmod._hhmm_to_min, "_hhmm_to_min"),
+                       (appmod._times, "_times")):
+        try:
+            _fn(_bad)
+        except Exception as e:                       # noqa: BLE001 - that is the point
+            _raised.append("%s(%r): %s" % (_name, _bad, e))
+check("no clock value a person can type raises out of the parsers",
+      _raised == [], _raised)
+
+check("a readable time is still read", _botmod._hhmm_to_min("03:15") == 195)
+check("and a lenient one the game accepts too", _botmod._hhmm_to_min("3:15") == 195)
+check("something with no colon is not a time", _botmod._hhmm_to_min("0315") is None)
+check("and neither is something with a colon and no numbers",
+      _botmod._hhmm_to_min("ab:cd") is None and _botmod._hhmm_to_min("25:99x") is None)
+check("and a number that is not an hour of the day is not a time either",
+      _botmod._hhmm_to_min("-1:00") is None and _botmod._hhmm_to_min("30:00") is None,
+      (_botmod._hhmm_to_min("-1:00"), _botmod._hhmm_to_min("30:00")))
+check("while both ends of a real day still are",
+      _botmod._hhmm_to_min("00:00") == 0 and _botmod._hhmm_to_min("23:59") == 1439)
+
+# the junk goes, the real times stay. Dropping the whole line because one entry was
+# mistyped would turn a typo into a silently cancelled schedule.
+check("a mixed schedule keeps the times that parse and drops the rest",
+      appmod._times("03:15, ab:cd, 21:45") == ["03:15", "21:45"],
+      appmod._times("03:15, ab:cd, 21:45"))
+check("a blank schedule is a cluster that does not wipe, not an error",
+      appmod._times("") == [] and appmod._times(None) == [],
+      (appmod._times(""), appmod._times(None)))
+check("a schedule with nothing usable in it is unreadable, not empty",
+      appmod._times("ab:cd") is None and appmod._times("0315") is None,
+      (appmod._times("ab:cd"), appmod._times("0315")))
+
+# ...and unreadable means the relay keeps what it had, rather than losing the schedule
+# it was running or being handed something that raises on it twice a minute.
+_wst.patch({"wipe_times": "03:15,21:45", "wipe_warn_minutes": "10,5,1"})
+clusterctl_t.running_instances = lambda store: [("The Island", "asa-wipetest-island", 27020)]
+_wb4 = _WipeBot()
+appmod._wire_relay(_wst, _wb4)
+_wst.data["cluster"]["wipe_times"] = "ab:cd"          # as a hand-edited file would be
+_wst.data["cluster"]["wipe_warn_minutes"] = "soon"
+appmod._wire_relay(_wst, _wb4)
+clusterctl_t.running_instances = _saved_running2
+check("a wholly unreadable schedule keeps the last good one",
+      _wb4.WIPE_TIMES == ["03:15", "21:45"], _wb4.WIPE_TIMES)
+check("and so do the warnings", _wb4.WIPE_WARN_MINUTES == [10, 5, 1],
+      _wb4.WIPE_WARN_MINUTES)
+check("a partly unreadable warning list keeps the numbers in it",
+      appmod._minutes("10, soon, 1") == [10, 1], appmod._minutes("10, soon, 1"))
+
+# the structural guarantee, independent of what any parser does next: a pass that
+# raises is a pass that is skipped, not a manager that exits.
+_ml_body = [l.strip() for l in _ml_src.splitlines()]
+check("every pass of the wipe loop is guarded",
+      "try:" in _ml_body and any(l.startswith("except Exception") for l in _ml_body),
+      _ml_body[:12])
+
+
+class _Boom:
+    """A relay whose announce blows up, standing in for the next unknown fault."""
+
+    def __init__(self):
+        self.passes = 0
+
+    async def announce(self, _text):
+        raise RuntimeError("discord went away")
+
+    async def wipe_wild(self):
+        return None
+
+
+_boom = _Boom()
+_real_wt, _real_ww = _botmod.WIPE_TIMES, _botmod.WIPE_WARN_MINUTES
+_now = _time_dead.localtime()
+_botmod.WIPE_TIMES = ["%02d:%02d" % (_now.tm_hour, _now.tm_min)]
+_botmod.WIPE_WARN_MINUTES = [10, 5, 1]
+_t3 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _run_boom():
+        task = _aio2.create_task(_botmod.Relay.maintenance_loop(_boom))
+        await _aio2.sleep(0.05)
+        alive = not task.done()
+        task.cancel()
+        try:
+            await task
+        except _aio2.CancelledError:
+            pass
+        return alive
+    _alive = _t3.run_until_complete(_run_boom())
+finally:
+    _t3.close()
+    _botmod.WIPE_TIMES, _botmod.WIPE_WARN_MINUTES = _real_wt, _real_ww
+check("a pass that raises does not end the loop, and so cannot end the manager",
+      _alive, _alive)
 
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")

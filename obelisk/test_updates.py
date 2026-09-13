@@ -1258,6 +1258,45 @@ check("and says so rather than inventing a reason",
       _fail2[0].get("detail") if _fail2 else None)
 
 
+# ...and a verdict this step cannot read is a refusal, not a pass. It used to read
+# "not a tuple, so assume it passed" - the one answer this step is not allowed to
+# give, with the build already swapped and the cluster already started. The world gate
+# a few lines up keeps the opposite rule, in the same file: an unknown is never a pass.
+for _shape, _label in ((False, "a bare False"),
+                       (None, "a bare None"),
+                       ([], "an empty list"),
+                       ((True,), "a one-part tuple"),
+                       (True, "a bare True"),
+                       ("ok", "a string"),
+                       ((True, ["island"]), "a tuple whose second part is not a map")):
+    drain()
+    s = FakeStore()
+    updates.remember(s, primed=ready)
+    c = Cluster()
+    _, rename = moved_nothing()
+    ok, msg, _d = updates.apply_update(
+        s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+        verify=(lambda shape=_shape: shape), players=lambda: (0, {}, []),
+        rename=rename, exists=tree_exists(), now=lambda: 1000)
+    _ev = [i for i in drain() if i["event"] == "ark.update_failed"]
+    check("%s is refused, not read as every map passing" % _label, not ok, (_label, msg))
+    check("and the operator is told the verdict could not be read" ,
+          _ev and "could not read the verify result" in (_ev[0].get("detail") or ""),
+          _ev[0].get("detail") if _ev else None)
+
+# the shapes that ARE understood still work, including no verify at all.
+drain()
+s = FakeStore()
+updates.remember(s, primed=ready)
+c = Cluster()
+_, rename = moved_nothing()
+ok, msg, _d = updates.apply_update(
+    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    verify=None, players=lambda: (0, {}, []), rename=rename,
+    exists=tree_exists(), now=lambda: 1000)
+check("an apply with no verify step at all still applies", ok, msg)
+drain()
+
 # ---- prime never touches the cluster
 drain()
 s = FakeStore()

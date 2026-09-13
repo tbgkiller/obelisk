@@ -63,9 +63,25 @@ WELCOME_MSG = os.environ.get(
 
 # ---- scheduled wild-dino wipes (single source: .env; warns players in-game) ----
 def _hhmm_to_min(x):
-    x=x.strip()
-    if ":" not in x: return None
-    h,m=x.split(":"); return int(h)*60+int(m)
+    """"03:15" as minutes past midnight, or None for anything this cannot read.
+
+    None rather than an exception, because the caller is a scheduling loop and the
+    input is a settings file a person can edit by hand. int("ab") raised out of
+    maintenance_loop on every pass, and the manager gathers its tasks without
+    return_exceptions - so one mistyped clock time took down the web UI, the backup
+    scheduler and the world sweep along with it.
+    """
+    x = str(x or "").strip()
+    if ":" not in x:
+        return None
+    h, m = x.split(":", 1)
+    try:
+        total = int(h) * 60 + int(m)
+    except (TypeError, ValueError):
+        return None
+    # A number is not yet a time. "-1:00" and "30:00" both parse, and both would
+    # schedule a wipe at an hour nobody picked once the loop takes them modulo a day.
+    return total if 0 <= total < 1440 else None
 WIPE_TIMES = [x.strip() for x in os.environ.get("WIPE_TIMES","").split(",") if x.strip()]
 WIPE_WARN_MINUTES = sorted({int(x) for x in os.environ.get("WIPE_WARN_MINUTES","10,5,1").split(",") if x.strip()}, reverse=True)
 # How often to refresh the cluster-wide online count (seconds). 0 disables the poller.
@@ -420,32 +436,41 @@ class Relay:
         # booted got nothing until they restarted it, which is not what "no restart
         # needed" on the settings page says. An empty schedule is a pass that does
         # nothing, not a loop that ends and cannot come back.
+        # And the pass is guarded, the way every other long-lived loop in the
+        # product is guarded. The parser above is the crash that was found; this is
+        # the one that does not require knowing what the next one will be. bot.main()
+        # gathers its tasks without return_exceptions and the manager gathers those,
+        # so an exception escaping here does not stop the wipes - it stops the web UI,
+        # the backup scheduler, the world sweep and the relay, all at once.
         fired, said = set(), None
         while True:
-            targets = [t for t in (_hhmm_to_min(x) for x in WIPE_TIMES) if t is not None]
-            if tuple(WIPE_TIMES) != said:
-                said = tuple(WIPE_TIMES)
-                log.info("wild-dino wipes at %s (warn %s min before)",
-                         ", ".join(WIPE_TIMES) or "never - no times set",
-                         WIPE_WARN_MINUTES)
-            now = time.localtime()
-            day = now.tm_yday
-            cur = now.tm_hour * 60 + now.tm_min
-            for T in targets:
-                for w in WIPE_WARN_MINUTES:
-                    if cur == (T - w) % 1440:
-                        k = (day, "warn", T, w)
+            try:
+                targets = [t for t in (_hhmm_to_min(x) for x in WIPE_TIMES) if t is not None]
+                if tuple(WIPE_TIMES) != said:
+                    said = tuple(WIPE_TIMES)
+                    log.info("wild-dino wipes at %s (warn %s min before)",
+                             ", ".join(WIPE_TIMES) or "never - no times set",
+                             WIPE_WARN_MINUTES)
+                now = time.localtime()
+                day = now.tm_yday
+                cur = now.tm_hour * 60 + now.tm_min
+                for T in targets:
+                    for w in WIPE_WARN_MINUTES:
+                        if cur == (T - w) % 1440:
+                            k = (day, "warn", T, w)
+                            if k not in fired:
+                                fired.add(k)
+                                await self.announce(f"\u26a0\ufe0f Wild dinos wipe in {w} minute{'s' if w != 1 else ''} - fresh spawns incoming!")
+                    if cur == T:
+                        k = (day, "wipe", T)
                         if k not in fired:
                             fired.add(k)
-                            await self.announce(f"\u26a0\ufe0f Wild dinos wipe in {w} minute{'s' if w != 1 else ''} - fresh spawns incoming!")
-                if cur == T:
-                    k = (day, "wipe", T)
-                    if k not in fired:
-                        fired.add(k)
-                        await self.announce("\U0001f996 Wiping wild dinos now - fresh spawns incoming!")
-                        await self.wipe_wild()
-            if len(fired) > 500:
-                fired = {x for x in fired if x[0] == day}
+                            await self.announce("\U0001f996 Wiping wild dinos now - fresh spawns incoming!")
+                            await self.wipe_wild()
+                if len(fired) > 500:
+                    fired = {x for x in fired if x[0] == day}
+            except Exception as e:                    # noqa: BLE001 - never fatal
+                log.warning("wipe schedule pass skipped: %s", e)
             await asyncio.sleep(20)
 
     @staticmethod
