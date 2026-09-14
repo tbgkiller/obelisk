@@ -40,6 +40,72 @@ def weight(key):
     return float(BY_KEY[key].get("weight", 1.0))
 
 
+# ---- the list a cluster runs, as a list
+#
+# Order is not presentation here. The first entry is the update master - it downloads
+# the thirty-odd gigabytes of server files once while the others wait - and ports are
+# handed out walking the list, so moving an entry moves the port people type. That is
+# why the editor has arrows rather than a set of checkboxes whose order is whatever the
+# catalogue happens to be in.
+#
+# Written as plain string operations for the same reason the mod list's are: they are
+# the part worth testing without a browser, and the page and the route then cannot
+# disagree about what "move it up" means.
+def listed(value):
+    """The keys in this cluster's map string, in order."""
+    if isinstance(value, (list, tuple)):
+        return [str(k).strip() for k in value if str(k).strip()]
+    return [k.strip() for k in str(value or "").split(",") if k.strip()]
+
+
+def joined(keys):
+    return ",".join(keys)
+
+
+def add(value, key):
+    """Append a map. Refuses one that is already listed.
+
+    Appends rather than inserts because appending is the only edit that leaves every
+    existing map's port where it was - which is what the help has always told people to
+    do, and now the editor only offers.
+    """
+    keys = listed(value)
+    key = str(key).strip()
+    if key not in BY_KEY:
+        raise ValueError("%s isn't a map Obelisk knows" % key)
+    if key in keys:
+        raise ValueError("%s is already in this cluster" % BY_KEY[key]["name"])
+    return joined(keys + [key])
+
+
+def remove(value, key):
+    """Drop a map from the list. Its per-map settings are not touched.
+
+    Removing a map from the list does not delete what that map was configured with:
+    somebody taking a map out for a month and putting it back should find it as they
+    left it, and a list edit is not the place to throw settings away.
+    """
+    keys = listed(value)
+    key = str(key).strip()
+    if key not in keys:
+        raise ValueError("%s isn't in this cluster" % key)
+    return joined([k for k in keys if k != key])
+
+
+def move(value, key, delta):
+    """Move one map up (-1) or down (+1). Off either end is a no-op, not an error."""
+    keys = listed(value)
+    key = str(key).strip()
+    if key not in keys:
+        raise ValueError("%s isn't in this cluster" % key)
+    i = keys.index(key)
+    j = i + int(delta)
+    if j < 0 or j >= len(keys):
+        return joined(keys)
+    keys[i], keys[j] = keys[j], keys[i]
+    return joined(keys)
+
+
 def resolve(keys):
     """Map keys -> catalogue entries, in the order given. Unknown keys raise."""
     out = []
