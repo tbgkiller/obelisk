@@ -255,6 +255,9 @@ ICONS = {
     "cap_allow_partial": "⚠",
     "cap_revoke_partial": "⚠",
     "refused": "⚠",
+    # One map the sweep could not look at. Amber rather than red: nothing is known to
+    # be wrong with that world - it is the looking that failed.
+    "unchecked": "⚠",
     "stop_refused": "⚠",
     # In progress
     "start": "▶", "prime_start": "▶", "apply_start": "▶",

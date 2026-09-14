@@ -6185,6 +6185,81 @@ check("the refusals are one constant each, shared with the page that disables th
       and _s1src.count("ui.REMOVE_RUNNING") == 1,
       [_uisrc_merge.count("REORDER_RUNNING = "), _s1src.count("ui.REORDER_RUNNING")])
 
+# ---- one map the sweep cannot look at costs one map
+#
+# The sweep used to hold one try around the whole per-map loop, so the first map that
+# raised ended the cycle for every map after it - logged at INFO and announced not at
+# all. Phase 2 made that reachable from a text file: a catalogue entry that fails its
+# own rules is dropped on read, its key becomes unknown, and the path builder raises.
+# One bad line in settings.json and ten healthy maps went unchecked, silently, which is
+# the failure mode a watcher exists to not have.
+_swdir45 = tempfile.mkdtemp()
+_swwas45 = os.environ.get("OBELISK_ARK")
+os.environ["OBELISK_ARK"] = _swdir45
+_sw45 = Store(os.path.join(_swdir45, "settings.json")).load()
+_sw45.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
+_sw45.patch({"admin_password": "pw", "cluster_id": "sweeporder"})
+# Two real maps with real save points, and between them a map whose stored entry the
+# catalogue refuses - so its key resolves to nothing at all.
+_sw45.data["map_catalogue"] = [{"key": "ghostmap", "name": "Ghost",
+                                "map_id": "../../escape"}]
+_sw45.data["cluster"]["maps"] = "island,ghostmap,ragnarok"
+_sw45.save()
+for _mid45 in ("TheIsland_WP", "Ragnarok_WP"):
+    _f45 = os.path.join(_swdir45, "shared", "SavedArks", _mid45)
+    os.makedirs(_f45, exist_ok=True)
+    io.open(os.path.join(_f45, "%s_13.09.2026_01.00.00.ark" % _mid45),
+            "w", encoding="utf-8").write("not a real world")
+
+
+async def _sweep_order():
+    _appmod.restorectl.verify_world = lambda path, deep=True: (
+        False, "SQLite reports it damaged: x")
+    try:
+        task = _aio2.create_task(_appmod.world_watch(_sw45, interval=0.01,
+                                                     sleep_first=False))
+        await _aio2.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except _aio2.CancelledError:
+            pass
+    finally:
+        _appmod.restorectl.verify_world = _real_verify
+
+
+_drain2()
+_t45 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _t45.run_until_complete(_sweep_order())
+finally:
+    _t45.close()
+_ev45 = _drain2()
+_dmg45 = [i for i in _ev45 if i["event"] == "world.damaged"]
+_said45 = [i["text"].split("'")[0].strip() for i in _dmg45]
+
+check("a key the catalogue cannot explain does not stop the sweep",
+      len(_dmg45) == 2, [i["event"] + ": " + i["text"][:40] for i in _ev45])
+check("the map before it is still checked", any("island" in t for t in _said45),
+      _said45)
+# The one that matters: the unresolvable key sits between the two, so a whole-loop
+# try would report the first map and nothing after it.
+check("and so is the map after it", any("ragnarok" in t for t in _said45), _said45)
+_unchk45 = [i for i in _ev45 if i["event"] == "world.unchecked"]
+check("the map it could not look at is named once",
+      len(_unchk45) == 1 and "ghostmap" in _unchk45[0]["text"], _unchk45)
+check("in amber - nothing is known to be wrong with that world, the looking failed",
+      _unchk45 and _unchk45[0]["level"] == "warning", _unchk45[:1])
+check("saying the other maps were still checked",
+      _unchk45 and "Every other map was still checked" in _unchk45[0]["text"],
+      _unchk45[:1])
+check("and pointing at the catalogue, which is where the answer is",
+      _unchk45 and "catalogue" in _unchk45[0]["text"], _unchk45[:1])
+if _swwas45 is None:
+    os.environ.pop("OBELISK_ARK", None)
+else:
+    os.environ["OBELISK_ARK"] = _swwas45
+
 # ---- the sweep reads the disk for a map this cluster added, rather than stopping
 #
 # This is the one consumer where being wrong is silent. list_points built its folder
@@ -6422,6 +6497,27 @@ check("one of Obelisk's own maps cannot be forgotten either",
       _builtin43[0] == 302 and any("one of Obelisk" in a
                                    for a in _amber43(_builtin43)),
       _amber43(_builtin43))
+
+# ---- and the button for it is attached to something
+#
+# The route above is posted to directly, which is exactly what could not see this: the
+# forget buttons rendered between the list form's close and the catalogue form's open,
+# so they belonged to no form and clicking one sent nothing. Refusing correctly and
+# being unreachable look identical from a test that skips the page.
+_page44 = _maps43(_made44)
+_forget44 = _page44.find("name=forget")
+_openf44 = _page44.rfind("<form", 0, _forget44)
+_closef44 = _page44.find("</form>", _openf44)
+check("the forget button sits inside a form, not between two of them",
+      _openf44 >= 0 and (_closef44 == -1 or _closef44 > _forget44),
+      _window(_page44, "name=forget", 200))
+check("and it is the form that posts to the catalogue route",
+      'action="/admin/maps/catalogue"' in _page44[_openf44:_forget44],
+      _page44[_openf44:_openf44 + 120])
+check("so the fields it submits alongside are the add form's, which the route reads "
+      "after it has answered forget",
+      _in_order(_s1src, 'if form.get("forget")', 'typed = {k: str(form.get(k)'),
+      _window(_s1src, 'if form.get("forget")', 300))
 
 check("a map this cluster is not running can be forgotten", _gone44[0] == 302,
       _gone44[0])

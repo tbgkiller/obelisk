@@ -2770,31 +2770,55 @@ async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
             await asyncio.sleep(interval)
         sleep_first = True
         try:
-            for key in clusterctl._map_keys(store):
+            keys = clusterctl._map_keys(store)
+        except Exception as e:                    # noqa: BLE001 - never fatal
+            log.info("world sweep skipped: %s", e)
+            keys = []
+        for key in keys:
+            # One map at a time. This used to be one try around the whole loop, so the
+            # first map that raised ended the sweep for every map after it - and the
+            # only trace was an INFO line. A watcher that quietly checks nothing is
+            # worse than no watcher, because the channel is silent either way and one
+            # of those silences is supposed to mean "everything reads fine".
+            #
+            # The way in is not exotic: a catalogue entry that fails its own rules is
+            # dropped on read, which makes its key unknown, which makes the path
+            # builder raise - so one bad line in settings.json stopped ten maps from
+            # being checked.
+            try:
                 points = (check or savepoints.list_points)(store, key)
                 if not points:
                     continue                      # never started, or pruned: not news
                 newest = points[0]
                 ok, why = restorectl.verify_world(newest["path"], deep=False)
-                if ok:
-                    if key in seen_bad:
-                        seen_bad.discard(key)
-                        announce.say("world.readable_again",
-                                     "%s's newest save point reads cleanly again (%s)."
-                                     % (key, newest["name"]))
-                    continue
+            except Exception as e:                # noqa: BLE001 - this map, not the sweep
+                if key not in seen_bad:
+                    seen_bad.add(key)
+                    announce.say(
+                        "world.unchecked",
+                        "%s's save points could not be looked at: %s. Every other map "
+                        "was still checked. Nothing has been changed - if this map is "
+                        "one this cluster defined itself, check that it is still in "
+                        "the catalogue." % (key, e),
+                        level="warning", map=key)
+                continue
+            if ok:
                 if key in seen_bad:
-                    continue                      # already said; do not storm the channel
-                seen_bad.add(key)
-                announce.say(
-                    "world.damaged",
-                    "%s's newest save point will not read: %s. Nothing has been "
-                    "changed - this is a warning, not an action. Check the older save "
-                    "points for this map before the next restart needs one."
-                    % (key, why), level="error",
-                    detail="%s\n%s" % (newest["path"], why))
-        except Exception as e:                    # noqa: BLE001 - never fatal
-            log.info("world sweep skipped: %s", e)
+                    seen_bad.discard(key)
+                    announce.say("world.readable_again",
+                                 "%s's newest save point reads cleanly again (%s)."
+                                 % (key, newest["name"]))
+                continue
+            if key in seen_bad:
+                continue                          # already said; do not storm the channel
+            seen_bad.add(key)
+            announce.say(
+                "world.damaged",
+                "%s's newest save point will not read: %s. Nothing has been "
+                "changed - this is a warning, not an action. Check the older save "
+                "points for this map before the next restart needs one."
+                % (key, why), level="error",
+                detail="%s\n%s" % (newest["path"], why))
 
 
 def verify_restored(store, key, note=None):

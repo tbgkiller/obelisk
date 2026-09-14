@@ -176,6 +176,95 @@ check("presets are still offered", all(p in _me for p in
 # island. The help read "fills the list in", which is what adding does, and the
 # disabled state said "rewrites the whole list" a line later: one behaviour, two
 # descriptions, and the misleading one on the button you can actually press.
+# ---- every button that submits belongs to a form
+#
+# A submit button posts to the form it is inside. One that is inside no form is owned by
+# nothing: it renders, it looks live, and clicking it sends no request at all - which is
+# how the forget button shipped dead while the route behind it was correct and the tests
+# that posted to that route directly all passed. So ownership is worked out here the way
+# a browser works it out, and every submitting control in this editor has to have an
+# owner rather than only the one that was caught.
+import re as _reo                                                     # noqa: E402
+
+
+def _form_owner(html, at):
+    """The action of the form that owns the control at `at`, or None.
+
+    The rule a browser applies: the nearest enclosing form, unless the control carries
+    a form= attribute naming one by id. Nothing else counts - being next to a form, or
+    between two of them, is not being in one.
+    """
+    tag_end = html.index(">", at)
+    tag = html[at:tag_end]
+    named = _reo.search(r'\bform=["\']?([\w-]+)', tag)
+    if named:
+        m = _reo.search(r'<form[^>]*\bid=["\']?%s\b[^>]*>' % _reo.escape(named.group(1)),
+                        html)
+        if not m:
+            return None
+        return (_reo.search(r'action="([^"]*)"', m.group(0)) or [None, None])[1]
+    depth_open = html.rfind("<form", 0, at)
+    if depth_open < 0:
+        return None
+    closed = html.find("</form>", depth_open)
+    if closed != -1 and closed < at:
+        return None                       # the form nearest above us has already ended
+    opener = html[depth_open:html.index(">", depth_open)]
+    found = _reo.search(r'action="([^"]*)"', opener)
+    return found.group(1) if found else ""
+
+
+def _submitters(html):
+    """(name, action-of-its-owner) for every control that submits something."""
+    out = []
+    for m in _reo.finditer(r"<(?:button|input)[^>]*>", html):
+        tag = m.group(0)
+        if "type=submit" not in tag and 'type="submit"' not in tag:
+            continue
+        name = (_reo.search(r"\bname=([\w-]+)", tag) or [None, "?"])[1]
+        value = (_reo.search(r'\bvalue="([^"]*)"', tag) or [None, ""])[1]
+        out.append(("%s=%s" % (name, value) if value else str(name),
+                    _form_owner(html, m.start())))
+    return out
+
+
+_ownform = store()
+_ownform.data["map_catalogue"] = [{"key": "svart", "name": "Svartalfheim",
+                                   "map_id": "Svartalfheim_WP", "custom": True,
+                                   "official": False}]
+_ownform_html = render_maps_editor(_ownform, saves={"Svartalfheim_WP": False})
+_subs = _submitters(_ownform_html)
+_orphans = [n for n, owner in _subs if owner is None]
+check("every button in the maps editor that submits is inside a form",
+      not _orphans, _orphans)
+check("the editor has buttons to check, so that was not a vacuous pass",
+      len(_subs) >= 6, _subs)
+check("forgetting a map posts to the catalogue route",
+      [o for n, o in _subs if n.startswith("forget=")] ==
+      ["/admin/maps/catalogue"], _subs)
+check("defining one posts there too",
+      [o for n, o in _subs if n.startswith("define")] ==
+      ["/admin/maps/catalogue"], _subs)
+check("and the list's own buttons still post to the list",
+      set(o for n, o in _subs if n.split("=")[0] in ("add", "up", "down", "drop",
+                                                     "preset")) == {"/admin/maps"},
+      _subs)
+
+# The helper has to be able to say no, or the check above it is decoration. A button
+# parked between the two forms - exactly where the forget buttons were - is owned by
+# neither, and this is what that looks like.
+_orphaned = _ownform_html.replace(
+    "<form method=post action=\"/admin/maps/catalogue\">",
+    "<button type=submit name=stray value=1>stray</button>"
+    "<form method=post action=\"/admin/maps/catalogue\">", 1)
+check("a button between two forms is reported as owned by neither",
+      [o for n, o in _submitters(_orphaned) if n.startswith("stray")] == [None],
+      [x for x in _submitters(_orphaned) if x[0].startswith("stray")])
+check("and one carrying form= pointing at nothing is too",
+      _form_owner('<form id=real action="/x"></form>'
+                  '<button type=submit form=ghost name=b>b</button>', 39) is None,
+      "a form= naming no form was treated as ownership")
+
 # ---- the editor can define a map, and the two forms are two forms
 #
 # The list posts to /admin/maps and the catalogue behind it posts somewhere else, so

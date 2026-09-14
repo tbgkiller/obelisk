@@ -2556,14 +2556,24 @@ def _own_maps(store, values=None, saves=None, listed=(), opened=False):
                 '<div class=help>%s</div></div>'
                 % (_e(label), name, _e(str(values.get(name) or "")), _e(place), hint))
 
+    # The table goes INSIDE the form, not above it. A submit button belongs to the form
+    # it sits in, and one that sits in no form belongs to nothing: it renders, it looks
+    # live, and clicking it sends no request at all. The forget buttons were between the
+    # list form's close and this form's open, so the one case forgetting is meant to
+    # work - a map this cluster defined and is not running - could not be reached from
+    # the page, while the route that refuses the other two cases was perfectly correct.
+    #
+    # Both actions in one form is fine: the route reads `forget` and answers it before
+    # it looks at the add fields, so forgetting a map does not care that the three boxes
+    # above it are empty.
     return ('<details id=ownmaps%s style="margin-top:16px">'
             '<summary>Maps this cluster added</summary>'
             '<div class=help style="margin:8px 0">A map Obelisk does not ship with '
             '\u2014 a mod map, or an official one released since this build. Defining '
             'it here only teaches Obelisk how to spell it; it is added to the cluster '
             'from the list above, like any other map.</div>'
-            '%s'
             '<form method=post action="/admin/maps/catalogue">'
+            '%s'
             '<div class=help style="margin:14px 0 6px"><b>Define a map</b></div>'
             '%s%s%s'
             '<button type=submit name=define value=1>Add this map</button>'
