@@ -6184,6 +6184,90 @@ check("the refusals are one constant each, shared with the page that disables th
       and _s1src.count("ui.REMOVE_RUNNING") == 1,
       [_uisrc_merge.count("REORDER_RUNNING = "), _s1src.count("ui.REORDER_RUNNING")])
 
+# ---- the only map a cluster has is not a button with no good outcome
+#
+# A single-map cluster is a normal thing to have: it is the "Single map" preset, and it
+# is what first run leaves. The remove beside that map used to be live, and taking it
+# left the list empty - which validation refuses. Stopped, that came back as a rendered
+# 200 carrying the validator's JSON on a screen away from the editor, which a refresh
+# re-posts. Running, it queued the empty list and said nothing at all, to break at the
+# next recreate. Emptying the list is a rule, so it is refused like one.
+_t40 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _only_map(running):
+        _real_st40 = _appmod.clusterctl.status
+        try:
+            _appmod.clusterctl.status = (
+                (lambda store: dict(_lstatus,
+                                    services=[dict(_lstatus["services"][0])]))
+                if running else
+                (lambda store: {"docker_ok": True, "compose_exists": False,
+                                "running": 0, "services": []}))
+            _bot_s1.LIVE = _kick_relay()
+            _lstore.patch({"maps": "island"})
+            _lstore.data.pop("pending", None)
+            _lstore.save()
+            before = _copy38.deepcopy(_lstore.data)
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            page = await (await client.get("/admin/cluster")).text()
+            # Forged, because the button is disabled - which is exactly why the route
+            # has to answer for it too.
+            r = await client.post("/admin/maps", data={"drop": "island"},
+                                  allow_redirects=False)
+            where = r.headers.get("Location", "")
+            landed = await (await client.get(where)).text() if r.status == 302 else ""
+            body = landed if r.status == 302 else await r.text()
+            await client.close()
+            # Read before the fixture puts the store back: the restore below is
+            # housekeeping for the rest of the file, and copying after it would be
+            # measuring the housekeeping.
+            after = _copy38.deepcopy(_lstore.data)
+        finally:
+            _appmod.clusterctl.status = _real_st40
+            _bot_s1.LIVE = _real_live
+            _lstore.patch({"maps": "island,ragnarok"})
+            _lstore.data.pop("pending", None)
+            _lstore.save()
+        return page, r.status, where, body, before, after
+
+    _only_stop40 = _t40.run_until_complete(_only_map(running=False))
+    _only_run40 = _t40.run_until_complete(_only_map(running=True))
+finally:
+    _t40.close()
+
+for _what40, _res40 in (("stopped", _only_stop40), ("running", _only_run40)):
+    _pg40, _st40, _wh40, _body40, _bf40, _af40 = _res40
+    _fs40 = _from(_pg40, "<fieldset id=maps>").split("</fieldset>")[0]
+    _amber40 = [w.split("</div>")[0] for w in
+                _from(_body40, "<fieldset id=maps>").split("</fieldset>")[0]
+                .split("<div class=warn>")[1:]]
+    check("a %s single-map cluster does not offer to remove its only map" % _what40,
+          'name=drop value="island" title="A cluster needs at least one map" disabled'
+          in _fs40, _window(_fs40, "name=drop", 200))
+    check("and the route refuses the post as well, which is the guard",
+          _st40 == 302 and _wh40.endswith("#maps"), [_st40, _wh40])
+    check("in amber, at the editor, saying what the rule is",
+          any("A cluster needs at least one map" in a for a in _amber40), _amber40)
+    # The words themselves, not the JSON punctuation they arrived in: the page escapes
+    # the quotes, so pinning the braces would have been a check that cannot fail.
+    check("not the validator's own words on a page of their own",
+          "pick at least one map" not in _body40,
+          _window(_body40, "pick at least", 200))
+    check("the list is what it was",
+          (_af40.get("cluster") or {}).get("maps") == "island",
+          (_af40.get("cluster") or {}).get("maps"))
+    check("and nothing is queued to empty it at the next recreate",
+          ((_af40.get("pending") or {}).get("cluster") or {}).get("maps") is None,
+          (_af40.get("pending") or {}).get("cluster"))
+
+check("a running single-map cluster does not promise the last one can go",
+      "so this one stays until you add another" in _only_run40[0]
+      and "nothing comes after it, so it can go" not in _only_run40[0],
+      _window(_only_run40[0], "<div class=warn>", 500))
+
 # ---- one "Mods" on the page
 #
 # The index listed it twice: the settings group holding passive_mods and the launch
@@ -6417,14 +6501,22 @@ try:
                 "services": []}
             fresh = await (await client.get("/admin/cluster")).text()
             fresh_map = await (await client.get("/admin/cluster/map/island")).text()
+            # The third state, and the one an operator is in every time they press
+            # Stop: the cluster is defined, and compose down has removed the
+            # containers, so there are no rows to draw a table from.
+            _appmod.clusterctl.status = lambda store: {
+                "docker_ok": True, "compose_exists": True, "running": 0,
+                "services": []}
+            stopped = await (await client.get("/admin/cluster")).text()
+            stopped_map = await (await client.get("/admin/cluster/map/island")).text()
             await client.close()
         finally:
             _appmod.clusterctl.status = _real_st32
             _bot_s1.LIVE = _real_live
-        return up, up_map, data, settings, fresh, fresh_map
+        return (up, up_map, data, settings, fresh, fresh_map, stopped, stopped_map)
 
-    (_up5, _upmap5, _data5, _set5, _fresh5,
-     _freshmap5) = _t32.run_until_complete(_both_states())
+    (_up5, _upmap5, _data5, _set5, _fresh5, _freshmap5, _stop5,
+     _stopmap5) = _t32.run_until_complete(_both_states())
 finally:
     _t32.close()
 
@@ -6432,6 +6524,8 @@ finally:
 # resolve - those are pinned one by one below, against the page they point at.
 for _what, _page, _jumps in (("the cluster page, launched", _up5, True),
                              ("the cluster page, never launched", _fresh5, True),
+                             ("the cluster page, stopped after a Stop", _stop5, True),
+                             ("a map page, stopped after a Stop", _stopmap5, False),
                              ("a map page, launched", _upmap5, False),
                              ("a map page, never launched", _freshmap5, False),
                              ("the Data page", _data5, True),
@@ -6474,6 +6568,23 @@ check("and at the maps form when there is not",
 check("both of which the cluster page actually has in that state",
       "<fieldset id=run>" in _up5 and "<fieldset id=maps>" in _fresh5,
       "a back-link target is missing")
+
+# ---- N19 a stopped cluster's #run still lands on something
+#
+# After a real Stop there are no rows, so the table is not drawn and a note stands in
+# its place. The jump row and the map page's way back both key on "the cluster is
+# defined", so both still offer #run - and the note carries that id, rather than the
+# two of them scrolling nowhere in the state Stop leaves behind.
+check("a stopped cluster draws no running table", "<fieldset id=run>" not in _stop5,
+      _window(_stop5, "id=run", 200))
+check("it says so instead", "defined but nothing is running" in _stop5,
+      _window(_stop5, "defined but", 200))
+check("still offering the chip that goes there",
+      'href="#run"' in _stop5, _window(_stop5, "class=jump", 300))
+check("and the note answers to that name, so the chip lands",
+      "<div class=note id=run>" in _stop5, _window(_stop5, "nothing is running", 200))
+check("the map page's way back goes to the same place in that state",
+      'href="/admin/cluster#run"' in _stopmap5, _window(_stopmap5, "Back to the", 160))
 
 # ---- #1 the schedule is on this page, not two tabs away
 _bk5 = _area(_data5, "backups")

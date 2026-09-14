@@ -912,6 +912,17 @@ def build_app(store, docker=None):
                 "/admin/cluster?said=%s#maps"
                 % _say_next(where="maps", refusal=text_))
 
+        # Emptying the list is a rule, not a failure. Validation refuses maps="" - a
+        # cluster with no maps is not a state this manager has - so without this the
+        # only remove on a single-map cluster either returned a rendered 200 carrying
+        # the validator's own words (a screen away from the editor, and a resubmit if
+        # the operator refreshes) or, while running, queued the empty list to break at
+        # the next recreate. Both are the "agree now, find out later" this route's
+        # other guard exists to prevent.
+        going_now = str(form.get("drop") or "").strip()
+        if going_now and mapsmod.listed(listed) == [going_now]:
+            raise refuse_maps(ui.ONLY_MAP)
+
         # The guard, not the hint. The buttons for these are disabled while the cluster
         # runs, which is the explanation; this is what actually holds, because a
         # disabled attribute is a suggestion to anything that is not a browser.
@@ -928,12 +939,12 @@ def build_app(store, docker=None):
                 raise refuse_maps(ui.REORDER_RUNNING)
             if preset:
                 raise refuse_maps(ui.PRESET_RUNNING)
-            going = str(form.get("drop") or "").strip()
             # Removing the last one is free: nothing comes after it to move down, and
-            # the first map - the update master - is not it unless it is the only one.
-            if going and here and going != here[-1]:
-                name = (mapsmod.BY_KEY[going]["name"] if going in mapsmod.BY_KEY
-                        else going)
+            # the first map - the update master - is not it unless it is the only one,
+            # which the rule above has already refused.
+            if going_now and here and going_now != here[-1]:
+                name = (mapsmod.BY_KEY[going_now]["name"]
+                        if going_now in mapsmod.BY_KEY else going_now)
                 raise refuse_maps(ui.REMOVE_RUNNING % name)
         try:
             if preset:

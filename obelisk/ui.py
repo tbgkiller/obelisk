@@ -1433,7 +1433,14 @@ def render_status(status, players=None, addresses=None, host_known=True):
                      'failing</summary><pre class=logtail>%s</pre></details></td></tr>'
                      % _e(s["log_tail"]))
     if not rows:
-        return '<div class=note>The cluster is defined but nothing is running.</div>'
+        # Carries the table's id. After a real Stop, compose down removes the
+        # containers, so this note - not the table - is what a stopped-but-defined
+        # cluster renders, and the jump row and the map page's way back both key on
+        # compose_exists and offer #run. Without the id those are two links to nowhere,
+        # in the state an operator is in every time they stop the cluster. The note
+        # stands in for the table, so it answers to the table's name.
+        return ('<div class=note id=run>The cluster is defined but nothing is '
+                'running.</div>')
     banner = ""
     bad = [s for s in status.get("services", []) if s.get("level") == "bad"]
     if bad:
@@ -2351,6 +2358,13 @@ PRESET_RUNNING = ("Stop the cluster to apply a preset \u2014 it rewrites the who
                   "list, which moves ports and can change which map downloads the "
                   "server files. Nothing has been changed.")
 
+# A cluster with no maps is not a state this manager has - validation refuses the empty
+# list - so removing the only map has no good outcome to offer. Said once, as the
+# button's reason for being disabled and as the route's refusal, so the two cannot
+# describe the same rule differently.
+ONLY_MAP_WHY = "A cluster needs at least one map"
+ONLY_MAP = ONLY_MAP_WHY + " \u2014 the list is unchanged."
+
 
 def render_maps_editor(store, running=False, refusal=""):
     """The maps this cluster runs, in the order it runs them.
@@ -2374,17 +2388,21 @@ def render_maps_editor(store, running=False, refusal=""):
                 'queued until the maps are next recreated. Reordering and removing are '
                 'not offered until the cluster is stopped, because both move the ports '
                 'people already have and can change which map downloads the server '
-                'files. The last map in the list is the exception: nothing comes after '
-                'it, so it can go.</div>')
+                'files. %s</div>'
+                % ('The last map in the list is the exception: nothing comes after it, '
+                   'so it can go.' if len(keys) > 1 else
+                   '%s, so this one stays until you add another.' % ONLY_MAP_WHY))
 
     rows = []
     for i, key in enumerate(keys):
         name = mapcat.BY_KEY[key]["name"] if key in mapcat.BY_KEY else key
         first = i == 0
         last = i == len(keys) - 1
+        only = len(keys) == 1
         # Disabled while the cluster runs, and refused by the route as well. The button
         # is the explanation; the route is the guard, because a disabled button is a
-        # suggestion to anything that is not a browser.
+        # suggestion to anything that is not a browser. Removing the only map is
+        # disabled in both states - see ONLY_MAP.
         stuck = " disabled" if running else ""
         rows.append(
             '<tr><td class=num>%d</td><td>%s%s</td>'
@@ -2397,8 +2415,11 @@ def render_maps_editor(store, running=False, refusal=""):
                % (_e(key), " disabled" if first else "", stuck),
                '<button class=ghost type=submit name=down value="%s"%s%s>\u2193</button>'
                % (_e(key), " disabled" if last else "", stuck),
-               '<button class=ghost type=submit name=drop value="%s"%s>remove</button>'
-               % (_e(key), "" if last or not running else " disabled")))
+               '<button class=ghost type=submit name=drop value="%s"%s%s>remove'
+               '</button>'
+               % (_e(key),
+                  ' title="%s"' % _e(ONLY_MAP_WHY) if only else "",
+                  " disabled" if only or (running and not last) else "")))
     if not rows:
         rows.append('<tr><td colspan=3 class=help>No maps chosen yet. Add one '
                     'below.</td></tr>')
@@ -2427,13 +2448,13 @@ def render_maps_editor(store, running=False, refusal=""):
             '<div class=help style="margin:14px 0 6px">Add a map</div>'
             '<div class=maps>%s</div>'
             '<div class=help style="margin:14px 0 6px">Or start from a preset '
-            '\u2014 it fills the list in and carries no settings of its own.%s</div>'
+            '\u2014 it rewrites the whole list and carries no settings of its '
+            'own.%s</div>'
             '<div class=presets>%s</div>'
             '</fieldset></form>'
             % (warn_block(refusal) if refusal else "", warn,
                "".join(rows), catalogue,
-               " A preset rewrites the whole list, so it needs the cluster stopped."
-               if running else "", presets))
+               " That needs the cluster stopped." if running else "", presets))
 
 
 def render_cluster(store, plan, status=None, roster=None, web_address="",

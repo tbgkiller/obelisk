@@ -171,6 +171,17 @@ check("the consequence of the order is stated, not left in a help page",
       _window(_me, "update master", 600))
 check("presets are still offered", all(p in _me for p in
       ("Full cluster", "Starter", "The classics")), _window(_me, "presets", 300))
+# A preset replaces the list - island,center,aberration plus "Single map" leaves
+# island. The help read "fills the list in", which is what adding does, and the
+# disabled state said "rewrites the whole list" a line later: one behaviour, two
+# descriptions, and the misleading one on the button you can actually press.
+check("and the help says a preset replaces what is there, not adds to it",
+      "rewrites the whole list" in _window(_me, "Or start from a preset", 200),
+      _window(_me, "Or start from a preset", 200))
+_me_run = render_maps_editor(st, running=True)
+check("which is the same thing it says when the buttons are disabled",
+      "rewrites the whole list" in _window(_me_run, "Or start from a preset", 220),
+      _window(_me_run, "Or start from a preset", 220))
 check("and the editor posts one action at a time to the maps route",
       _me.count('action="/admin/maps"') == 1, _me.count('action="/admin/maps"'))
 # Ports, RAM and the reason for it are one map's business, and ten copies of them
