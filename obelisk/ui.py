@@ -2332,6 +2332,25 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
 # neither could express the thing that matters most about it - the order.
 CLUSTER_PAGE_KEYS = ("maps",)
 
+# Why a running cluster cannot be reordered, said once so the disabled button and the
+# route that refuses the post cannot describe it differently.
+#
+# Every other change in this manager queues: it is written down and applied the next
+# time the cluster is recreated, which is safe because the value means the same thing
+# before and after. An order does not. Ports are handed out walking the list, so moving
+# an entry moves the address people have in their launcher, and moving the first entry
+# changes which map downloads the server files for the rest. Queuing that would mean
+# agreeing to it now and discovering it at the restart.
+REORDER_RUNNING = ("Stop the cluster to reorder maps \u2014 reordering moves every "
+                   "map\u2019s ports and changes which map downloads the server files "
+                   "for the others. Nothing has been changed.")
+REMOVE_RUNNING = ("Stop the cluster to remove %s \u2014 every map after it moves down "
+                  "a port. The last map in the list can be removed while running, and "
+                  "adding to the end is always safe. Nothing has been changed.")
+PRESET_RUNNING = ("Stop the cluster to apply a preset \u2014 it rewrites the whole "
+                  "list, which moves ports and can change which map downloads the "
+                  "server files. Nothing has been changed.")
+
 
 def render_maps_editor(store, running=False, refusal=""):
     """The maps this cluster runs, in the order it runs them.
@@ -2349,16 +2368,24 @@ def render_maps_editor(store, running=False, refusal=""):
     warn = ""
     if running and keys:
         # Said here rather than in a help string on another page. This is the moment
-        # somebody is about to reorder a cluster people are playing on.
-        warn = ('<div class=warn>This cluster is running. A change here is queued and '
-                'applied the next time the maps are recreated \u2014 and reordering '
-                'moves the ports people connect to, and changes which map downloads the '
-                'server files for the others. Adding to the end does neither.</div>')
+        # somebody is about to change a cluster people are playing on.
+        warn = ('<div class=warn>This cluster is running. You can <b>add</b> a map - it '
+                'goes on the end, where it moves nobody else\u2019s ports - and that is '
+                'queued until the maps are next recreated. Reordering and removing are '
+                'not offered until the cluster is stopped, because both move the ports '
+                'people already have and can change which map downloads the server '
+                'files. The last map in the list is the exception: nothing comes after '
+                'it, so it can go.</div>')
 
     rows = []
     for i, key in enumerate(keys):
         name = mapcat.BY_KEY[key]["name"] if key in mapcat.BY_KEY else key
         first = i == 0
+        last = i == len(keys) - 1
+        # Disabled while the cluster runs, and refused by the route as well. The button
+        # is the explanation; the route is the guard, because a disabled button is a
+        # suggestion to anything that is not a browser.
+        stuck = " disabled" if running else ""
         rows.append(
             '<tr><td class=num>%d</td><td>%s%s</td>'
             '<td class=num>%s %s %s</td></tr>'
@@ -2366,12 +2393,12 @@ def render_maps_editor(store, running=False, refusal=""):
                '<a class=maplink href="/admin/cluster/map/%s">%s</a>'
                % (_e(key), _e(name)) if key in mapcat.BY_KEY else _e(name),
                ' <span class="tag chg">update master</span>' if first else "",
-               '<button class=ghost type=submit name=up value="%s"%s>\u2191</button>'
-               % (_e(key), " disabled" if first else ""),
-               '<button class=ghost type=submit name=down value="%s"%s>\u2193</button>'
-               % (_e(key), " disabled" if i == len(keys) - 1 else ""),
-               '<button class=ghost type=submit name=drop value="%s">remove</button>'
-               % _e(key)))
+               '<button class=ghost type=submit name=up value="%s"%s%s>\u2191</button>'
+               % (_e(key), " disabled" if first else "", stuck),
+               '<button class=ghost type=submit name=down value="%s"%s%s>\u2193</button>'
+               % (_e(key), " disabled" if last else "", stuck),
+               '<button class=ghost type=submit name=drop value="%s"%s>remove</button>'
+               % (_e(key), "" if last or not running else " disabled")))
     if not rows:
         rows.append('<tr><td colspan=3 class=help>No maps chosen yet. Add one '
                     'below.</td></tr>')
@@ -2384,8 +2411,9 @@ def render_maps_editor(store, running=False, refusal=""):
               "add %s to the end" % m["name"]), _e(m["name"]))
         for m in mapcat.MAPS)
     presets = "".join(
-        '<button class=ghost type=submit name=preset value="%s" title="%s">%s</button>'
-        % (_e(p["key"]), _e(p["description"]), _e(p["name"])) for p in PRESETS)
+        '<button class=ghost type=submit name=preset value="%s" title="%s"%s>%s</button>'
+        % (_e(p["key"]), _e(p["description"]), " disabled" if running else "",
+           _e(p["name"])) for p in PRESETS)
 
     return ('<form method=post action="/admin/maps">'
             '<fieldset id=maps><legend>Maps</legend>%s%s'
@@ -2399,11 +2427,13 @@ def render_maps_editor(store, running=False, refusal=""):
             '<div class=help style="margin:14px 0 6px">Add a map</div>'
             '<div class=maps>%s</div>'
             '<div class=help style="margin:14px 0 6px">Or start from a preset '
-            '\u2014 it ticks boxes and carries no settings of its own.</div>'
+            '\u2014 it fills the list in and carries no settings of its own.%s</div>'
             '<div class=presets>%s</div>'
             '</fieldset></form>'
             % (warn_block(refusal) if refusal else "", warn,
-               "".join(rows), catalogue, presets))
+               "".join(rows), catalogue,
+               " A preset rewrites the whole list, so it needs the cluster stopped."
+               if running else "", presets))
 
 
 def render_cluster(store, plan, status=None, roster=None, web_address="",

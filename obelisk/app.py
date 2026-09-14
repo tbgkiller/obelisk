@@ -906,6 +906,35 @@ def build_app(store, docker=None):
         form = await request.post()
         listed = str(store.get("maps") or "")
         preset = form.get("preset")
+
+        def refuse_maps(text_):
+            return web.HTTPFound(
+                "/admin/cluster?said=%s#maps"
+                % _say_next(where="maps", refusal=text_))
+
+        # The guard, not the hint. The buttons for these are disabled while the cluster
+        # runs, which is the explanation; this is what actually holds, because a
+        # disabled attribute is a suggestion to anything that is not a browser.
+        #
+        # Reordering is refused rather than queued, which is the one place this manager
+        # does not queue a change. Everything else means the same thing before and after
+        # a restart; an order does not. Ports are handed out walking the list, so moving
+        # an entry moves the address somebody already has in their launcher, and moving
+        # the first changes which map downloads the server files. Queuing that would be
+        # agreeing now and finding out at the recreate.
+        if _running_now():
+            here = mapsmod.listed(listed)
+            if form.get("up") or form.get("down"):
+                raise refuse_maps(ui.REORDER_RUNNING)
+            if preset:
+                raise refuse_maps(ui.PRESET_RUNNING)
+            going = str(form.get("drop") or "").strip()
+            # Removing the last one is free: nothing comes after it to move down, and
+            # the first map - the update master - is not it unless it is the only one.
+            if going and here and going != here[-1]:
+                name = (mapsmod.BY_KEY[going]["name"] if going in mapsmod.BY_KEY
+                        else going)
+                raise refuse_maps(ui.REMOVE_RUNNING % name)
         try:
             if preset:
                 from .presets import BY_KEY as PRESET_BY_KEY

@@ -5973,6 +5973,7 @@ finally:
     _t38.close()
 
 _ed38 = _from(_mp38, "<fieldset id=maps>").split("</fieldset>")[0]
+_fed38 = _from(_fresh38, "<fieldset id=maps>").split("</fieldset>")[0]
 
 # ---- one editor
 check("the cluster page has a maps editor", "<fieldset id=maps>" in _mp38,
@@ -6052,20 +6053,136 @@ check("saying the list is unchanged, and it is",
 check("a key the catalogue does not know is still refused - (b) is not built",
       _bad38[0] == 302 and "nosuchmap" not in _bad38[1], _bad38)
 
-# ---- a running cluster is told what a change costs
-check("a running cluster is warned before it is reordered",
-      "<div class=warn>" in _ed38 and "queued" in _ed38,
-      _window(_ed38, "<div class=warn>", 400))
+# ---- a running cluster cannot be reordered at all
+#
+# This is the one change in this manager that is refused rather than queued. Everything
+# else means the same thing before and after a restart; an order does not. Ports are
+# handed out walking the list, so moving an entry moves an address somebody already has,
+# and moving the first changes which map downloads the server files for the rest.
+check("a running cluster says what it will not do",
+      "<div class=warn>" in _ed38 and "not offered until the cluster is stopped" in _ed38,
+      _window(_ed38, "<div class=warn>", 500))
 check("naming both consequences",
-      "moves the ports" in _ed38 and "downloads the server files" in _ed38,
-      _window(_ed38, "<div class=warn>", 400))
-check("and saying which edit avoids them",
-      "Adding to the end does neither" in _ed38,
-      _window(_ed38, "<div class=warn>", 400))
-check("a cluster that is not running is not warned about restarts",
+      "move the ports people already have" in _ed38
+      and "downloads the server" in _ed38, _window(_ed38, "<div class=warn>", 500))
+check("and saying what is still allowed",
+      "<b>add</b> a map" in _ed38 and "on the end" in _ed38,
+      _window(_ed38, "<div class=warn>", 500))
+check("including the one removal that moves nobody",
+      "last map in the list is the exception" in _ed38,
+      _window(_ed38, "<div class=warn>", 500))
+check("a cluster that is not running is not warned about any of it",
       "<div class=warn>" not in
       _from(_fresh38, "<fieldset id=maps>").split("</fieldset>")[0],
       _from(_fresh38, "<fieldset id=maps>")[:400])
+
+# ---- the controls say so before the route has to
+check("the arrows are disabled while it runs",
+      'name=up value="ragnarok" disabled' in _ed38
+      and 'name=down value="island" disabled' in _ed38,
+      _window(_ed38, "name=up", 300))
+check("so is removing anything but the last one",
+      'name=drop value="island" disabled' in _ed38, _window(_ed38, "name=drop", 300))
+check("the last one can still go, because nothing follows it to move",
+      'name=drop value="ragnarok">' in _ed38, _window(_ed38, 'value="ragnarok"', 300))
+check("presets are disabled too - a preset rewrites the whole list",
+      "disabled>Full cluster" in _ed38, _window(_ed38, "Full cluster", 200))
+check("adding is still offered, because it appends",
+      'name=add value="center" title' in _ed38, _window(_ed38, 'value="center"', 200))
+check("and a stopped cluster has all of them",
+      'name=up value="ragnarok">' in _fed38 and 'name=drop value="island">' in _fed38
+      and "disabled>Full cluster" not in _fed38, _fed38[:600])
+
+# ---- and the route refuses them, which is what actually holds
+#
+# The disabled buttons are the explanation. A disabled attribute is a suggestion to
+# anything that is not a browser, so the post is refused as well, and refused before
+# anything is written - not written and then rolled back.
+_t39 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _post_maps_running(body):
+        _real_st39 = _appmod.clusterctl.status
+        try:
+            _appmod.clusterctl.status = lambda store: dict(
+                _lstatus, services=[dict(x) for x in _lstatus["services"]])
+            _bot_s1.LIVE = _kick_relay()
+            _lstore.patch({"maps": "island,ragnarok"})
+            _lstore.data.pop("pending", None)
+            _lstore.save()
+            before = _copy38.deepcopy(_lstore.data)
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            r = await client.post("/admin/maps", data=body, allow_redirects=False)
+            where = r.headers.get("Location", "")
+            landed = await (await client.get(where)).text() if r.status == 302 else ""
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st39
+            _bot_s1.LIVE = _real_live
+        return r.status, where, landed, before, _copy38.deepcopy(_lstore.data)
+
+    _up39 = _t39.run_until_complete(_post_maps_running({"up": "ragnarok"}))
+    _down39 = _t39.run_until_complete(_post_maps_running({"down": "island"}))
+    _midrm39 = _t39.run_until_complete(_post_maps_running({"drop": "island"}))
+    _preset39 = _t39.run_until_complete(_post_maps_running({"preset": "single"}))
+    _lastrm39 = _t39.run_until_complete(_post_maps_running({"drop": "ragnarok"}))
+    _add39 = _t39.run_until_complete(_post_maps_running({"add": "center"}))
+finally:
+    _t39.close()
+
+
+def _live_maps39(state):
+    return (state.get("cluster") or {}).get("maps")
+
+
+def _queued_maps39(state):
+    return ((state.get("pending") or {}).get("cluster") or {}).get("maps")
+
+
+for _what39, _res39, _phrase39 in (
+        ("moving a map up", _up39, "Stop the cluster to reorder maps"),
+        ("moving a map down", _down39, "Stop the cluster to reorder maps"),
+        ("removing one that is not last", _midrm39,
+         "Stop the cluster to remove The Island"),
+        ("applying a preset", _preset39, "Stop the cluster to apply a preset")):
+    _st39, _where39, _landed39, _before39, _after39 = _res39
+    check("%s on a running cluster is refused" % _what39, _st39 == 302,
+          [_what39, _st39])
+    # Not just "an amber block is on the page" - a running cluster always has one,
+    # explaining what is not offered, so that would pass with the guard taken out.
+    _fs39 = _from(_landed39, "<fieldset id=maps>").split("</fieldset>")[0]
+    _amber39 = [w.split("</div>")[0] for w in _fs39.split("<div class=warn>")[1:]]
+    check("in amber, at the editor, saying to stop the cluster first",
+          _where39.endswith("#maps") and any(_phrase39 in a for a in _amber39),
+          [_where39, _amber39[:1]])
+    check("and nothing was changed",
+          _live_maps39(_after39) == _live_maps39(_before39),
+          [_live_maps39(_before39), _live_maps39(_after39)])
+    check("nor queued for later, which is the whole point of refusing",
+          _queued_maps39(_after39) is None, _queued_maps39(_after39))
+
+# ---- what a running cluster may still do
+_st39, _where39, _landed39, _before39, _after39 = _add39
+check("adding a map to a running cluster still works", _st39 == 302, _st39)
+check("queued, because it only lands when the maps are next recreated",
+      _queued_maps39(_after39) == "island,ragnarok,center", _queued_maps39(_after39))
+check("and it does not move the live list under anybody",
+      _live_maps39(_after39) == "island,ragnarok", _live_maps39(_after39))
+
+_st39, _where39, _landed39, _before39, _after39 = _lastrm39
+check("removing the last map is allowed while running", _st39 == 302, _st39)
+check("because nothing after it moves down a port",
+      _queued_maps39(_after39) == "island", _queued_maps39(_after39))
+check("and it queues like any other change",
+      _live_maps39(_after39) == "island,ragnarok", _live_maps39(_after39))
+check("the refusals are one constant each, shared with the page that disables them",
+      _uisrc_merge.count("REORDER_RUNNING = ") == 1
+      and _uisrc_merge.count("REMOVE_RUNNING = ") == 1
+      and _s1src.count("ui.REORDER_RUNNING") == 1
+      and _s1src.count("ui.REMOVE_RUNNING") == 1,
+      [_uisrc_merge.count("REORDER_RUNNING = "), _s1src.count("ui.REORDER_RUNNING")])
 
 # ---- one "Mods" on the page
 #
