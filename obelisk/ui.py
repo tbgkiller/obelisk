@@ -2502,8 +2502,14 @@ def render_maps_editor(store, running=False, refusal="", message="", values=None
                ('<div class=note>%s</div>' % _e(message)) if message else "", warn,
                "".join(rows), catalogue,
                " That needs the cluster stopped." if running else "", presets,
+               # Open after a result of either kind. A refusal that hides the form it
+               # is about cannot be acted on - and a success that folds the section
+               # shut hides the row it just made, along with the note saying whether a
+               # world already exists under that map id. That note is the only evidence
+               # the operator has that they typed the level name correctly, and the
+               # moment they have just typed it is when it is worth reading.
                _own_maps(store, values=values, saves=saves, listed=keys,
-                         opened=bool(refusal or values))))
+                         opened=bool(refusal or values or message))))
 
 
 def _own_maps(store, values=None, saves=None, listed=(), opened=False):
@@ -2537,15 +2543,15 @@ def _own_maps(store, values=None, saves=None, listed=(), opened=False):
                     '<button class=ghost type=submit name=forget value="%s"%s%s>'
                     'forget</button>'
                     % (_e(m["key"]),
-                       ' title="%s is one of the maps this cluster runs"' % _e(m["name"])
+                       ' title="%s is in the map list above"' % _e(m["name"])
                        if here else "", " disabled" if here else "")))
     if rows:
         rows = ('<table><tr><th>Map</th><th>Key</th><th>Map id</th>'
                 '<th class=num></th></tr>%s</table>'
                 '<div class=help>Forgetting a map removes nothing: its world stays on '
                 'disk and its settings stay in this cluster, so defining it again '
-                'finds both. A map this cluster is running cannot be forgotten \u2014 '
-                'take it out of the list above first.</div>' % rows)
+                'finds both. A map named in the list above cannot be forgotten '
+                '\u2014 take it out of the list first.</div>' % rows)
     else:
         rows = ('<div class=help>None yet. Everything in the list above is a map '
                 'Obelisk ships with.</div>')

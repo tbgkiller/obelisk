@@ -203,6 +203,12 @@ def check_entry(store, key, name, map_id, existing=None):
     if existing:
         cat = {k: v for k, v in cat.items() if k != existing}
 
+    if not (key or map_id or name):
+        # Three empty boxes is not a broken rule, it is a form that has not been filled
+        # in - and answering it with the key charset rule reads as though something
+        # about the key was wrong.
+        raise ValueError("fill in all three boxes - a key, the map id and a name")
+
     # The rules about the two strings themselves, shared with the read path so a stored
     # entry answers to exactly what a typed one does.
     why = shape_problem(key, map_id)
@@ -315,8 +321,11 @@ def remove_entry(store, key):
     if at is None:
         raise ValueError("%s isn't a map this cluster added" % key)
     if key in listed(store.get("maps")):
-        raise ValueError("%s is one of the maps this cluster runs - take it out of the "
-                         "list first. Nothing has been changed."
+        # The rule is the list, not the cluster. Forgetting a map the list names would
+        # leave the list naming something nothing can explain - true whether or not
+        # anything is running, which is what this used to say instead.
+        raise ValueError("%s is in this cluster's map list - take it out of the list "
+                         "first. Nothing has been changed."
                          % (held[at].get("name") or key))
     gone = held.pop(at)
     store.data[SECTION] = held

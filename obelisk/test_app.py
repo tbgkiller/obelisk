@@ -6185,6 +6185,73 @@ check("the refusals are one constant each, shared with the page that disables th
       and _s1src.count("ui.REMOVE_RUNNING") == 1,
       [_uisrc_merge.count("REORDER_RUNNING = "), _s1src.count("ui.REORDER_RUNNING")])
 
+# ---- a map that was never damaged does not get told it recovered
+#
+# "Reads cleanly again" is a sentence about a world that would not read and now does.
+# A map that was merely unchecked - an operator mistyped its map id - never had anything
+# wrong with its world, and saying it recovered would undo the distinction the sweep
+# draws between "this world is damaged" and "I could not look at it". The two live in
+# two sets for that reason.
+_calls46 = {"n": 0}
+
+
+def _raises_once(store, key):
+    _calls46["n"] += 1
+    if _calls46["n"] == 1:
+        raise KeyError("unknown map %r" % key)
+    return _POINT
+
+
+async def _sweep_twice(check, verdicts):
+    global _verdicts
+    _verdicts = list(verdicts)
+    _re2.verify_world = _fake_verify
+    _appmod.restorectl.verify_world = _fake_verify
+    try:
+        task = _aio2.create_task(_appmod.world_watch(
+            _sw_store, interval=0.01, check=check, sleep_first=False))
+        await _aio2.sleep(0.06)
+        task.cancel()
+        try:
+            await task
+        except _aio2.CancelledError:
+            pass
+    finally:
+        _re2.verify_world = _real_verify
+        _appmod.restorectl.verify_world = _real_verify
+
+
+_drain2()
+_t46 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    # cycle 1 raises, every cycle after reads fine
+    _t46.run_until_complete(_sweep_twice(_raises_once, [(True, "ok")] * 60))
+    _ev46 = _drain2()
+    # a world that will not read, then does
+    _t46.run_until_complete(_sweep_twice(lambda st, key: _POINT,
+                                         [(False, "SQLite reports it damaged: x")]
+                                         + [(True, "ok")] * 60))
+    _ev47 = _drain2()
+finally:
+    _t46.close()
+
+_kinds46 = [i["event"] for i in _ev46]
+check("a map the sweep could not look at is announced once",
+      _kinds46.count("world.unchecked") == 1, _kinds46)
+check("and when it can be looked at again, nothing claims it recovered",
+      "world.readable_again" not in _kinds46, _kinds46)
+check("because nothing was ever wrong with that world - the looking failed",
+      "world.damaged" not in _kinds46, _kinds46)
+
+_kinds47 = [i["event"] for i in _ev47]
+check("a world that really would not read is still announced",
+      _kinds47.count("world.damaged") == 1, _kinds47)
+check("and still gets its recovery line when it reads again",
+      _kinds47.count("world.readable_again") == 1, _kinds47)
+check("in that order, which is the only order that makes sense of it",
+      _kinds47.index("world.damaged") < _kinds47.index("world.readable_again")
+      if "world.readable_again" in _kinds47 else False, _kinds47)
+
 # ---- one map the sweep cannot look at costs one map
 #
 # The sweep used to hold one try around the whole per-map loop, so the first map that
@@ -6385,6 +6452,8 @@ try:
                 os.environ["OBELISK_ARK"] = _was43
         return out
 
+    _empty43, = _t43.run_until_complete(_define([
+        {"define": "1", "key": "", "map_id": "", "name": ""}]))
     _bad43, _trav43, _ok43 = _t43.run_until_complete(_define([
         {"define": "1", "key": "My_Map", "map_id": "Svartalfheim_WP",
          "name": "Svartalfheim"},
@@ -6430,8 +6499,11 @@ for _what43, _res43, _phrase43 in (
         ("a key that is not a key", _bad43, "lowercase letters and digits only"),
         ("a map id that could leave its folder", _trav43,
          "letters, digits and underscores only")):
-    check("%s is refused" % _what43, _res43[0] == 302 and _res43[1].endswith("#maps"),
-          [_res43[0], _res43[1]])
+    check("%s is refused" % _what43, _res43[0] == 302, [_res43[0], _res43[1]])
+    # Not #maps: that is the head of the whole fieldset, about a screen above the three
+    # boxes. A refusal and the fields it asks to be corrected belong on screen together.
+    check("landing on the form it is about, not the top of the section",
+          _res43[1].endswith("#ownmaps"), _res43[1])
     check("in amber, at the editor, naming the rule that was broken",
           any(_phrase43 in a for a in _amber43(_res43)), _amber43(_res43))
     check("nothing was written", _res43[3] == _res43[4], _cat43(_res43))
@@ -6468,6 +6540,39 @@ check("tagged as this cluster's own, so it is clear which maps were typed in",
       "custom</span></button>" in _maps43(_ok43),
       _window(_maps43(_ok43), "custom</span>", 200))
 
+# ---- a result leaves the section it is about open
+#
+# The disclosure folding shut on success hid the row that was just made, and with it the
+# note saying whether a world already exists under that map id. That note is the only
+# evidence the operator has that they typed the level name right, and the moment they
+# have just typed it is exactly when it is worth reading.
+check("a successful definition leaves the section open",
+      "<details id=ownmaps open" in _maps43(_ok43),
+      _window(_maps43(_ok43), "<details id=ownmaps", 120))
+check("so the row it just made is on screen",
+      _in_order(_from(_maps43(_ok43), "<details id=ownmaps open"), ">Svartalfheim<",
+                ">svart<"), _window(_maps43(_ok43), "<details id=ownmaps", 400))
+check("and so is what the disk says about that map id",
+      "no saved world" in _from(_maps43(_ok43), "<details id=ownmaps open"),
+      _window(_maps43(_ok43), "no saved world", 200))
+check("forgetting one leaves it open too, for the same reason",
+      "<details id=ownmaps open" in _maps43(_gone44),
+      _window(_maps43(_gone44), "<details id=ownmaps", 120))
+# And a page nobody has just acted on is still folded away: most clusters run the ten
+# maps Obelisk ships and never open this at all.
+check("a page with no result to show keeps it folded",
+      "<details id=ownmaps open" not in _maps43(_seen43)
+      or _seen43[0] != 200, _window(_maps43(_seen43), "<details id=ownmaps", 120))
+
+# ---- an empty form is not a broken rule
+check("submitting three empty boxes says to fill them in", _empty43[0] == 302,
+      _empty43[0])
+check("rather than answering with the key's charset rule",
+      any("fill in all three boxes" in a for a in _amber43(_empty43))
+      and not any("lowercase letters and digits" in a for a in _amber43(_empty43)),
+      _amber43(_empty43))
+check("and nothing was written", _empty43[3] == _empty43[4], _cat43(_empty43))
+
 # ---- the look at the disk is advice, and says which way it went
 #
 # A map id that is well-formed and wrong cannot be told from a right one: the server
@@ -6483,16 +6588,22 @@ check("and one that matches a folder on disk says that instead",
       _window(_maps43(_seen43), "on disk", 200))
 
 # ---- forgetting one
-check("a map this cluster is running cannot be forgotten",
-      _held43[0] == 302 and any("is one of the maps this cluster runs" in a
+# The rule is the map list, not whether anything is running - and this fixture's
+# cluster is stopped, which is where the old wording contradicted the page: it said
+# twice that nothing was running and then refused because the map "runs".
+# Matched without the apostrophe: the page escapes it to &#x27;, and a pin that
+# spelled it out would be testing the escaping rather than the sentence.
+check("a map named in the map list cannot be forgotten",
+      _held43[0] == 302 and any("map list - take it out of the list first" in a
                                 for a in _amber43(_held43)), _amber43(_held43))
+check("and the refusal does not claim the cluster is running, because it is not",
+      not any("is running" in a or "cluster runs" in a for a in _amber43(_held43)),
+      _amber43(_held43))
 check("and it is still in the catalogue", _cat43(_held43), _cat43(_held43))
 check("nothing at all changed", _held43[3] == _held43[4], "the store moved")
-check("the button says so before the route has to",
-      'name=forget value="svart" title' in _maps43(_held43)
-      and 'name=forget value="svart" title="Svartalfheim is one of the maps this '
-          'cluster runs" disabled' in _maps43(_held43),
-      _window(_maps43(_held43), "name=forget", 200))
+check("the button says so before the route has to, and says the same reason",
+      'name=forget value="svart" title="Svartalfheim is in the map list above" disabled'
+      in _maps43(_held43), _window(_maps43(_held43), "name=forget", 200))
 check("one of Obelisk's own maps cannot be forgotten either",
       _builtin43[0] == 302 and any("one of Obelisk" in a
                                    for a in _amber43(_builtin43)),

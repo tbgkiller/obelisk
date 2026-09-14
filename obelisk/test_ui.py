@@ -347,10 +347,25 @@ check("a map the cluster is running cannot be forgotten from here",
       'name=forget value="svart"' in _ol and " disabled>forget" in _ol,
       _window(_ol, "name=forget", 240))
 check("and the button says why rather than just not working",
-      "is one of the maps this cluster runs" in _window(_ol, "name=forget", 240),
+      "is in the map list above" in _window(_ol, "name=forget", 240),
       _window(_ol, "name=forget", 240))
+# One rule, said the same way in all three places it is said: the tooltip, the help
+# under the table, and the amber the route sends back.
+check("the help under the table gives that same reason",
+      "A map named in the list above cannot be forgotten" in _ol,
+      _window(_ol, "Forgetting a map", 300))
+check("and neither of them talks about the cluster running",
+      "cannot be forgotten — take it out" in _ol
+      and "this cluster is running cannot" not in _ol,
+      _window(_ol, "Forgetting a map", 300))
 check("while one that is only defined can go",
       " disabled>forget" not in _owned, _window(_owned, "name=forget", 240))
+# An empty title= is a tooltip that opens and says nothing. The enabled button carries
+# no title attribute at all rather than an empty one - and nothing else on this editor
+# does either, which is the version of that worth pinning.
+check("no control on the editor carries an empty title",
+      'title=""' not in _owned and 'title=""' not in _ol, [_owned.count('title=""'),
+                                                           _ol.count('title=""')])
 
 # ---- the restore picker knows this cluster's own maps too
 #

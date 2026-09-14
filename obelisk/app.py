@@ -1029,9 +1029,19 @@ def build_app(store, docker=None):
             raise web.HTTPFound("/setup")
         form = await request.post()
 
-        def back(**kw):
-            return web.HTTPFound("/admin/cluster?said=%s#maps"
-                                 % _say_next(where="maps", **kw))
+        def back(anchor="maps", **kw):
+            return web.HTTPFound("/admin/cluster?said=%s#%s"
+                                 % (_say_next(where="maps", **kw), anchor))
+
+        def refused(text_, **kw):
+            """Back to the form, not to the top of the section.
+
+            #maps is the head of the whole Maps fieldset, which is about a screen above
+            the three boxes this is a refusal about - so the message and the fields it
+            asks to be corrected were not on screen together. The form has its own id;
+            a refusal belongs beside the thing it refused.
+            """
+            return back(anchor="ownmaps", refusal=text_, **kw)
 
         if form.get("forget"):
             key = str(form.get("forget")).strip()
@@ -1040,7 +1050,7 @@ def build_app(store, docker=None):
             except ValueError as e:
                 # A rule, not a failure: the map is running, or was never this
                 # cluster's to forget. Nothing was written either way.
-                raise back(refusal=str(e).strip())
+                raise refused(str(e).strip())
             announce.say("maps.forgotten",
                          "Obelisk no longer knows the map %s (%s). Nothing was "
                          "deleted: its world is still on disk under %s, and its "
@@ -1058,7 +1068,7 @@ def build_app(store, docker=None):
         except ValueError as e:
             # Handed back with what was typed, so a refusal is a correction rather
             # than three fields to fill in again.
-            raise back(refusal=str(e).strip(), values=typed)
+            raise refused(str(e).strip(), values=typed)
         announce.say("maps.added",
                      "This cluster now knows the map %s (%s, saved as %s). It is not "
                      "running yet - add it to the map list to do that."
@@ -2764,7 +2774,8 @@ async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
     is awake to read.
     """
     from . import savepoints
-    seen_bad = set()
+    seen_bad = set()                              # worlds that would not read
+    seen_unchecked = set()                        # maps that could not be looked at
     while True:
         if sleep_first:
             await asyncio.sleep(interval)
@@ -2792,8 +2803,13 @@ async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
                 newest = points[0]
                 ok, why = restorectl.verify_world(newest["path"], deep=False)
             except Exception as e:                # noqa: BLE001 - this map, not the sweep
-                if key not in seen_bad:
-                    seen_bad.add(key)
+                # Held apart from seen_bad, which means "this world would not read".
+                # Nothing is known to be wrong with this one - the looking failed - and
+                # folding the two together would have the recovery line tell an
+                # operator who mistyped a map id that their world "reads cleanly
+                # again", which is a sentence about a problem they never had.
+                if key not in seen_unchecked:
+                    seen_unchecked.add(key)
                     announce.say(
                         "world.unchecked",
                         "%s's save points could not be looked at: %s. Every other map "
@@ -2803,6 +2819,11 @@ async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
                         level="warning", map=key)
                 continue
             if ok:
+                # Only a map that was reported damaged gets the recovery line. One that
+                # was merely unchecked is dropped from that set quietly: it is now being
+                # checked again, which is not news, and "reads cleanly again" would be
+                # claiming a repair that never happened.
+                seen_unchecked.discard(key)
                 if key in seen_bad:
                     seen_bad.discard(key)
                     announce.say("world.readable_again",
