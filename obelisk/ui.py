@@ -2434,11 +2434,16 @@ STATUS_STYLE = {"ok": ("ok", "installed"),
                 "orphan": ("warn", "leftover")}
 
 
-def render_mods(store, health=None, found=None, problem="", known=None):
+def render_mods(store, health=None, found=None, problem="", known=None,
+                refusal=""):
     """The mod list, in load order, with what is actually on disk beside each one.
 
     Order is the first thing people get wrong and install health is the second, so both
     are on the same screen: a mod can be listed, present, and still not installed.
+
+    `refusal` is an edit the list would not accept - a mod already on it, a move that
+    would put a stacking mod second. Amber, because nothing happened: the list is
+    already what was asked for, or the rule says it cannot be.
     """
     ids = modlib.parse(store.get("mod_ids"))
     health = health or {}
@@ -2484,15 +2489,23 @@ def render_mods(store, health=None, found=None, problem="", known=None):
                   'it rather than changing the order; order only decides which of two '
                   '<em>loaded</em> mods wins.</div>' % _e(", ".join(sorted(broken))))
 
-    return ('<form method=post action="/admin/mods">%s'
-            '<fieldset><legend>Mods, in load order</legend>'
-            '<table><tr><th class=num>#</th><th>Mod</th><th>On disk</th>'
-            '<th class=num>Size</th><th class=num>Order</th></tr>%s</table>'
-            '<div class=help style="margin-top:10px">A mod earlier in the list wins '
-            'conflicting changes, which is why stacking mods have to be first. '
-            'Reordering takes effect on the next cluster recreate.</div>'
-            '</fieldset>'
-            '</form>' + _add_a_mod(store, found, problem)) % (banner, "".join(rows))
+    # The % is applied to the template and nothing else. It used to be applied to the
+    # template *concatenated with* _add_a_mod's finished HTML, so a single literal %
+    # anywhere in a CurseForge card or a lookup problem - a mod with % in its name, a
+    # provider message quoting one - raised out of here. _found is module state that
+    # persists, so that did not fail one request: it failed every later render of the
+    # page this editor is on, until the manager restarted.
+    listed = ('<form method=post action="/admin/mods">%s'
+              '<fieldset><legend>Mods, in load order</legend>'
+              '<table><tr><th class=num>#</th><th>Mod</th><th>On disk</th>'
+              '<th class=num>Size</th><th class=num>Order</th></tr>%s</table>'
+              '<div class=help style="margin-top:10px">A mod earlier in the list wins '
+              'conflicting changes, which is why stacking mods have to be first. '
+              'Reordering takes effect on the next cluster recreate.</div>'
+              '</fieldset>'
+              '</form>') % (banner, "".join(rows))
+    return (warn_block(refusal) if refusal else "") + listed + _add_a_mod(
+        store, found, problem)
 
 
 def _mod_card(card, listed):

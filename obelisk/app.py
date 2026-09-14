@@ -130,19 +130,26 @@ def build_app(store, docker=None):
                         httponly=True, samesite="Lax")
         raise resp
 
-    def _settings_body(problem=""):
+    def _settings_body(problem="", refusal=""):
         """The settings page, with the mod list editor under it.
 
         The editor is the same one the Data page used to draw. It moved rather than
         being rebuilt, and it still writes through its own routes - which is the one
         writer this value has always had, whatever page the boxes were on.
         """
-        return ui.render_settings(store, mods=_mods_section(problem=problem))
+        return ui.render_settings(
+            store, mods=_mods_section(problem=problem, refusal=refusal))
 
     async def admin(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        return chrome(_settings_body(), "Obelisk settings", "/admin")
+        # A refusal from the mod editor comes back the way every other page's does:
+        # parked in the one-shot slot, collected once by the render that follows.
+        token = str((getattr(request, "query", None) or {}).get("said") or "")
+        said = _said.pop(token, None) if token else None
+        refusal = (said or {}).get("refusal", "") if (
+            said or {}).get("where") == "mods" else ""
+        return chrome(_settings_body(refusal=refusal), "Obelisk settings", "/admin")
 
     def _safe_back(raw):
         """Where to send the browser after a save. Never what the form asked for.
@@ -1753,13 +1760,14 @@ def build_app(store, docker=None):
         return ui.render_cloud(store, st, rows, message=msg, problem=problem,
                                warning=warning)
 
-    def _mods_section(problem=""):
+    def _mods_section(problem="", refusal=""):
         # Names and categories come from the check the watcher already did, so the
         # page renders without waiting on anybody's API.
         known = {r["id"]: r for r in (ARK_UPDATE.get("mods") or [])}
         return ui.render_mods(store, modsctl.measure(layout.mods_dir(store)),
                               found=_found["card"],
-                              problem=problem or _found["problem"], known=known)
+                              problem=problem or _found["problem"], known=known,
+                              refusal=refusal)
 
     def _data_body(backups=None, cloud=None, restore=None):
         """The four sections, each with its own result slot.
@@ -1953,15 +1961,29 @@ def build_app(store, docker=None):
             raise web.HTTPFound("/setup")
         form = await request.post()
         listed = str(store.get("mod_ids") or "")
-        if form.get("addmod"):
-            listed = modsctl.add(listed, str(form.get("addmod")).strip())
-            _found["problem"] = ""
-        elif form.get("drop"):
-            listed = modsctl.remove(listed, str(form.get("drop")))
-        elif form.get("up"):
-            listed = modsctl.move(listed, str(form.get("up")), -1)
-        elif form.get("down"):
-            listed = modsctl.move(listed, str(form.get("down")), 1)
+        # The list has rules - a mod cannot be added twice, and one that is not on the
+        # list cannot be moved or removed - and they were raising straight out of this
+        # handler. Double-clicking Add returned a stack trace, on the page every other
+        # setting lives on, where every other refusal in this manager is an amber line
+        # saying nothing happened.
+        try:
+            if form.get("addmod"):
+                listed = modsctl.add(listed, str(form.get("addmod")).strip())
+                _found["problem"] = ""
+            elif form.get("drop"):
+                listed = modsctl.remove(listed, str(form.get("drop")))
+            elif form.get("up"):
+                listed = modsctl.move(listed, str(form.get("up")), -1)
+            elif form.get("down"):
+                listed = modsctl.move(listed, str(form.get("down")), 1)
+        except ValueError as e:
+            # Nothing was written: `listed` is still what the store holds, and the
+            # refusal says which rule and what the list still is.
+            raise web.HTTPFound(
+                "/admin?said=%s#mods"
+                % _say_next(where="mods",
+                            refusal="%s - the mod list is unchanged."
+                                    % str(e).strip().rstrip(".")))
         try:
             live, later = _stage_or_apply({"mod_ids": listed})
             store.patch(live)

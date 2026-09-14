@@ -5888,6 +5888,126 @@ check("a map's own mod override is still the raw box",
 check("not a second list editor",
       "Mods, in load order" not in _mp_body, _window(_mp_body, "Mods", 200))
 
+# ---- the mod editor must not take down the page it is on
+#
+# Moving it to Settings changed what these cost. Two crashes that used to break the Data
+# page now break the page every setting lives on: a literal % anywhere in a CurseForge
+# card, and a list rule raising out of the route instead of refusing.
+_t36 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _mods_hardening():
+        _real_st36 = _appmod.clusterctl.status
+        _real_look = _appmod.cfctl.lookup
+        try:
+            _appmod.clusterctl.status = lambda store: {
+                "docker_ok": True, "compose_exists": False, "running": 0,
+                "services": []}
+            _lstore.patch({"mod_ids": "929110"})
+            _lstore.save()
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+
+            # a card whose name carries a literal %
+            _appmod.cfctl.lookup = lambda ref, store=None: (
+                {"id": "555", "name": "100% Wipe Protection",
+                 "summary": "50% faster loading", "category": "QoL"}, "")
+            await client.post("/admin/mods/find", data={"ref": "555"},
+                              allow_redirects=False)
+            after_card = await client.get("/admin")
+            card_body = await after_card.text()
+
+            # and a lookup problem carrying one
+            _appmod.cfctl.lookup = lambda ref, store=None: (
+                None, "that is 90% not a project id")
+            await client.post("/admin/mods/find", data={"ref": "x"},
+                              allow_redirects=False)
+            after_problem = await client.get("/admin")
+            problem_body = await after_problem.text()
+
+            # the refusals: a duplicate add, and moving something not on the list
+            before_ids = str(_lstore.get("mod_ids") or "")
+            dup = await client.post("/admin/mods", data={"addmod": "929110"},
+                                    allow_redirects=False)
+            dup_where = dup.headers.get("Location", "")
+            dup_landed = await (await client.get(dup_where)).text() if (
+                dup.status == 302) else ""
+            after_dup = str(_lstore.get("mod_ids") or "")
+
+            ghost = await client.post("/admin/mods", data={"up": "nosuchmod"},
+                                      allow_redirects=False)
+            ghost_where = ghost.headers.get("Location", "")
+            ghost_landed = await (await client.get(ghost_where)).text() if (
+                ghost.status == 302) else ""
+            after_ghost = str(_lstore.get("mod_ids") or "")
+
+            # and a real edit still works
+            ok = await client.post("/admin/mods", data={"addmod": "929999"},
+                                   allow_redirects=False)
+            after_ok = str(_lstore.get("mod_ids") or "")
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st36
+            _appmod.cfctl.lookup = _real_look
+        return (after_card.status, card_body, after_problem.status, problem_body,
+                before_ids, (dup.status, dup_where, dup_landed, after_dup),
+                (ghost.status, ghost_where, ghost_landed, after_ghost),
+                (ok.status, after_ok))
+
+    (_card_st, _card_body, _prob_st, _prob_body, _ids_before,
+     _dup36, _ghost36, _ok36) = _t36.run_until_complete(_mods_hardening())
+finally:
+    _t36.close()
+
+# ---- a literal % is text, not a format string
+check("a card whose name contains % renders", _card_st == 200, _card_st)
+check("and the name survives it", "100% Wipe Protection" in _card_body,
+      _window(_card_body, "Wipe Protection", 200))
+check("a lookup problem containing % renders too", _prob_st == 200, _prob_st)
+check("with the sentence intact", "90% not a project id" in _prob_body,
+      _window(_prob_body, "90%", 200))
+check("and the page stays up afterwards, which is the part that mattered",
+      _card_st == 200 and _prob_st == 200, [_card_st, _prob_st])
+check("the template is formatted before the card is added to it",
+      _in_order(_after(_uisrc_merge, "def render_mods("),
+                '% (banner, "".join(rows))', "_add_a_mod("),
+      _window(_after(_uisrc_merge, "def render_mods("), "listed = (", 900))
+
+# ---- a rule is a refusal, not a crash
+for _what36, (_st36, _where36, _landed36, _ids36) in (
+        ("adding a mod that is already listed", _dup36),
+        ("moving a mod that is not listed", _ghost36)):
+    check("%s does not crash the page" % _what36, _st36 == 302, [_what36, _st36])
+    check("it comes back to the editor", _where36.endswith("#mods")
+          and "said=" in _where36, _where36)
+    check("in amber, because nothing happened",
+          "<div class=warn>" in _from(_landed36, "<section id=mods"),
+          _window(_from(_landed36, "<section id=mods"), "warn", 300))
+    check("saying the list is unchanged",
+          "the mod list is unchanged" in _landed36,
+          _window(_landed36, "unchanged", 240))
+    check("and it is", _ids36 == _ids_before, [_ids_before, _ids36])
+
+check("the duplicate says which rule it broke",
+     "already in the list" in _dup36[2], _window(_dup36[2], "already", 200))
+check("and the ghost move says the mod is not there",
+      "isn" in _ghost36[2] and "in the list" in _ghost36[2],
+      _window(_ghost36[2], "in the list", 200))
+check("a refusal is said once, not on every later render",
+      "the mod list is unchanged" not in _prob_body, "the refusal stuck")
+
+# ---- and a real edit still goes through the one writer
+check("a valid add still applies", _ok36[0] == 302 and "929999" in _ok36[1],
+      _ok36)
+check("through the writer that stages", "_stage_or_apply" in
+      _after(_s1src, "async def mods_edit"),
+      _window(_s1src, "async def mods_edit", 800))
+check("and the rule check happens before anything is written",
+      _in_order(_after(_s1src, "async def mods_edit"), "except ValueError",
+                "_stage_or_apply"),
+      _window(_s1src, "async def mods_edit", 900))
+
 # ---- every anchor this manager offers has to land on something
 #
 # Four pages became four sections and a page grew a jump row, and an anchor that scrolls
