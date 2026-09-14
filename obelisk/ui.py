@@ -1166,6 +1166,14 @@ FEED_LIVE = """
 DATA_PAGE_KEYS = ("backup_times", "backup_keep", "backup_flush",
                   "cloud_enabled", "cloud_keep")
 
+# The mod list has a real editor - an ordered list with add, remove and reorder, and a
+# CurseForge lookup - which used to live on the Data page while this page offered the
+# same value as a comma-separated string to type by hand. One value, two editors. The
+# editor is on this page now and the raw field is gone; passive_mods and
+# custom_server_args stay as ordinary fields beside it, because they are ordinary
+# fields.
+MODS_EDITOR_KEYS = ("mod_ids",)
+
 
 def render_data_settings(store, keys, back, queued=None, legend="", anchor=""):
     """A handful of settings, on the page about the thing they control.
@@ -1194,7 +1202,7 @@ def render_data_settings(store, keys, back, queued=None, legend="", anchor=""):
             % ((" id=%s" % _e(anchor)) if anchor else "", _e(legend), form))
 
 
-def render_settings(store):
+def render_settings(store, mods=""):
     """The settings page: 194 of them, so finding one has to be a first-class job.
 
     A flat list was fine at 52. At 194 it is 75 KB of scrolling, and the answer to
@@ -1214,7 +1222,8 @@ def render_settings(store):
         # other half of it: the schedule here, the button two tabs away. The five keys
         # that govern the archives are rendered beside the actions that make them.
         rows = [s for s in SETTINGS
-                if s["group"] == g and s["key"] not in DATA_PAGE_KEYS]
+                if s["group"] == g and s["key"] not in DATA_PAGE_KEYS
+                and s["key"] not in MODS_EDITOR_KEYS]
         if not rows:
             continue
         gid = "g-" + re.sub(r"[^a-z0-9]+", "-", g.lower()).strip("-")
@@ -1245,6 +1254,7 @@ def render_settings(store):
     # of them still describe themselves as things a map can differ on - which is true,
     # and was true here until this slice. Without this line there is no route from the
     # page that says "a map can differ" to the page where that is done.
+    index.append('<a href="#mods">Mods</a>')
     blocks.append(
         '<fieldset id="g-per-map-moved"><legend>Per-map overrides</legend>'
         '<div class=help>Everything here is the cluster default. A map that needs to '
@@ -1276,8 +1286,13 @@ def render_settings(store):
         'not marked either way rather than guessed at.</div>'
         % (len(SETTINGS), total_changed, "".join(index), known))
 
-    return ('<form method=post action="/admin/save">%s%s%s%s</form>'
-            % (banner, toolbar, "".join(blocks), SETTINGS_JS))
+    # After the form, not inside it: the mod editor posts to its own routes, and a
+    # form cannot be nested in another form. It gets an index entry of its own so it is
+    # reachable the way every group here is.
+    return ('<form method=post action="/admin/save">%s%s%s%s</form>%s'
+            % (banner, toolbar, "".join(blocks), SETTINGS_JS,
+               ('<section id=mods class=area><h2 class=areah>Mods</h2>%s</section>'
+                % mods) if mods else ""))
 
 
 # The population poll runs once a minute, so anything much older than that is not a

@@ -68,8 +68,12 @@ st = store()
 html_settings = render_settings(st)
 
 # ---- the page is generated, never hand-maintained
-from .ui import DATA_PAGE_KEYS, render_data_settings, render_map_overrides
-_here = [s for s in SETTINGS if s["key"] not in DATA_PAGE_KEYS]
+from .ui import (DATA_PAGE_KEYS, MODS_EDITOR_KEYS, render_data_settings,
+                 render_map_overrides)
+# mod_ids has a real editor of its own on this page now, so it is not one of the form's
+# fields any more - the same way the five schedule keys moved to the Data page.
+_ELSEWHERE = tuple(DATA_PAGE_KEYS) + tuple(MODS_EDITOR_KEYS)
+_here = [s for s in SETTINGS if s["key"] not in _ELSEWHERE]
 missing = [s["label"] for s in _here if s["label"] not in html_settings]
 check("every cluster-wide setting in the schema appears on the page", not missing,
       missing)
@@ -81,6 +85,11 @@ check("the schedule settings render where their actions are",
 check("and not on the settings page as well",
       not any(BY_KEY[k]["label"] in html_settings for k in DATA_PAGE_KEYS),
       [k for k in DATA_PAGE_KEYS if BY_KEY[k]["label"] in html_settings])
+check("the raw mod-ids field is gone from the settings form",
+      'name="mod_ids"' not in html_settings, "the comma field survived")
+check("but the two flags beside it stay ordinary fields",
+      'name="passive_mods"' in html_settings
+      and 'name="custom_server_args"' in html_settings, "a flag field went missing")
 check("they save through the one writer, like everything else",
       'action="/admin/save"' in _dataset, _dataset[:200])
 check("saying where they came from, so the save returns there",
@@ -278,9 +287,9 @@ check("no per-map block is left on the settings page",
 check("every cluster-wide setting is on the page, plus a block per stat family "
       "and array",
       len(re.findall(r"class=f data-k=", _h))
-      == len(SETTINGS) - len(DATA_PAGE_KEYS) + len(STAT_FAMILIES) + len(ROW_ARRAYS),
+      == len(SETTINGS) - len(_ELSEWHERE) + len(STAT_FAMILIES) + len(ROW_ARRAYS),
       "%d blocks for %d settings - %d moved + %d families + %d arrays"
-      % (len(re.findall(r"class=f data-k=", _h)), len(SETTINGS), len(DATA_PAGE_KEYS),
+      % (len(re.findall(r"class=f data-k=", _h)), len(SETTINGS), len(_ELSEWHERE),
          len(STAT_FAMILIES), len(ROW_ARRAYS)))
 check("no stat cell is a setting of its own any more",
       not any("[" in s["key"] for s in SETTINGS),

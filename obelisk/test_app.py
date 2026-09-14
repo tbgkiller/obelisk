@@ -5210,21 +5210,29 @@ def _area(page, name):
     return _from(page, '<section id=%s class=area>' % name).split("</section>")[0]
 
 
-for _sec in ("backups", "cloud", "restore", "mods"):
+for _sec in ("backups", "cloud", "restore"):
     check("the Data page has a %s section to land on" % _sec,
           ('<section id=%s class=area>' % _sec) in _data_pg4,
           _window(_data_pg4, "id=%s" % _sec, 140))
 check("in the order the work happens in",
       _in_order(_data_pg4, "<section id=backups", "<section id=cloud",
-                "<section id=restore", "<section id=mods"),
-      "the sections are out of order")
+                "<section id=restore"), "the sections are out of order")
 check("each one still renders what its page rendered",
-      _in_order(_data_pg4, "Back up now", "Off-site copies", "1. Choose an archive",
-                "Mods, in load order"), "a section lost its content")
+      _in_order(_data_pg4, "Back up now", "Off-site copies", "1. Choose an archive"),
+      "a section lost its content")
 check("with a row of links to them",
       _in_order(_from(_data_pg4, "<div class=jump>"), '"#backups"', '"#cloud"',
-                '"#restore"', '"#mods"'),
+                '"#restore"'),
       _window(_data_pg4, "<div class=jump>", 300))
+# The mod list is Settings' now. It was the odd member of this page: backups, off-site
+# and restore are one story about copies of the cluster, and mods is what the servers
+# load.
+check("and no chip for the section that left",
+      '"#mods"' not in _from(_data_pg4, "<div class=jump>")
+      and "<section id=mods" not in _data_pg4,
+      _window(_data_pg4, "<div class=jump>", 300))
+check("nor its editor",
+      "Mods, in load order" not in _data_pg4, _window(_data_pg4, "Mods", 200))
 # ---- the settings that govern these sections, on the page with their buttons
 check("when backups happen is on the page that makes them",
       "Backup schedule" in _area(_data_pg4, "backups")
@@ -5250,14 +5258,13 @@ check("and the archive it holds is listed under restore",
 for _old, _want in (("/admin/backups", "/admin/data#backups"),
                     ("/admin/restore", "/admin/data#restore"),
                     ("/admin/cloud", "/admin/data#cloud"),
-                    ("/admin/mods", "/admin/data#mods")):
+                    ("/admin/mods", "/admin#mods")):
     _st, _where = _olds4[_old]
     check("%s still resolves" % _old, _st == 302, [_old, _st])
     check("landing on its own section", _where == _want, [_where, _want])
 
 # ---- and every form still posts where it always did
-for _action in ("/admin/backup", "/admin/mods", "/admin/mods/find", "/admin/mods/key",
-                "/admin/restore/inspect", "/admin/restore/run",
+for _action in ("/admin/backup", "/admin/restore/inspect", "/admin/restore/run",
                 "/admin/cloud/disconnect", "/admin/cloud/push", "/admin/cloud/pull"):
     check("a form still posts to %s" % _action,
           ('action="%s"' % _action) in _data_pg4, _action)
@@ -5443,7 +5450,7 @@ check("no page sends anybody to one of the four tabs that were folded in",
 
 # ---- the seams between four things that were four pages
 for _anchor, _title in (("backups", "Back up"), ("cloud", "Off-site"),
-                        ("restore", "Restore"), ("mods", "Mods")):
+                        ("restore", "Restore")):
     check("the %s section is headed %r" % (_anchor, _title),
           ('<h2 class=areah>%s</h2>' % _title) in _area(_data_pg4, _anchor),
           _area(_data_pg4, _anchor)[:200])
@@ -5453,8 +5460,7 @@ for _anchor, _title in (("backups", "Back up"), ("cloud", "Off-site"),
 check("the headings come before the boxes they head",
       _in_order(_data_pg4, "<h2 class=areah>Back up</h2>", "Back up now",
                 "<h2 class=areah>Off-site</h2>", "<h2 class=areah>Restore</h2>",
-                "1. Choose an archive", "<h2 class=areah>Mods</h2>",
-                "Mods, in load order"), "a heading is out of place")
+                "1. Choose an archive"), "a heading is out of place")
 check("and the sections are drawn apart, not stacked",
       ".area{border-top:" in _uisrc_merge, "no rule between sections")
 
@@ -5763,6 +5769,124 @@ for _up34 in ("running", "partly running"):
           "<fieldset id=run>" in _pages34[_up34]
           and _runtable(_pages34[_up34]).count("<td><code>") == 2,
           _runtable(_pages34[_up34])[:300])
+
+# ---- the mod list is on the page that owns mods
+#
+# One value, two editors: an ordered list with add, remove, reorder and a CurseForge
+# lookup on the Data page, and the same value as a comma string to type by hand on
+# Settings. The editor moved; the raw field is gone; the routes it posts to did not
+# change, because they were always the one writer this value had.
+_t35 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _mods_pages():
+        _real_st35 = _appmod.clusterctl.status
+        try:
+            _appmod.clusterctl.status = lambda store: {
+                "docker_ok": True, "compose_exists": False, "running": 0,
+                "services": []}
+            # A mod already listed, because an empty list renders "no mods" and none of
+            # the controls this move exists to keep.
+            _lstore.patch({"mod_ids": "929110"})
+            _lstore.save()
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            settings = await (await client.get("/admin")).text()
+            data = await (await client.get("/admin/data")).text()
+            r = await client.get("/admin/mods", allow_redirects=False)
+            gone = (r.status, r.headers.get("Location", ""))
+            posts = {}
+            before = str(_lstore.get("mod_ids") or "")
+            whole = _copy9.deepcopy(_lstore.data)
+            # A different id from the one seeded: adding one that is already listed
+            # raises out of mods.add and the route does not catch it, which is a 500.
+            # Pre-existing, not this move's - recorded in the backlog as N18.
+            # Both branches of the key form: setting one and clearing it leave by
+            # different redirects, and only one of them was being walked.
+            for path, body in (("/admin/mods", {"addmod": "929420"}),
+                               ("/admin/mods/find", {"ref": "929110"}),
+                               ("/admin/mods/key", {"apikey": "x" * 24}),
+                               ("/admin/mods/key", {"clearkey": "1"})):
+                pr = await client.post(path, data=body, allow_redirects=False)
+                posts[path + "|" + "".join(sorted(body))] = (
+                    pr.status, pr.headers.get("Location", ""))
+            after = _copy9.deepcopy(_lstore.data)
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st35
+        return settings, data, gone, posts, before, whole, after
+
+    (_set35, _data35, _gone35, _posts35, _mods_before,
+     _store_before35, _store_after35) = _t35.run_until_complete(_mods_pages())
+finally:
+    _t35.close()
+
+check("the mod list editor is on the settings page",
+      "Mods, in load order" in _set35, _window(_set35, "Mods,", 200))
+check("with the controls that made it worth keeping",
+      _in_order(_from(_set35, "Mods, in load order"), "name=up", "name=down",
+                "name=drop"),
+      _window(_set35, "Mods, in load order", 600))
+check("its CurseForge lookup came too",
+      "Add a mod" in _set35 and 'action="/admin/mods/find"' in _set35,
+      _window(_set35, "Add a mod", 300))
+check("and the API-key form",
+      'action="/admin/mods/key"' in _set35, _window(_set35, "mods/key", 200))
+check("it is outside the settings form, because it has forms of its own",
+      _in_order(_set35, "</form>", "<section id=mods"),
+      _window(_set35, "<section id=mods", 200))
+check("and reachable from the page's own index",
+      'href="#mods"' in _set35 and "<section id=mods" in _set35,
+      _window(_set35, 'href="#mods"', 160))
+check("the raw comma field it replaced is gone",
+      'name="mod_ids"' not in _set35, _window(_set35, "mod_ids", 200))
+check("the two flags beside it are still ordinary fields",
+      'name="passive_mods"' in _set35 and 'name="custom_server_args"' in _set35,
+      "a flag field went missing")
+
+check("the Data page no longer carries it",
+      "Mods, in load order" not in _data35 and "<section id=mods" not in _data35,
+      _window(_data35, "Mods", 200))
+check("nor a chip pointing at it",
+      '"#mods"' not in _data35, _window(_data35, "class=jump", 300))
+
+# ---- the routes kept their addresses and changed only where they land
+check("the old mods tab lands on settings now",
+      _gone35 == (302, "/admin#mods"), _gone35)
+for _path, (_st35, _where35) in sorted(_posts35.items()):
+    check("%s still works" % _path.split("|")[0] + " (" + _path.split("|")[1] + ")",
+          _st35 == 302, [_path, _st35])
+    check("and returns to the editor's new home", _where35 == "/admin#mods",
+          [_path, _where35])
+
+# ---- one writer, and it touched one value
+check("adding a mod changed the mod list",
+      (_store_after35.get("cluster") or {}).get("mod_ids")
+      != (_store_before35.get("cluster") or {}).get("mod_ids"),
+      [(_store_before35.get("cluster") or {}).get("mod_ids"),
+       (_store_after35.get("cluster") or {}).get("mod_ids")])
+_moved35 = [k for k in set(_store_before35.get("cluster") or {})
+            | set(_store_after35.get("cluster") or {})
+            if (_store_before35.get("cluster") or {}).get(k)
+            != (_store_after35.get("cluster") or {}).get(k)]
+# The key form was posted too, with clearkey - so that setting is expected to move.
+check("and nothing else in the cluster settings",
+      sorted(_moved35) in (["mod_ids"], ["curseforge_api_key", "mod_ids"]),
+      sorted(_moved35))
+check("every other map's overrides are untouched",
+      (_store_after35.get("maps") or {}) == (_store_before35.get("maps") or {}),
+      [(_store_before35.get("maps") or {}), (_store_after35.get("maps") or {})])
+check("the route adds no write path of its own",
+      "_stage_or_apply" in _after(_s1src, "async def mods_edit"),
+      _window(_s1src, "async def mods_edit", 700))
+
+# ---- and the per-map override box is exactly as it was
+check("a map's own mod override is still the raw box",
+      'name="map:island:mod_ids"' in _mp_body,
+      _window(_mp_body, "map:island:mod_ids", 200))
+check("not a second list editor",
+      "Mods, in load order" not in _mp_body, _window(_mp_body, "Mods", 200))
 
 # ---- every anchor this manager offers has to land on something
 #

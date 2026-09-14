@@ -130,10 +130,19 @@ def build_app(store, docker=None):
                         httponly=True, samesite="Lax")
         raise resp
 
+    def _settings_body(problem=""):
+        """The settings page, with the mod list editor under it.
+
+        The editor is the same one the Data page used to draw. It moved rather than
+        being rebuilt, and it still writes through its own routes - which is the one
+        writer this value has always had, whatever page the boxes were on.
+        """
+        return ui.render_settings(store, mods=_mods_section(problem=problem))
+
     async def admin(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
-        return chrome(ui.render_settings(store), "Obelisk settings", "/admin")
+        return chrome(_settings_body(), "Obelisk settings", "/admin")
 
     def _safe_back(raw):
         """Where to send the browser after a save. Never what the form asked for.
@@ -153,7 +162,7 @@ def build_app(store, docker=None):
         for key in mapsmod.BY_KEY:
             if back == "/admin/cluster/map/" + key:
                 return back
-        for sect in ("backups", "cloud", "restore", "mods"):
+        for sect in ("backups", "cloud", "restore"):
             if back == "/admin/data#" + sect:
                 return back
         return "/admin"
@@ -301,7 +310,7 @@ def build_app(store, docker=None):
             await _restage_if_needed(restage)
         except Invalid as e:
             return chrome('<div class=problem>%s</div>%s'
-                          % (ui._e(str(e)), ui.render_settings(store)),
+                          % (ui._e(str(e)), _settings_body()),
                           "Obelisk settings", "/admin")
         where = _safe_back(form.get("back"))
         if where == "/admin":
@@ -1733,7 +1742,7 @@ def build_app(store, docker=None):
     # page does not get to change: what moved is where a result is rendered, not where
     # it is sent.
     DATA_SECTIONS = (("#backups", "Back up"), ("#cloud", "Off-site"),
-                     ("#restore", "Restore"), ("#mods", "Mods"))
+                     ("#restore", "Restore"))
 
     def _cloud_section(msg="", problem="", warning=""):
         st = cloudctl.status(store)
@@ -1752,14 +1761,14 @@ def build_app(store, docker=None):
                               found=_found["card"],
                               problem=problem or _found["problem"], known=known)
 
-    def _data_body(backups=None, cloud=None, restore=None, mods=None):
+    def _data_body(backups=None, cloud=None, restore=None):
         """The four sections, each with its own result slot.
 
         A result belongs to the section that caused it, the same rule the cluster
         page's actions follow: the operator pressed a button in one of four places and
         the answer has to come back where they are looking.
         """
-        b, c, r, m = (backups or {}), (cloud or {}), (restore or {}), (mods or {})
+        b, c, r = (backups or {}), (cloud or {}), (restore or {})
         titles = dict((a.lstrip("#"), t) for a, t in DATA_SECTIONS)
         return (ui.render_jump_row(DATA_SECTIONS)
                 + ui.render_area("backups", titles["backups"], ui.render_backups(
@@ -1775,9 +1784,7 @@ def build_app(store, docker=None):
                     "What goes off-site"))
                 + ui.render_area("restore", titles["restore"], _restore_body(
                     message=r.get("message", ""), problem=r.get("problem", ""),
-                    refusal=r.get("refusal", "")))
-                + ui.render_area("mods", titles["mods"],
-                                 _mods_section(problem=m.get("problem", ""))))
+                    refusal=r.get("refusal", ""))))
 
     def _schedule_fields(keys, section, legend):
         """The settings that govern this section, on the page with its buttons."""
@@ -1811,7 +1818,7 @@ def build_app(store, docker=None):
         token = str((getattr(request, "query", None) or {}).get("said") or "")
         said = _said.pop(token, None) if token else None
         where = (said or {}).get("where") or ""
-        if where not in ("backups", "cloud", "restore", "mods"):
+        if where not in ("backups", "cloud", "restore"):
             return {}
         return {where: {"message": said.get("message", ""),
                         "problem": said.get("problem", ""),
@@ -1892,9 +1899,10 @@ def build_app(store, docker=None):
     _found = {"card": None, "problem": ""}
 
     async def mods_page(request):
+        """The old tab's address. The editor is on Settings now."""
         if not authed(request):
             raise web.HTTPFound("/setup")
-        raise web.HTTPFound("/admin/data#mods")
+        raise web.HTTPFound("/admin#mods")
 
     async def mods_key(request):
         """Save or clear the CurseForge key, from the page where it is wanted.
@@ -1912,7 +1920,7 @@ def build_app(store, docker=None):
             announce.say("mods.key_cleared",
                          "The CurseForge API key was removed. Searching is off; adding "
                          "a mod by Project ID still works.")
-            raise web.HTTPFound("/admin/data#mods")
+            raise web.HTTPFound("/admin#mods")
         value = str(form.get("apikey") or "").strip()
         if value:
             try:
@@ -1926,7 +1934,7 @@ def build_app(store, docker=None):
                              "from the Mods page are now available.")
             except Invalid as e:
                 log.info("CurseForge key rejected: %s", e)
-        raise web.HTTPFound("/admin/data#mods")
+        raise web.HTTPFound("/admin#mods")
 
     async def mods_find(request):
         """Look a mod up before it can be added. Never writes anything."""
@@ -1938,7 +1946,7 @@ def build_app(store, docker=None):
         card, problem = await asyncio.to_thread(
             lambda: cfctl.lookup(form.get("ref"), store=store))
         _found.update(card=card, problem=problem)
-        raise web.HTTPFound("/admin/data#mods")
+        raise web.HTTPFound("/admin#mods")
 
     async def mods_edit(request):
         if not authed(request):
@@ -1967,7 +1975,7 @@ def build_app(store, docker=None):
             store.save()
         except Exception as e:                       # noqa: BLE001 - shown to the user
             log.warning("mod list rejected: %s", e)
-        raise web.HTTPFound("/admin/data#mods")
+        raise web.HTTPFound("/admin#mods")
 
 
     # ---- restore
