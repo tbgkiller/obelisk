@@ -1360,8 +1360,11 @@ def render_status(status, players=None, addresses=None, host_known=True):
         return ('<div class=problem><strong>Docker not connected.</strong> %s</div>'
                 % _e(status.get("docker_detail", "")))
     if not status.get("compose_exists"):
-        return ('<div class=note>No cluster has been launched from this Obelisk yet. '
-                'Pick your maps below and launch.</div>')
+        # Nothing, not a note. The page's own readiness line says the cluster is not
+        # running and where to start it, immediately above this - two notes a hundred
+        # characters apart saying the same thing is what the whole consolidation has
+        # been removing.
+        return ""
     # Colour follows what the server is doing, not merely whether a process exists. A
     # container that aborts and restarts every few seconds reports "running" the whole
     # time, and showing that in green is a status that lies.

@@ -4878,9 +4878,10 @@ check("the moderation sections are still there, underneath",
       _in_order(_fresh_pg, "<fieldset id=who>", "<fieldset id=bans>",
                 "<fieldset id=cap>"),
       "a section went missing on a fresh install")
-check("and it says there is nothing running yet",
-      "has been launched from this Obelisk yet" in _fresh_pg,
-      _window(_fresh_pg, "launched", 200))
+check("and it says there is nothing running yet, once",
+      _fresh_pg.count("Cluster not running.") == 1
+      and "has been launched from this Obelisk yet" not in _fresh_pg,
+      _window(_fresh_pg, "not running", 300))
 check("a launched cluster keeps the order the other way round",
       _in_order(_merged_pg, "<fieldset id=who>", "<legend>Presets</legend>"),
       "a running cluster leads with the form")
@@ -4902,10 +4903,12 @@ for _href, _target in (("#run", "<fieldset id=run>"), ("#who", "<fieldset id=who
 # The note used to promise addresses "at the foot of this page", which was a panel;
 # the addresses are a column of the running table now, and a cluster that is not running
 # has no such table - so the note says when they appear rather than where.
-check("and the readiness note says when the addresses appear",
-      "address" in _idle_pg and "once it is running" in _idle_pg,
+check("and the readiness note describes the screen it is on",
+      "the addresses are beside each map" in _idle_pg,
       _window(_idle_pg, "not running", 260))
-check("rather than pointing at a panel that is no longer there",
+check("rather than promising something that is already there",
+      "once it is running" not in _idle_pg, _window(_idle_pg, "not running", 260))
+check("or pointing at a panel that is no longer there",
       "foot of this page" not in _idle_pg and "<fieldset id=connect>" not in _idle_pg,
       _window(_idle_pg, "not running", 260))
 
@@ -5669,6 +5672,97 @@ check("the in-game help is the constant the map page uses, not a second copy",
        _uisrc_merge.count("HOST_UNKNOWN_WHY = ")])
 check("and the panel that used to render them is gone from the codebase",
       "def render_connect(" not in _uisrc_merge, "render_connect survived")
+
+# ---- one "not running" note, and only when it is true
+#
+# A stopped cluster still draws its table: every row reads "exited" and every address is
+# in it. The note that says "the address appears once it is running" was describing a
+# future already on the screen - and a never-launched cluster had that note twice, a
+# hundred characters apart, because render_status wrote one of its own.
+_INST = _linst["The Island"]
+_RAG = _linst["Ragnarok"]
+_STATES = {
+    "never launched": {"docker_ok": True, "compose_exists": False, "running": 0,
+                       "services": []},
+    "stopped but defined": {
+        "docker_ok": True, "compose_exists": True, "running": 0, "services": [
+            {"service": _INST, "name": "asa-labeltest-island", "level": "bad",
+             "says": "exited", "status": "Exited"},
+            {"service": _RAG, "name": "asa-labeltest-ragnarok", "level": "bad",
+             "says": "exited", "status": "Exited"}]},
+    "partly running": {
+        "docker_ok": True, "compose_exists": True, "running": 1, "services": [
+            {"service": _INST, "name": "asa-labeltest-island", "level": "ok",
+             "says": "Online", "status": "Up"},
+            {"service": _RAG, "name": "asa-labeltest-ragnarok", "level": "bad",
+             "says": "exited", "status": "Exited"}]},
+    "running": {"docker_ok": True, "compose_exists": True, "running": 2,
+                "services": [dict(x) for x in _lstatus["services"]]},
+}
+_t34 = _aio2.get_event_loop_policy().new_event_loop()
+_pages34 = {}
+try:
+    async def _state_page(st):
+        _appmod.clusterctl.status = lambda store: dict(
+            st, services=[dict(x) for x in st["services"]])
+        _bot_s1.LIVE = _kick_relay()
+        client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+        await client.start_server()
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+        body = await (await client.get("/admin/cluster")).text()
+        await client.close()
+        return body
+
+    for _name34, _st34 in _STATES.items():
+        _pages34[_name34] = _t34.run_until_complete(_state_page(_st34))
+finally:
+    _t34.close()
+    _bot_s1.LIVE = _real_live
+    _appmod.clusterctl.status = _real_status_s1
+
+for _name34, _page34 in _pages34.items():
+    check("%s says it is not running at most once" % _name34,
+          _page34.count("Cluster not running.") <= 1,
+          _page34.count("Cluster not running."))
+    check("%s carries no second launched-yet note" % _name34,
+          "has been launched from this Obelisk yet" not in _page34,
+          _window(_page34, "launched", 200))
+
+_never = _pages34["never launched"]
+check("a never-launched cluster says it exactly once",
+      _never.count("Cluster not running.") == 1,
+      _never.count("Cluster not running."))
+check("draws no table for maps that do not exist",
+      "<fieldset id=run>" not in _never, "a table appeared")
+check("and claims nothing about addresses it is not showing",
+      "addresses are beside each map" not in _never,
+      _window(_never, "not running", 260))
+check("it just says where to start", "Launch it below." in _never,
+      _window(_never, "not running", 260))
+
+_stopped = _pages34["stopped but defined"]
+check("a stopped cluster still draws its table",
+      "<fieldset id=run>" in _stopped, "no table for a stopped cluster")
+check("with every address still in it",
+      _runtable(_stopped).count("<td><code>") == 2,
+      _runtable(_stopped).count("<td><code>"))
+check("and rows that say what the maps are doing",
+      "exited" in _runtable(_stopped), _runtable(_stopped)[:400])
+check("its note points at the addresses that are on the screen",
+      "the addresses are beside each map" in _stopped,
+      _window(_stopped, "not running", 260))
+check("and does not promise them for later",
+      "once it is running" not in _stopped, _window(_stopped, "not running", 260))
+
+for _up34 in ("running", "partly running"):
+    check("a %s cluster is not told it is not running" % _up34,
+          "Cluster not running." not in _pages34[_up34],
+          _window(_pages34[_up34], "not running", 200))
+    check("and still draws its table with addresses",
+          "<fieldset id=run>" in _pages34[_up34]
+          and _runtable(_pages34[_up34]).count("<td><code>") == 2,
+          _runtable(_pages34[_up34])[:300])
 
 # ---- every anchor this manager offers has to land on something
 #

@@ -616,10 +616,20 @@ def build_app(store, docker=None):
         note = ""
         if not (st or {}).get("running"):
             todo = store.readiness()
-            note = ('<div class=note>Cluster not running. %s</div>'
-                    % (("Still to set: " + ", ".join(b["label"] for b in todo))
-                       if todo else "Launch it below \u2014 each map\u2019s address "
-                       "appears beside it once it is running."))
+            # What the operator is looking at, not a promise about later. A
+            # cluster that has been launched and stopped still draws its table, with
+            # every address in it and every row reading "exited" - so "the address
+            # appears once it is running" described a future that was already on the
+            # screen. A cluster that has never been launched has no table and no
+            # addresses, and is told only where to start.
+            if todo:
+                rest = "Still to set: " + ", ".join(b["label"] for b in todo)
+            elif (st or {}).get("compose_exists"):
+                rest = ("Launch it below \u2014 the addresses are beside each "
+                        "map.")
+            else:
+                rest = "Launch it below."
+            note = '<div class=note>Cluster not running. %s</div>' % rest
         return (note + _dashboard()
                 + ui.render_status(_label_services(st), players=_players_now(),
                                    addresses=_addresses(),
