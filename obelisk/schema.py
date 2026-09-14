@@ -132,7 +132,10 @@ SETTINGS = [
          item_pattern=r"^\d{4,8}$",
          help="Mods the server loads but clients aren't forced to download."),
 
-    dict(key="custom_server_args", label="Extra launch flags", group="Mods",
+    # Not a mod setting: it is the raw argument string the server is started with,
+    # and it sat in the Mods group only because mods were the commonest reason to use
+    # it. Advanced already holds the other two raw passthroughs.
+    dict(key="custom_server_args", label="Extra launch flags", group="Advanced",
          type="text", default="", target="env:CUSTOM_SERVER_ARGS", apply="recreate",
          max_len=400, ascii_only=True,
          help="Appended to the server command line, e.g. -ForceAllowCaveFlyers. "

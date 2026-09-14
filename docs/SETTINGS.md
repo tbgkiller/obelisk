@@ -99,13 +99,10 @@ web UI after it is running.
 |---|---|---|---|---|---|
 | Mods (CurseForge IDs) | `mod_ids` | csv | `` | UI | recreate |
 | Passive mods | `passive_mods` | csv | `` | UI | recreate |
-| Extra launch flags | `custom_server_args` | text | `` | UI | recreate |
 
 **Mods (CurseForge IDs)** - Comma-separated CurseForge project IDs, applied to all ten maps. ORDER MATTERS: a mod earlier in the list wins conflicting remaps, which is why stacking mods go first. Blank means vanilla.
 
 **Passive mods** - Mods the server loads but clients aren't forced to download.
-
-**Extra launch flags** - Appended to the server command line, e.g. -ForceAllowCaveFlyers. Wrong values here stop a map booting, so change one at a time.
 
 
 ## Rates
@@ -325,9 +322,12 @@ web UI after it is running.
 
 | Setting | Key | Type | Default | Set in | Takes effect |
 |---|---|---|---|---|---|
+| Extra launch flags | `custom_server_args` | text | `` | UI | recreate |
 | CurseForge API key | `curseforge_api_key` | password | `` | UI | none |
 | Extra GameUserSettings.ini | `extra_gameusersettings` | longtext | `` | UI | reload |
 | Extra Game.ini | `extra_game` | longtext | `` | UI | reload |
+
+**Extra launch flags** - Appended to the server command line, e.g. -ForceAllowCaveFlyers. Wrong values here stop a map booting, so change one at a time.
 
 **CurseForge API key** - Optional, and free from console.curseforge.com. With a key the Mods page can search and browse CurseForge; without one you can still add any mod by pasting its Project ID, which is what the keyless lookup can answer. You can paste it straight into the Mods page instead of hunting for it here - same setting, same storage, two doors. Stored like any other secret and never logged.
 

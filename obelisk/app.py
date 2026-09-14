@@ -172,6 +172,8 @@ def build_app(store, docker=None):
         for sect in ("backups", "cloud", "restore"):
             if back == "/admin/data#" + sect:
                 return back
+        if back == "/admin#mods":
+            return back
         return "/admin"
 
     async def save(request):
@@ -1761,13 +1763,28 @@ def build_app(store, docker=None):
                                warning=warning)
 
     def _mods_section(problem="", refusal=""):
+        """The mod list, the passive list, and the sentence that tells them apart.
+
+        passive_mods used to be a field in a "Mods" group eighteen groups and a hundred
+        and twenty thousand characters away from the list it belongs beside - two index
+        entries both reading "Mods", with even odds of clicking the wrong one. It is a
+        mod list too, so it is here; it saves through the settings writer, so it keeps
+        its own small form.
+        """
         # Names and categories come from the check the watcher already did, so the
         # page renders without waiting on anybody's API.
         known = {r["id"]: r for r in (ARK_UPDATE.get("mods") or [])}
-        return ui.render_mods(store, modsctl.measure(layout.mods_dir(store)),
-                              found=_found["card"],
-                              problem=problem or _found["problem"], known=known,
-                              refusal=refusal)
+        try:
+            waiting = pendingctl.queued(store)["cluster"]
+        except Exception:                            # noqa: BLE001 - never a blank page
+            waiting = {}
+        return (ui.MODS_ACT_NOW
+                + ui.render_mods(store, modsctl.measure(layout.mods_dir(store)),
+                                 found=_found["card"],
+                                 problem=problem or _found["problem"], known=known,
+                                 refusal=refusal)
+                + ui.render_data_settings(store, ("passive_mods",), "/admin#mods",
+                                          queued=waiting, legend="Passive mods"))
 
     def _data_body(backups=None, cloud=None, restore=None):
         """The four sections, each with its own result slot.

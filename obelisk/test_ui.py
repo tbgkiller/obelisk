@@ -87,9 +87,17 @@ check("and not on the settings page as well",
       [k for k in DATA_PAGE_KEYS if BY_KEY[k]["label"] in html_settings])
 check("the raw mod-ids field is gone from the settings form",
       'name="mod_ids"' not in html_settings, "the comma field survived")
-check("but the two flags beside it stay ordinary fields",
-      'name="passive_mods"' in html_settings
-      and 'name="custom_server_args"' in html_settings, "a flag field went missing")
+# passive_mods is the other mod list, so it renders with the mod list rather than in a
+# second group called "Mods" a hundred thousand characters away. custom_server_args is
+# not a mod setting at all - it is the raw launch-argument string - and lives with the
+# other passthroughs in Advanced.
+check("the passive list is not a field of the settings form",
+      'name="passive_mods"' not in html_settings, "passive_mods is still in the form")
+check("and the launch flags are, in their new group",
+      'name="custom_server_args"' in html_settings, "the flags went missing")
+check("which is Advanced, beside the other raw passthroughs",
+      BY_KEY["custom_server_args"]["group"] == "Advanced",
+      BY_KEY["custom_server_args"]["group"])
 check("they save through the one writer, like everything else",
       'action="/admin/save"' in _dataset, _dataset[:200])
 check("saying where they came from, so the save returns there",

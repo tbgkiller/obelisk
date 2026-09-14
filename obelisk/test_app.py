@@ -5888,6 +5888,81 @@ check("a map's own mod override is still the raw box",
 check("not a second list editor",
       "Mods, in load order" not in _mp_body, _window(_mp_body, "Mods", 200))
 
+# ---- one "Mods" on the page
+#
+# The index listed it twice: the settings group holding passive_mods and the launch
+# flags at about 31k, and the list editor at about 153k - eighteen groups apart, told
+# apart only by a count chip reading "2". Even odds of clicking the wrong one, which is
+# the duplication this whole arc has been removing.
+_t37 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _settings_once():
+        _real_st37 = _appmod.clusterctl.status
+        try:
+            _appmod.clusterctl.status = lambda store: dict(
+                _lstatus, services=[dict(x) for x in _lstatus["services"]])
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            page = await (await client.get("/admin")).text()
+            # a save made in the mods section comes back to the mods section
+            r = await client.post("/admin/save",
+                                  data={"passive_mods": "111,222",
+                                        "back": "/admin#mods"},
+                                  allow_redirects=False)
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st37
+        return page, (r.status, r.headers.get("Location", ""))
+
+    _set37, _back37 = _t37.run_until_complete(_settings_once())
+finally:
+    _t37.close()
+
+_index37 = _from(_set37, "<div class=index>").split("</div>")[0]
+check("the page index offers Mods exactly once",
+      _index37.count(">Mods") == 1, [_index37.count(">Mods"), _index37[:400]])
+check("and it is the list editor it points at",
+      'href="#mods"' in _index37 and 'href="#g-mods"' not in _index37, _index37[:400])
+check("there is no settings group called Mods left behind",
+      'id="g-mods"' not in _set37 and "g-mods" not in _set37,
+      _window(_set37, "g-mods", 200))
+check("and no empty group was left where it was",
+      _set37.count(">Mods</button>") == 0, _set37.count(">Mods</button>"))
+
+# ---- the other mod list is beside the mod list
+_mods37 = _from(_set37, "<section id=mods").split("</section>")[0]
+check("the passive list is in the mods section",
+      'name="passive_mods"' in _mods37, _window(_mods37, "passive", 300))
+check("under its own heading, so it reads as the second list it is",
+      "Passive mods" in _mods37, _window(_mods37, "Passive", 200))
+check("saving through the one writer, like every other setting",
+      _mods37.count('action="/admin/save"') == 1, _mods37.count('action="/admin/save"'))
+check("and coming back here when it does",
+      'name=back value="/admin#mods"' in _mods37, _window(_mods37, "name=back", 200))
+check("which the redirect guard allows rather than sending it to the page top",
+      _back37[0] == 302 and _back37[1].startswith("/admin?said=")
+      and _back37[1].endswith("#mods"), _back37)
+
+# ---- and the launch flags are not in it
+check("the launch flags are not in the mods section",
+      'name="custom_server_args"' not in _mods37, _window(_mods37, "custom", 200))
+check("they are in the settings form, where the other passthroughs are",
+      'name="custom_server_args"' in _set37.split("<section id=mods")[0],
+      "the flags left the form")
+check("under Advanced", "Advanced" in _index37, _index37[:400])
+
+# ---- the section says how its buttons behave
+check("the mods section says its controls act on their own",
+      "do not wait for" in _mods37 and "Save changes" in _mods37,
+      _window(_mods37, "act as soon", 300))
+check("said once, at the top of the section",
+      _in_order(_mods37, "act as soon as you click", "Mods, in load order"),
+      _window(_mods37, "act as soon", 200))
+check("and that they still queue like everything else here",
+      "queue until" in _mods37, _window(_mods37, "queue", 200))
+
 # ---- the mod editor must not take down the page it is on
 #
 # Moving it to Settings changed what these cost. Two crashes that used to break the Data

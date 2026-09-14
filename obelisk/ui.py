@@ -1172,7 +1172,15 @@ DATA_PAGE_KEYS = ("backup_times", "backup_keep", "backup_flush",
 # editor is on this page now and the raw field is gone; passive_mods and
 # custom_server_args stay as ordinary fields beside it, because they are ordinary
 # fields.
-MODS_EDITOR_KEYS = ("mod_ids",)
+MODS_EDITOR_KEYS = ("mod_ids", "passive_mods")
+
+# The mod controls are not the settings form. Add, remove and the arrows post the moment
+# they are clicked and queue like any other change; everything else on this page waits
+# for Save changes at the top. Two behaviours on one page is worth one sentence.
+MODS_ACT_NOW = ('<div class=help style="margin:0 0 12px">These act as soon as you click '
+                'them \u2014 they do not wait for <b>Save changes</b> at the top of the '
+                'page. Like every other change that restarts servers, they queue until '
+                'the cluster is empty or the window opens.</div>')
 
 
 def render_data_settings(store, keys, back, queued=None, legend="", anchor=""):
