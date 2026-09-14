@@ -533,9 +533,9 @@ def render_map_overrides(store, map_key, queued=None, clears=()):
     from .schema import SETTINGS
     from . import maps as mapcat
     per_map = [s for s in SETTINGS if s.get("per_map")]
-    if map_key not in mapcat.BY_KEY:
+    if not mapcat.known(store, map_key):
         return ""
-    chosen = [mapcat.BY_KEY[map_key]]
+    chosen = [mapcat.entry(store, map_key)]
     queued = queued or {}
     clears = set(clears or ())
 
@@ -2362,6 +2362,22 @@ PRESET_RUNNING = ("Stop the cluster to apply a preset \u2014 it rewrites the who
 # list - so removing the only map has no good outcome to offer. Said once, as the
 # button's reason for being disabled and as the route's refusal, so the two cannot
 # describe the same rule differently.
+def maps_unknown(keys):
+    """The amber for a map list naming something the catalogue cannot explain.
+
+    A store edited by hand, or restored from a backup taken while the cluster had a map
+    of its own that has since been forgotten. The list is left exactly as it is: the
+    answer is to put the map back in the catalogue or take the name out of the list,
+    and guessing which - by dropping the name - would move every port after it.
+    """
+    keys = list(keys)
+    return ("This cluster's map list names %s, which %s a map Obelisk knows or one "
+            "this cluster has added. Nothing will start until %s put back in the "
+            "catalogue or taken out of the list. Nothing has been changed."
+            % (", ".join(keys), "isn’t" if len(keys) == 1 else "aren’t",
+               "it is" if len(keys) == 1 else "they are"))
+
+
 ONLY_MAP_WHY = "A cluster needs at least one map"
 ONLY_MAP = ONLY_MAP_WHY + " \u2014 the list is unchanged."
 
@@ -2379,6 +2395,9 @@ def render_maps_editor(store, running=False, refusal=""):
     catalogue happens to be in, and the value it posted was that order.
     """
     keys = mapcat.listed(store.get("maps"))
+    # This cluster's catalogue, not Obelisk's: a map the operator added is a map
+    # this editor lists, links to and offers, like any other.
+    cat = mapcat.catalogue(store)
     warn = ""
     if running and keys:
         # Said here rather than in a help string on another page. This is the moment
@@ -2395,7 +2414,7 @@ def render_maps_editor(store, running=False, refusal=""):
 
     rows = []
     for i, key in enumerate(keys):
-        name = mapcat.BY_KEY[key]["name"] if key in mapcat.BY_KEY else key
+        name = (cat.get(key) or {}).get("name") or key
         first = i == 0
         last = i == len(keys) - 1
         only = len(keys) == 1
@@ -2409,7 +2428,7 @@ def render_maps_editor(store, running=False, refusal=""):
             '<td class=num>%s %s %s</td></tr>'
             % (i + 1,
                '<a class=maplink href="/admin/cluster/map/%s">%s</a>'
-               % (_e(key), _e(name)) if key in mapcat.BY_KEY else _e(name),
+               % (_e(key), _e(name)) if key in cat else _e(name),
                ' <span class="tag chg">update master</span>' if first else "",
                '<button class=ghost type=submit name=up value="%s"%s%s>\u2191</button>'
                % (_e(key), " disabled" if first else "", stuck),
@@ -2430,7 +2449,7 @@ def render_maps_editor(store, running=False, refusal=""):
         % (_e(m["key"]), " disabled" if m["key"] in chosen else "",
            _e("already in this cluster" if m["key"] in chosen else
               "add %s to the end" % m["name"]), _e(m["name"]))
-        for m in mapcat.MAPS)
+        for m in mapcat.ordered(store))
     presets = "".join(
         '<button class=ghost type=submit name=preset value="%s" title="%s"%s>%s</button>'
         % (_e(p["key"]), _e(p["description"]), " disabled" if running else "",
@@ -2855,9 +2874,14 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
 
     keys = [k.strip() for k in str(store.get("maps") or "").split(",") if k.strip()]
     inside = set(info["maps"]) if info else set()
-    usable = [k for k in keys if k in mapcat.BY_KEY
-              and (not info or mapcat.BY_KEY[k]["map_id"] in inside)]
-    first_name = mapcat.BY_KEY[usable[0]]["name"] if usable else "the map's name"
+    # This cluster's catalogue. Read from the built-in list, a map the operator added
+    # was missing from the picker, from the "you run" sentence and from the archive
+    # comparison - so the one map most likely to need a restore was the one map this
+    # page would not offer.
+    cat = mapcat.catalogue(store)
+    usable = [k for k in keys if k in cat
+              and (not info or cat[k]["map_id"] in inside)]
+    first_name = cat[usable[0]]["name"] if usable else "the map's name"
     # An archive from another cluster has every map greyed out, and the button next to
     # them stayed live with a placeholder that had degraded to the literal words "the
     # map's name". Pressing it answered "type the map's name to confirm" - advice with
@@ -2865,10 +2889,10 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
     nothing_here = bool(info) and not usable
     picks = "".join(
         '<option value="%s"%s>%s%s</option>'
-        % (_e(k), "" if (not info or mapcat.BY_KEY[k]["map_id"] in inside) else " disabled",
-           _e(mapcat.BY_KEY[k]["name"]),
-           "" if (not info or mapcat.BY_KEY[k]["map_id"] in inside) else " - not in this archive")
-        for k in keys if k in mapcat.BY_KEY)
+        % (_e(k), "" if (not info or cat[k]["map_id"] in inside) else " disabled",
+           _e(cat[k]["name"]),
+           "" if (not info or cat[k]["map_id"] in inside) else " - not in this archive")
+        for k in keys if k in cat)
 
     # The archive this will restore, named where the decision is made. The page used
     # to show one archive in the dropdown and carry another in the run form's hidden
@@ -2882,8 +2906,8 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
                   'different archive.</div>'
                   % (_e(chosen or "That archive"),
                      _e(", ".join((info or {}).get("maps") or []) or "nothing"),
-                     _e(", ".join(mapcat.BY_KEY[k]["name"] for k in keys
-                                  if k in mapcat.BY_KEY) or "no maps")))
+                     _e(", ".join(cat[k]["name"] for k in keys
+                                  if k in cat) or "no maps")))
     elif chosen:
         naming = ('<div class=warn><b>This replaces the chosen map’s entire world '
                   'with the one in %s</b> (taken %s). Everything built on that map '

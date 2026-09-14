@@ -69,7 +69,8 @@ html_settings = render_settings(st)
 
 # ---- the page is generated, never hand-maintained
 from .ui import (CLUSTER_PAGE_KEYS, DATA_PAGE_KEYS, MODS_EDITOR_KEYS,
-                 render_data_settings, render_map_overrides, render_maps_editor)
+                 render_data_settings, render_map_overrides, render_maps_editor,
+                 render_restore)
 # mod_ids has a real editor of its own on this page now, so it is not one of the form's
 # fields any more - the same way the five schedule keys moved to the Data page.
 _ELSEWHERE = (tuple(DATA_PAGE_KEYS) + tuple(MODS_EDITOR_KEYS)
@@ -175,6 +176,46 @@ check("presets are still offered", all(p in _me for p in
 # island. The help read "fills the list in", which is what adding does, and the
 # disabled state said "rewrites the whole list" a line later: one behaviour, two
 # descriptions, and the misleading one on the button you can actually press.
+# ---- the restore picker knows this cluster's own maps too
+#
+# The one page where leaving a map out is worst: an operator restoring a world is
+# already having a bad day, and the map most likely to need it is the one they added.
+# The catalogue first, then the list: the settings gate will not accept a name the
+# catalogue cannot explain, which is the order the editor works in too.
+_rst = store()
+_rst.data["map_catalogue"] = [{"key": "svart", "name": "Svartalfheim",
+                               "map_id": "Svartalfheim_WP"}]
+_rst.patch({"maps": "island,svart"})
+_arch = [{"name": "ark-2026-09-14.tar.zst", "bytes": 1234, "created": "14 Sep 2026"}]
+_rpick = render_restore(_rst, _arch)
+check("a map this cluster added is in the restore picker",
+      '<option value="svart"' in _rpick, _window(_rpick, "svart", 300))
+check("under its own name", ">Svartalfheim<" in _rpick,
+      _window(_rpick, "Svartalfheim", 200))
+check("beside the built-in maps, not instead of them",
+      '<option value="island"' in _rpick, _window(_rpick, "island", 200))
+# A cluster whose only map is one it added. The confirm box takes the map's own name,
+# and read from the built-in list this degraded to the literal words "the map's name" -
+# advice with nothing to do about it, on the one irreversible action here.
+_ronly = store()
+_ronly.data["map_catalogue"] = [{"key": "svart", "name": "Svartalfheim",
+                                 "map_id": "Svartalfheim_WP"}]
+_ronly.patch({"maps": "svart"})
+_rpick3 = render_restore(_ronly, _arch)
+check("the confirm box asks for that map's real name",
+      'placeholder="Svartalfheim"' in _rpick3, _window(_rpick3, "placeholder", 200))
+check("not the words the placeholder degrades to when no map is known",
+      'placeholder="the map' not in _rpick3, _window(_rpick3, "placeholder", 200))
+# An archive that does not hold this map greys it out, the same as any other - the
+# comparison is on the level name, which a map this cluster added has like any other.
+_rpick2 = render_restore(_rst, _arch,
+                         info={"ok": True, "maps": ["TheIsland_WP"], "bytes": 10,
+                               "created": "14 Sep 2026", "problem": ""})
+check("an archive without it greys it out rather than hiding it",
+      '<option value="svart" disabled' in _rpick2, _window(_rpick2, "svart", 300))
+check("and the sentence about what you run names it",
+      "Svartalfheim" in _rpick2, _window(_rpick2, "Svartalfheim", 300))
+
 check("and the help says a preset replaces what is there, not adds to it",
       "rewrites the whole list" in _window(_me, "Or start from a preset", 200),
       _window(_me, "Or start from a preset", 200))

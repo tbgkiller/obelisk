@@ -58,8 +58,15 @@ def _unique_dir(path):
     return "%s-%d" % (path, n)
 
 
-def _map_id(key):
-    return mapcat.BY_KEY[key]["map_id"]
+def _map_id(store, key):
+    """The level name one map saves under, asked of this cluster's catalogue.
+
+    Through the store rather than the built-in list: a cluster can run a map
+    Obelisk does not ship, and every path in this module is built from this."""
+    e = mapcat.entry(store, key)
+    if not e:
+        raise KeyError("unknown map %r" % key)
+    return e["map_id"]
 
 
 def _world_dir(ark, map_id):
@@ -139,7 +146,7 @@ def compare(store, info):
     notes = []
     raw = store.get("maps")
     keys = [k.strip() for k in str(raw).split(",") if k.strip()] if isinstance(raw, str) else list(raw or ())
-    running = [_map_id(k) for k in keys if k in mapcat.BY_KEY]
+    running = [_map_id(store, k) for k in keys if mapcat.known(store, k)]
 
     missing = [m for m in running if m not in info["maps"]]
     extra = [m for m in info["maps"] if m not in running]
@@ -275,9 +282,9 @@ def verify_world(path, deep=True):
 def preflight(store, path, map_key):
     """(ok, problems) - everything checkable before a container is touched."""
     problems = []
-    if map_key not in mapcat.BY_KEY:
+    if not mapcat.known(store, map_key):
         return False, ["unknown map %r" % map_key]
-    map_id = _map_id(map_key)
+    map_id = _map_id(store, map_key)
 
     info = inspect(path)
     if not info["ok"]:
@@ -315,7 +322,7 @@ def typed_matches(want, typed):
     return bool(want) and str(typed or "").strip().casefold() == want.casefold()
 
 
-def confirms(map_key, typed):
+def confirms(store, map_key, typed):
     """Did the operator type this map's name? Case and spacing are not the point.
 
     The word is the map's own name rather than a fixed one like DISCONnect's, because
@@ -323,7 +330,11 @@ def confirms(map_key, typed):
     do it to *this map*". A fixed word can be typed from muscle memory onto whichever
     map the page happens to be showing; a name cannot.
     """
-    want = mapcat.BY_KEY[map_key]["name"] if map_key in mapcat.BY_KEY else ""
+    # Asked of the store. Read from the built-in list alone, a map this cluster
+    # added had no name here - and typed_matches("") is False for everything, so the
+    # guard on the one irreversible action in this manager became a wall nobody
+    # could type past, with the page telling them to type a name that would not work.
+    want = (mapcat.entry(store, map_key) or {}).get("name") or ""
     return typed_matches(want, typed)
 
 
@@ -351,13 +362,13 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
     does for a restore point - "restore anyway" is a real thing to mean at three in the
     morning, and it should be a decision rather than the default.
     """
-    map_id = _map_id(map_key)
+    map_id = _map_id(store, map_key)
     ark = layout.ark_root_of(store)
     live = _world_dir(ark, map_id)
     stamp = time.strftime("%Y%m%dT%H%M%SZ", time.gmtime(now or time.time()))
     detail = {"map": map_key, "map_id": map_id, "archive": os.path.basename(path),
               "steps": []}
-    name = mapcat.BY_KEY[map_key]["name"] if map_key in mapcat.BY_KEY else map_key
+    name = (mapcat.entry(store, map_key) or {}).get("name") or map_key
 
     def step(text):
         detail["steps"].append(text)
@@ -368,7 +379,7 @@ def restore_map(store, path, map_key, stop=None, start=None, verify=None,
     # Everything that can refuse, refuses first - before the archive is opened, before
     # anything is copied, before a container is touched. A refusal that has already
     # decompressed 8 GB is a refusal that took a side effect on the way to saying no.
-    if not confirms(map_key, confirm):
+    if not confirms(store, map_key, confirm):
         detail["refused"] = "confirm"
         return False, ("Not restoring: type %s to confirm you mean to replace that "
                        "map's world. Nothing has been changed." % name), detail

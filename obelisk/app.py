@@ -166,7 +166,7 @@ def build_app(store, docker=None):
         # the first segment of "island/../../../etc" and calling it "island" - is safe
         # this time and is the habit that lets the next one through. Either it is one of
         # the addresses this manager renders, or it is not.
-        for key in mapsmod.BY_KEY:
+        for key in mapsmod.catalogue(store):
             if back == "/admin/cluster/map/" + key:
                 return back
         for sect in ("backups", "cloud", "restore"):
@@ -479,6 +479,12 @@ def build_app(store, docker=None):
         except Exception:
             in_use = None
         plan = build_plan(store, in_use_ports=in_use)
+        # A name in the list the catalogue cannot explain. It is shown at the editor,
+        # amber, and it wins the slot: a refusal from the last click matters less than
+        # the cluster being unable to start at all, and the click is repeatable.
+        gone = mapsmod.unknown(store, mapsmod.listed(store.get("maps")))
+        if gone:
+            maps_refusal = ui.maps_unknown(gone)
         st = clusterctl.status(store)
         banner = ""
         if problem:
@@ -943,8 +949,8 @@ def build_app(store, docker=None):
             # the first map - the update master - is not it unless it is the only one,
             # which the rule above has already refused.
             if going_now and here and going_now != here[-1]:
-                name = (mapsmod.BY_KEY[going_now]["name"]
-                        if going_now in mapsmod.BY_KEY else going_now)
+                name = ((mapsmod.entry(store, going_now) or {}).get("name")
+                        or going_now)
                 raise refuse_maps(ui.REMOVE_RUNNING % name)
         try:
             if preset:
@@ -952,7 +958,7 @@ def build_app(store, docker=None):
                 chosen = PRESET_BY_KEY.get(preset, {}).get("maps", [])
                 listed = ",".join(chosen)
             elif form.get("add"):
-                listed = mapsmod.add(listed, str(form.get("add")).strip())
+                listed = mapsmod.add(store, listed, str(form.get("add")).strip())
             elif form.get("drop"):
                 listed = mapsmod.remove(listed, str(form.get("drop")).strip())
             elif form.get("up"):
@@ -1642,9 +1648,9 @@ def build_app(store, docker=None):
         if not authed(request):
             raise web.HTTPFound("/setup")
         key = str(request.match_info.get("key") or "")
-        if key not in mapsmod.BY_KEY:
+        if not mapsmod.known(store, key):
             raise web.HTTPFound("/admin/cluster#run")
-        name = mapsmod.BY_KEY[key]["name"]
+        name = mapsmod.entry(store, key)["name"]
         try:
             rows = build_plan(store).get("maps") or []
         except Exception as e:                       # noqa: BLE001 - never a blank page
@@ -2123,7 +2129,7 @@ def build_app(store, docker=None):
         from . import bot
         password = str(store.get("admin_password") or "")
         for label, host, port in clusterctl.running_instances(store):
-            if label not in (key, mapsmod.BY_KEY[key]["name"]):
+            if label not in (key, (mapsmod.entry(store, key) or {}).get("name")):
                 continue
             try:
                 clusterctl.run_coroutine(
@@ -2207,9 +2213,8 @@ def build_app(store, docker=None):
         # doing it to the wrong map as much as doing it at all. restore_map refuses
         # again on its own - this one is here so the answer is instant and nothing
         # announces a restore that is about to be refused.
-        if not restorectl.confirms(map_key, confirm):
-            want = (mapsmod.BY_KEY[map_key]["name"] if map_key in mapsmod.BY_KEY
-                    else map_key)
+        if not restorectl.confirms(store, map_key, confirm):
+            want = ((mapsmod.entry(store, map_key) or {}).get("name") or map_key)
             announce.say("restore.refused",
                          "Restore of %s refused: the confirmation did not match. "
                          "Nothing has been changed." % (want or "that map"),
@@ -2274,8 +2279,8 @@ def build_app(store, docker=None):
         announce.say("restore.start",
                      "Restoring %s from %s - only that map stops; its current world is "
                      "copied first and the one it replaces is kept."
-                     % (mapsmod.BY_KEY[map_key]["name"]
-                        if map_key in mapsmod.BY_KEY else map_key,
+                     % ((mapsmod.entry(store, map_key) or {}).get("name")
+                        or map_key,
                         os.path.basename(path)),
                      map=map_key, archive=os.path.basename(path))
         rjob.update(state="running", ok=None, message="", step="starting",

@@ -35,8 +35,15 @@ def _as_bool(v):
     raise Invalid("must be true or false")
 
 
-def validate(key, value):
-    """Returns the coerced value, or raises Invalid with a readable reason."""
+def validate(key, value, known_maps=None):
+    """Returns the coerced value, or raises Invalid with a readable reason.
+
+    `known_maps` is the map keys this cluster can run - its own maps as well as
+    the ones Obelisk ships. It is threaded in rather than read from a store here
+    because this function has no store: Store.patch and Store.validate_all pass
+    their own, and so does the queue when it re-checks a change before applying it.
+    Left out, only the built-in maps are accepted, which is what every caller that
+    does not know about a cluster meant before this existed."""
     s = BY_KEY.get(key)
     if not s:
         raise Invalid("no setting called %r" % key)
@@ -118,16 +125,17 @@ def validate(key, value):
         return ",".join(items)
 
     if t == "maps":
-        from .maps import BY_KEY as MAP_BY_KEY, KEYS as MAP_KEYS
+        from .maps import KEYS as MAP_KEYS
+        allowed = list(known_maps) if known_maps is not None else list(MAP_KEYS)
         raw = value if isinstance(value, list) else str(value).split(",")
         items = [str(x).strip().lower() for x in raw if str(x).strip()]
         if not items:
             raise Invalid("pick at least one map")
         seen = set()
         for it in items:
-            if it not in MAP_BY_KEY:
+            if it not in allowed:
                 raise Invalid("%r isn't a map Obelisk knows - choose from: %s"
-                              % (it, ", ".join(MAP_KEYS)))
+                              % (it, ", ".join(allowed)))
             if it in seen:
                 raise Invalid("%r is listed twice" % it)
             seen.add(it)
@@ -185,6 +193,15 @@ class Store:
         return self
 
     # ------------------------------------------------------------ reading
+    def map_keys(self):
+        """Every map key this cluster could run: Obelisk's own plus its own.
+
+        Here rather than in the caller because the store is what holds the
+        cluster's own catalogue, and validate has to be told - it takes no store.
+        """
+        from . import maps as mapcat
+        return mapcat.keys_of(self)
+
     def get(self, key, map_name=None):
         """Effective value: per-map override, else cluster, else the schema default."""
         s = BY_KEY[key]
@@ -226,7 +243,7 @@ class Store:
                              "recreate the container." % BY_KEY[k]["label"])
                 continue
             try:
-                coerced[k] = validate(k, v)
+                coerced[k] = validate(k, v, known_maps=self.map_keys())
             except Invalid as e:
                 errors[k] = str(e)
         if errors:
@@ -273,7 +290,7 @@ class Store:
                     bad["%s.%s" % (scope, k)] = "no setting called %r" % k
                     continue
                 try:
-                    validate(k, v)
+                    validate(k, v, known_maps=self.map_keys())
                 except Invalid as e:
                     bad["%s.%s" % (scope, k)] = str(e)
         return bad

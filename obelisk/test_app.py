@@ -5116,7 +5116,8 @@ check("a real map that is not in this plan says so",
       _window(_mp_unplanned_body, "not in", 200))
 _mapsrc = _after(_s1src, "async def map_page").split(chr(10) + "    async def ")[0]
 check("the route is keyed on the map key, and checks it against the catalogue",
-      _in_order(_mapsrc, "match_info", "mapsmod.BY_KEY", "build_plan"), _mapsrc[:600])
+      _in_order(_mapsrc, "match_info", "mapsmod.known(store, key)", "build_plan"),
+      _mapsrc[:600])
 check("it finds its plan row by key rather than by name",
       'r.get("map") == key' in _mapsrc, _window(_mapsrc, "plan", 400))
 check("and nothing in it turns a name back into a key",
@@ -5321,7 +5322,7 @@ _runsrc = _after(_s1src, "async def restore_run").split(chr(10) + "    async def
 check("restoring still needs the archive to have been looked inside",
       "posted != looked" in _runsrc, _window(_runsrc, "looked", 300))
 check("and still needs the map's name typed",
-      "restorectl.confirms(map_key, confirm)" in _runsrc,
+      "restorectl.confirms(store, map_key, confirm)" in _runsrc,
       _window(_runsrc, "confirms", 200))
 # The secrets the connect form takes are typed in, never rendered back: the inputs are
 # password fields and neither carries a value= for the browser or a screenshot to keep.
@@ -6183,6 +6184,177 @@ check("the refusals are one constant each, shared with the page that disables th
       and _s1src.count("ui.REORDER_RUNNING") == 1
       and _s1src.count("ui.REMOVE_RUNNING") == 1,
       [_uisrc_merge.count("REORDER_RUNNING = "), _s1src.count("ui.REORDER_RUNNING")])
+
+# ---- the sweep reads the disk for a map this cluster added, rather than stopping
+#
+# This is the one consumer where being wrong is silent. list_points built its folder
+# name from the built-in list, so a map the operator added raised a KeyError inside the
+# loop's own "never fatal" except - and the sweep stopped for that cycle, having
+# announced nothing. A world-integrity watcher that quietly checks nothing is worse than
+# no watcher: the channel stays quiet either way.
+#
+# So this one runs the real list_points against a real folder.
+_swdir42 = tempfile.mkdtemp()
+# The Ark folder as the container sees it, which is what savepoints reads. Put back
+# afterwards: it is process-wide, and the fixtures after this one have their own.
+_swwas42 = os.environ.get("OBELISK_ARK")
+os.environ["OBELISK_ARK"] = _swdir42
+_sw42 = Store(os.path.join(_swdir42, "settings.json")).load()
+_sw42.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
+_sw42.data["map_catalogue"] = [{"key": "svart", "name": "Svartalfheim",
+                                "map_id": "Svartalfheim_WP"}]
+_sw42.patch({"admin_password": "pw", "cluster_id": "sweeptest"})
+# Written straight in rather than through patch(): this fixture is about what the sweep
+# reads off the disk, and going through the settings gate would make it fail for the
+# gate's reasons instead of its own.
+_sw42.data["cluster"]["maps"] = "svart"
+_sw42.save()
+_pt42 = os.path.join(_swdir42, "shared", "SavedArks", "Svartalfheim_WP")
+os.makedirs(_pt42, exist_ok=True)
+io.open(os.path.join(_pt42, "Svartalfheim_WP_13.09.2026_01.00.00.ark"),
+        "w", encoding="utf-8").write("not a real world")
+
+
+async def _sweep_custom():
+    _appmod.restorectl.verify_world = lambda path, deep=True: (
+        False, "SQLite reports it damaged: x")
+    try:
+        task = _aio2.create_task(_appmod.world_watch(_sw42, interval=0.01,
+                                                     sleep_first=False))
+        await _aio2.sleep(0.05)
+        task.cancel()
+        try:
+            await task
+        except _aio2.CancelledError:
+            pass
+    finally:
+        _appmod.restorectl.verify_world = _real_verify
+
+
+_drain2()
+_t42 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _t42.run_until_complete(_sweep_custom())
+finally:
+    _t42.close()
+_ev42 = [i for i in _drain2() if i["event"] == "world.damaged"]
+check("the world sweep reads the saves of a map this cluster added",
+      len(_ev42) >= 1, "the sweep announced nothing at all")
+check("naming that map", _ev42 and "svart" in _ev42[0]["text"], _ev42[:1])
+check("and it found them by reading that map's own folder",
+      _ev42 and "Svartalfheim_WP" in str(_ev42[0].get("detail") or ""), _ev42[:1])
+if _swwas42 is None:
+    os.environ.pop("OBELISK_ARK", None)
+else:
+    os.environ["OBELISK_ARK"] = _swwas42
+
+# ---- a map this cluster added is a map, on every page that has one
+#
+# The catalogue used to be ten entries in a module, and the pages were written as though
+# that were the world. maps.catalogue(store) opens it; these are the four places an
+# operator would find out it had not been opened all the way - the drill-down that 302s
+# away, the editor that will not offer it, the restore picker that leaves it out, and
+# the list that names it and cannot be started.
+_t41 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _with_custom(maps, add_entry=True):
+        _real_st41 = _appmod.clusterctl.status
+        try:
+            _appmod.clusterctl.status = lambda store: {
+                "docker_ok": True, "compose_exists": False, "running": 0,
+                "services": []}
+            _bot_s1.LIVE = _kick_relay()
+            _lstore.data.pop("map_catalogue", None)
+            if add_entry:
+                _lstore.data["map_catalogue"] = [
+                    {"key": "svart", "name": "Svartalfheim",
+                     "map_id": "Svartalfheim_WP", "official": False, "custom": True,
+                     "weight": 1.0, "added": 1700000000}]
+            _lstore.data["cluster"]["maps"] = maps
+            _lstore.data.pop("pending", None)
+            _lstore.save()
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            cluster = await client.get("/admin/cluster")
+            cluster_body = await cluster.text()
+            page = await client.get("/admin/cluster/map/svart")
+            page_body = await page.text()
+            data = await (await client.get("/admin/data")).text()
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st41
+            _bot_s1.LIVE = _real_live
+            _lstore.data.pop("map_catalogue", None)
+            _lstore.data["cluster"]["maps"] = "island,ragnarok"
+            _lstore.data.pop("pending", None)
+            _lstore.save()
+        return (cluster.status, cluster_body, page.status, page_body, data)
+
+    _cust41 = _t41.run_until_complete(_with_custom("island,svart"))
+    _ghost41 = _t41.run_until_complete(_with_custom("island,ghost", add_entry=False))
+finally:
+    _t41.close()
+
+_cst41, _cbody41, _pst41, _pbody41, _cdata41 = _cust41
+_ced41 = _from(_cbody41, "<fieldset id=maps>").split("</fieldset>")[0]
+
+check("the cluster page lists a map this cluster added", _cst41 == 200, _cst41)
+check("by its own name, in the order it runs",
+      _in_order(_ced41, ">The Island<", ">Svartalfheim<"), _ced41[:800])
+check("linked to its own page, like any other map",
+      'href="/admin/cluster/map/svart"' in _ced41, _window(_ced41, "svart", 200))
+check("and it is not offered again as something to add",
+      'name=add value="svart" disabled' in _ced41, _window(_ced41, 'value="svart"', 300))
+
+check("its drill-down page opens rather than bouncing to the list",
+      _pst41 == 200, _pst41)
+check("titled with the name the operator gave it",
+      "Svartalfheim" in _pbody41, _window(_pbody41, "Svartalfheim", 200))
+check("carrying the per-map settings any map has",
+      "<fieldset id=overrides>" in _pbody41 or "id=overrides" in _pbody41,
+      _window(_pbody41, "overrides", 200))
+
+# ---- a name the catalogue cannot explain
+#
+# A store edited by hand, or restored from a backup taken while this cluster had a map
+# of its own that has since been forgotten. Every page on this route builds a plan, so
+# this used to be a KeyError and a 500 - the page an operator would go to to fix it.
+_gst41, _gbody41, _gpst41, _gpbody41, _gdata41 = _ghost41
+_ged41 = _from(_gbody41, "<fieldset id=maps>").split("</fieldset>")[0]
+check("a map list naming something unknown still renders the page", _gst41 == 200,
+      _gst41)
+check("in amber, at the editor, naming the one it cannot place",
+      "<div class=warn>" in _ged41 and "ghost" in _ged41,
+      _window(_ged41, "<div class=warn>", 400))
+check("saying the list has not been touched",
+      "Nothing has been changed" in _ged41, _window(_ged41, "ghost", 400))
+check("and the map that is fine is still listed beside it",
+      ">The Island<" in _ged41, _ged41[:600])
+
+# ---- the queue agrees with the gate that accepted it
+#
+# A change to the map list is staged while the cluster runs and applied at the recreate.
+# The check at the front knew about this cluster's own maps; the check at the back is a
+# different call, minutes or a restart later, and if it does not know the same thing the
+# queue refuses at the moment of applying what it agreed to take.
+from . import pending as _pendmod                                     # noqa: E402
+
+_pend41 = Store(os.path.join(tempfile.mkdtemp(), "settings.json")).load()
+_pend41.patch({"status_port": 8088}, source="install")
+_pend41.patch({"maps": "island", "admin_password": "pw", "cluster_id": "queuetest"})
+_pend41.data["map_catalogue"] = [
+    {"key": "svart", "name": "Svartalfheim", "map_id": "Svartalfheim_WP"}]
+_pend41.save()
+_pendmod.stage(_pend41, {"maps": "island,svart"})
+check("the gate accepts a queued list naming one of this cluster's own maps",
+      ((_pend41.data.get("pending") or {}).get("cluster") or {}).get("maps")
+      == "island,svart", _pend41.data.get("pending"))
+_okq41, _whyq41, _ = _pendmod.commit(_pend41)
+check("and applying it later agrees", _okq41, _whyq41)
+check("the list that landed is the one that was queued",
+      _pend41.get("maps") == "island,svart", _pend41.get("maps"))
 
 # ---- the only map a cluster has is not a button with no good outcome
 #

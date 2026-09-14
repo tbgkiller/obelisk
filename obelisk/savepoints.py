@@ -39,14 +39,23 @@ _STAMPED = re.compile(r"^(?P<map>.+)_(?P<d>\d{2})\.(?P<m>\d{2})\.(?P<Y>\d{4})_"
                       r"(?P<H>\d{2})\.(?P<M>\d{2})\.(?P<S>\d{2})\.ark$")
 
 
+def _map_id(store, map_key):
+    """The level name this map saves under. Asked of the store, because a cluster
+    can run a map Obelisk does not ship."""
+    e = mapcat.entry(store, map_key)
+    if not e:
+        raise KeyError("unknown map %r" % map_key)
+    return e["map_id"]
+
+
 def world_dir(store, map_key, ark_root=None):
     """Where this map's saves live: shared/SavedArks/<MapId>."""
     ark = ark_root or layout.ark_root_of(store)
-    return restore._world_dir(ark, mapcat.BY_KEY[map_key]["map_id"])
+    return restore._world_dir(ark, _map_id(store, map_key))
 
 
 def live_world(store, map_key, ark_root=None):
-    map_id = mapcat.BY_KEY[map_key]["map_id"]
+    map_id = _map_id(store, map_key)
     return os.path.join(world_dir(store, map_key, ark_root), "%s.ark" % map_id)
 
 
@@ -68,7 +77,7 @@ def list_points(store, map_key, ark_root=None, listdir=None, getsize=None, now=N
     a list held anywhere else would confidently offer a restore point that no longer
     exists - and the operator would find out when they clicked it.
     """
-    map_id = mapcat.BY_KEY[map_key]["map_id"]
+    map_id = _map_id(store, map_key)
     folder = world_dir(store, map_key, ark_root)
     listdir = listdir or os.listdir
     getsize = getsize or os.path.getsize
@@ -154,12 +163,12 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
     already had - and the copy taken means even a successful one is reversible.
     """
     ark = ark_root or layout.ark_root_of(store)
-    map_id = mapcat.BY_KEY[map_key]["map_id"]
+    map_id = _map_id(store, map_key)
     # The name for sentences, the id for paths and the log. This flow said "The Island"
     # in its refusals and "TheIsland_WP" in its result two clicks later, while the
     # archive restore beside it said The Island throughout. restore.restore_map keeps
     # both, for the same reason.
-    map_name = mapcat.BY_KEY[map_key]["name"]
+    map_name = (mapcat.entry(store, map_key) or {}).get("name") or map_key
     detail = {"map": map_key, "map_id": map_id, "point": "", "steps": []}
 
     def step(text):

@@ -226,11 +226,19 @@ check("every map gets an instance name", yml.count("INSTANCE_NAME:") == 3, yml)
 check("first map is the update MASTER", 'UPDATE_COORDINATION_ROLE: "MASTER"' in yml)
 check("the rest are FOLLOWERs", yml.count('UPDATE_COORDINATION_ROLE: "FOLLOWER"') == 2)
 check("update priority counts up", 'UPDATE_COORDINATION_PRIORITY: "3"' in yml, yml)
+# A name the catalogue cannot explain refuses the generate, and says which name. It
+# used to be a bare KeyError out of resolve; the plan reports it as a problem now, so
+# the refusal reads the same as every other reason a cluster will not generate - and
+# the pages that build a plan stopped being a 500 over one line of stored text.
 try:
     st2 = new_store(); st2.data["cluster"]["maps"] = "island,atlantis"
     generate_compose(st2); check("compose rejects an unknown map", False)
-except KeyError:
+except ValueError as _e2:
     check("compose rejects an unknown map", True)
+    check("naming the map it cannot place", "atlantis" in str(_e2), str(_e2))
+except KeyError:
+    check("compose rejects an unknown map with a readable reason", False,
+          "KeyError, not a refusal")
 
 # ---- passthrough for anything the schema doesn't model
 st.patch({"extra_gameusersettings": "[GaiaEssentials]\nFoodPack=True"})

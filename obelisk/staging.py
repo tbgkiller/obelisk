@@ -111,6 +111,9 @@ def map_id(store):
     """Which map it rehearses on. Any map proves the mods - they are fetched from the
     command line, not from the world - so this is only a question of what is cheapest."""
     key = str(store.get("staging_map") or "scorched").strip()
+    # Built-ins only, deliberately: the staging server proves that the mods fetch and
+    # the build boots, which any map does, and a cluster's own map is the one thing
+    # here that could itself be the reason a rehearsal failed.
     entry = mapcat.BY_KEY.get(key) or mapcat.BY_KEY["scorched"]
     return entry["map_id"], entry["key"]
 

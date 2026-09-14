@@ -60,7 +60,16 @@ def build_plan(store, in_use_ports=None, host_ram_gb=None):
 
     raw = store.get("maps")
     keys = [k.strip() for k in str(raw).split(",") if k.strip()] if isinstance(raw, str) else list(raw)
-    chosen = mapcat.resolve(keys)
+    # A key the catalogue cannot explain is a problem, not an exception. It happens to
+    # a store edited by hand, or restored from a backup taken when the cluster had a map
+    # of its own that has since been forgotten - and this function is on the path of
+    # every page, every RCON target and every container name, so raising here took the
+    # whole manager down over one line of text. It keeps its place in the list instead:
+    # the row is unusable and says so, and every map after it keeps the port it has.
+    cat = mapcat.catalogue(store)
+    chosen = [cat.get(k) or {"key": k, "name": k, "map_id": "", "unknown": True}
+              for k in keys]
+    missing = [m["key"] for m in chosen if m.get("unknown")]
 
     base_mb = _mem_to_mb(store.get("mem_limit"))
     game_port = int(store.get("game_port_base"))
@@ -83,15 +92,26 @@ def build_plan(store, in_use_ports=None, host_ram_gb=None):
         if override:
             mem, why = override, "set for this map"
         else:
-            w = mapcat.weight(key)
+            w = mapcat.weight(store, key)
             mem = _mb_to_mem(int(round(base_mb * w / 1024.0)) * 1024)
             why = "base" if w == 1.0 else "base x%.1f - this map runs heavy" % w
 
-        rows.append({"map": key, "instance": instance,
-                     "name": m["name"], "map_id": m["map_id"],
-                     "game_port": g, "rcon_port": r,
-                     "memory": mem, "memory_mb": _mem_to_mb(mem), "memory_why": why,
-                     "role": "update master" if i == 0 else "follower"})
+        row = {"map": key, "instance": instance,
+               "name": m["name"], "map_id": m["map_id"],
+               "game_port": g, "rcon_port": r,
+               "memory": mem, "memory_mb": _mem_to_mb(mem), "memory_why": why,
+               "role": "update master" if i == 0 else "follower"}
+        if m.get("unknown"):
+            row["unknown"] = True
+        rows.append(row)
+
+    if missing:
+        problems.append(
+            "the map list names %s, which %s not a map Obelisk knows or one this "
+            "cluster added. Nothing can start until %s taken out of the list or added "
+            "back to the catalogue."
+            % (", ".join(missing), "is" if len(missing) == 1 else "are",
+               "it is" if len(missing) == 1 else "they are"))
 
     # ---- the things that make a stack unbootable, caught before it is written
     status_port = int(store.get("status_port"))

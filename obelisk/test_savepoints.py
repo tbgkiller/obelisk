@@ -15,6 +15,7 @@ restored world that will not open puts the previous one back before the map rest
 the whole point of a restore point is that it is not a one-way door.
 """
 
+import io
 import os
 import sqlite3
 import sys
@@ -452,8 +453,16 @@ check("the pre-point backup is still named by id, because it is a path",
 check("and the detail dict still carries both",
       '"map_id": map_id' in _sp_src, "detail lost the id")
 check("the map's name is worked out once, not per message",
-      _sp_src.count('mapcat.BY_KEY[map_key]["name"]') == 1,
-      _sp_src.count('mapcat.BY_KEY[map_key]["name"]'))
+      _sp_src.count('mapcat.entry(store, map_key)') == 1,
+      _sp_src.count('mapcat.entry(store, map_key)'))
+# And the id it builds every path from is asked of the store, not of the built-in list:
+# a cluster can run a map Obelisk does not ship, and this module is where that map's
+# saves are found or not found.
+_sp_mod = io.open(os.path.join(os.path.dirname(__file__), "savepoints.py"),
+                  encoding="utf-8").read()
+check("and the level name every path is built from comes from this cluster's catalogue",
+      "def _map_id(store, map_key):" in _sp_mod
+      and "mapcat.BY_KEY" not in _sp_mod, _sp_mod.count("mapcat.BY_KEY"))
 check("and it does not shadow the save point's own name",
       "map_name" in _sp_src and "def restore_point(store, map_key, name," in _sp_src,
       "the point's name was shadowed")

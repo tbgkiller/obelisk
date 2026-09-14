@@ -987,7 +987,7 @@ def verify_instance(store, map_key, rcon=None, details=None, logs=None):
     checks["rcon"] = "No Players Connected" in answer or bool(
         answer and "ERROR" not in answer)
 
-    map_id = mapcat.BY_KEY[map_key]["map_id"]
+    map_id = (mapcat.entry(store, map_key) or {}).get("map_id") or map_key
     world = os.path.join(layout.ark_root_of(store),
                          layout.SAVED_ARKS.replace("/", os.sep), map_id,
                          "%s.ark" % map_id)

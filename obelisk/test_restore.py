@@ -479,12 +479,27 @@ check("another map's name does not confirm this one", not ok_w, msg_w)
 check("and still stops nothing", trip_w.calls == [], trip_w.calls)
 
 # 4. the right name, however it was typed
-check("the name confirms", restore.confirms("island", "The Island"))
-check("case is not the point", restore.confirms("island", "the island"))
-check("nor is stray whitespace", restore.confirms("island", "  The Island  "))
-check("an empty confirmation never passes", not restore.confirms("island", ""))
-check("and neither does None", not restore.confirms("island", None))
-check("a map id is not a map name", not restore.confirms("island", "TheIsland_WP"))
+_cst, _cark = fresh()
+check("the name confirms", restore.confirms(_cst, "island", "The Island"))
+check("case is not the point", restore.confirms(_cst, "island", "the island"))
+check("nor is stray whitespace", restore.confirms(_cst, "island", "  The Island  "))
+check("an empty confirmation never passes", not restore.confirms(_cst, "island", ""))
+check("and neither does None", not restore.confirms(_cst, "island", None))
+check("a map id is not a map name",
+      not restore.confirms(_cst, "island", "TheIsland_WP"))
+
+# A map this cluster added confirms by its own name. Asked of the built-in list alone,
+# this returned "" - and typed_matches("") is False for every string, so the guard on
+# the one irreversible action here became a wall nobody could type past, on a page
+# telling them to type a name that would not work.
+_cst.data["map_catalogue"] = [
+    {"key": "svart", "name": "Svartalfheim", "map_id": "Svartalfheim_WP"}]
+check("a map this cluster added confirms by its own name",
+      restore.confirms(_cst, "svart", "Svartalfheim"))
+check("and still refuses the wrong name",
+      not restore.confirms(_cst, "svart", "The Island"))
+check("and refuses an empty one, which is what it used to accept nothing but",
+      not restore.confirms(_cst, "svart", ""))
 
 # 5. players on the map - a hard block, the way the save-point rollback has always
 #    been. The message has to name the map and the count, because "someone is on"

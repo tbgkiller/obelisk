@@ -271,7 +271,15 @@ def commit(store, validate=None):
     written unless every value validates, so a bad one cannot leave the store half
     updated between a stop and a start.
     """
-    validate = validate or _validate
+    if validate is None:
+        # Bound to this store. A queued map list naming one of the cluster's own maps
+        # was accepted by a check that knew about them, and the check that runs at apply
+        # time - minutes or a restart later - has to know the same thing, or the queue
+        # refuses at the moment of applying what it agreed to take.
+        _known = store.map_keys() if hasattr(store, "map_keys") else None
+
+        def validate(key, value):
+            return _validate(key, value, known_maps=_known)
     data = queued(store)
     before = snapshot(store)
 
@@ -304,10 +312,10 @@ def commit(store, validate=None):
     return True, "", before
 
 
-def _validate(key, value):
+def _validate(key, value, known_maps=None):
     from .settings import Invalid, validate as check
     try:
-        check(key, value)
+        check(key, value, known_maps=known_maps)
     except Invalid as e:
         return False, str(e)
     return True, ""

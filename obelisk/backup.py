@@ -105,7 +105,7 @@ def _map_ids(store):
     from . import maps as mapcat
     raw = store.get("maps")
     keys = [k.strip() for k in str(raw).split(",") if k.strip()] if isinstance(raw, str) else list(raw or ())
-    return [m["map_id"] for m in mapcat.resolve(keys)]
+    return [m["map_id"] for m in mapcat.resolve(store, keys)]
 
 
 def create(store, when=None, flush=None, progress=None):

@@ -66,14 +66,17 @@ def generate_compose(store, project="ark", in_use_ports=None, wait_for_master=No
         wait_for_master = not install_present(store)
     keys = store.get("maps")
     keys = [k.strip() for k in str(keys).split(",") if k.strip()] if isinstance(keys, str) else list(keys)
-    chosen = mapcat.resolve(keys)
-    if not chosen:
+    if not keys:
         raise ValueError("no maps selected - pick at least one")
 
     # One source of truth for ports and memory: if the plan won't boot, nothing is written.
+    # It is also what answers for a map the catalogue cannot explain: that is one of
+    # its problems, so this refuses with the same sentence the page shows rather than
+    # raising a KeyError out of a resolve that ran first.
     plan = build_plan(store, in_use_ports=in_use_ports)
     if not plan["ok"]:
         raise ValueError("can't generate this cluster: " + "; ".join(plan["problems"]))
+    chosen = mapcat.resolve(store, keys)
     by_key = {r["map"]: r for r in plan["maps"]}
     ark       = str(store.get("appdata")).rstrip("/")     # host path of the Ark folder
     paths     = layout.ark_paths(ark)
