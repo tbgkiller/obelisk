@@ -2379,20 +2379,39 @@ def maps_unknown(keys):
 
 
 ONLY_MAP_WHY = "A cluster needs at least one map"
+
+# What the on-disk look can and cannot tell the operator. It is a stat, not a check: a
+# folder that is not there is the normal state of a map that has never launched, and a
+# folder that is there proves the name is spelled the way the game spells it - which is
+# the one thing about a map id Obelisk genuinely cannot work out on its own.
+NO_WORLD_YET = ("no saved world under this map id yet — normal for a map that has "
+                "not launched")
+WORLD_THERE = "a saved world is already on disk under this map id"
+MAP_ID_ADVICE = ("The map id is the level name the server expects, and the folder its "
+                 "world is saved in — <code>Ragnarok_WP</code>, "
+                 "<code>Svartalfheim_WP</code>. Obelisk cannot tell a wrong one from a "
+                 "right one: a map id nothing uses yet simply makes a new, empty world "
+                 "under that name. Take it from the mod's own page.")
 ONLY_MAP = ONLY_MAP_WHY + " \u2014 the list is unchanged."
 
 
-def render_maps_editor(store, running=False, refusal=""):
+def render_maps_editor(store, running=False, refusal="", message="", values=None,
+                       saves=None):
     """The maps this cluster runs, in the order it runs them.
 
-    Three parts of one editor. The list, because order is a fact about this cluster that
+    Four parts of one editor. The list, because order is a fact about this cluster that
     nothing else could show: the first map is the update master and ports are handed out
     walking down it. The catalogue, to add from, appending to the end - the one edit that
-    leaves every existing port alone. And presets, which are a bulk tick of the boxes and
-    nothing more.
+    leaves every existing port alone. Presets, which are a bulk tick of the boxes and
+    nothing more. And the maps this cluster defined for itself, which is the one part
+    that writes to the catalogue rather than reading from it.
 
     A set of checkboxes cannot say any of that. It was sorted by whatever order the
     catalogue happens to be in, and the value it posted was that order.
+
+    `values` is what the operator typed into the add form when it was refused - handed
+    back so a refusal is a correction rather than a retype. `saves` is {map_id: bool}
+    from a look at the disk, which is advice and never a gate: see NO_WORLD_YET.
     """
     keys = mapcat.listed(store.get("maps"))
     # This cluster's catalogue, not Obelisk's: a map the operator added is a map
@@ -2444,19 +2463,26 @@ def render_maps_editor(store, running=False, refusal=""):
                     'below.</td></tr>')
 
     chosen = set(keys)
+    # A map this cluster defined is offered beside the ones Obelisk ships, and says
+    # which it is: the operator typed its level name, so if it turns out to be wrong,
+    # knowing which maps are theirs is where they would start.
     catalogue = "".join(
-        '<button class=ghost type=submit name=add value="%s"%s title="%s">%s</button>'
+        '<button class=ghost type=submit name=add value="%s"%s title="%s">%s%s</button>'
         % (_e(m["key"]), " disabled" if m["key"] in chosen else "",
            _e("already in this cluster" if m["key"] in chosen else
-              "add %s to the end" % m["name"]), _e(m["name"]))
+              "add %s to the end" % m["name"]), _e(m["name"]),
+           ' <span class=tag>custom</span>' if m.get("custom") else "")
         for m in mapcat.ordered(store))
     presets = "".join(
         '<button class=ghost type=submit name=preset value="%s" title="%s"%s>%s</button>'
         % (_e(p["key"]), _e(p["description"]), " disabled" if running else "",
            _e(p["name"])) for p in PRESETS)
 
-    return ('<form method=post action="/admin/maps">'
-            '<fieldset id=maps><legend>Maps</legend>%s%s'
+    # The two forms post to two different routes - the list, and the catalogue behind
+    # it - so they cannot be one form, and a form cannot be nested in another. The
+    # fieldset holds both, because to the operator this is one place.
+    return ('<fieldset id=maps><legend>Maps</legend>%s%s%s'
+            '<form method=post action="/admin/maps">'
             '<table><tr><th class=num>#</th><th>Map</th>'
             '<th class=num>Order</th></tr>%s</table>'
             '<div class=help style="margin-top:10px">The first map is the update '
@@ -2470,10 +2496,86 @@ def render_maps_editor(store, running=False, refusal=""):
             '\u2014 it rewrites the whole list and carries no settings of its '
             'own.%s</div>'
             '<div class=presets>%s</div>'
-            '</fieldset></form>'
-            % (warn_block(refusal) if refusal else "", warn,
+            '</form>%s'
+            '</fieldset>'
+            % (warn_block(refusal) if refusal else "",
+               ('<div class=note>%s</div>' % _e(message)) if message else "", warn,
                "".join(rows), catalogue,
-               " That needs the cluster stopped." if running else "", presets))
+               " That needs the cluster stopped." if running else "", presets,
+               _own_maps(store, values=values, saves=saves, listed=keys,
+                         opened=bool(refusal or values))))
+
+
+def _own_maps(store, values=None, saves=None, listed=(), opened=False):
+    """Maps this cluster defined for itself: what they are, and how to add one.
+
+    Folded away by default. Most clusters run the ten maps Obelisk ships and never open
+    this; the ones that need it need three fields and the sentence about what Obelisk
+    cannot check for them. It springs open on a refusal, because a refusal that hides
+    the form it is about is a refusal nobody can act on.
+    """
+    values = values or {}
+    saves = saves or {}
+    listed = set(listed or ())
+
+    rows = ""
+    for m in mapcat.ordered(store):
+        if not m.get("custom"):
+            continue
+        here = m["key"] in listed
+        # Advice, never a gate. A folder that is not there is the ordinary state of a
+        # map nobody has launched yet; a folder that is there is the one confirmation
+        # available that the level name is spelled the way the game spells it.
+        seen = saves.get(m["map_id"])
+        note = "" if seen is None else (
+            '<div class=help>%s</div>' % _e(WORLD_THERE if seen else NO_WORLD_YET))
+        rows += ('<tr><td>%s</td><td><code>%s</code></td><td><code>%s</code>%s%s</td>'
+                 '<td class=num>%s</td></tr>'
+                 % (_e(m["name"]), _e(m["key"]), _e(m["map_id"]),
+                    ('<div class=help>mod %s</div>' % _e(m["mod_id"]))
+                    if m.get("mod_id") else "", note,
+                    '<button class=ghost type=submit name=forget value="%s"%s%s>'
+                    'forget</button>'
+                    % (_e(m["key"]),
+                       ' title="%s is one of the maps this cluster runs"' % _e(m["name"])
+                       if here else "", " disabled" if here else "")))
+    if rows:
+        rows = ('<table><tr><th>Map</th><th>Key</th><th>Map id</th>'
+                '<th class=num></th></tr>%s</table>'
+                '<div class=help>Forgetting a map removes nothing: its world stays on '
+                'disk and its settings stay in this cluster, so defining it again '
+                'finds both. A map this cluster is running cannot be forgotten \u2014 '
+                'take it out of the list above first.</div>' % rows)
+    else:
+        rows = ('<div class=help>None yet. Everything in the list above is a map '
+                'Obelisk ships with.</div>')
+
+    def field(name, label, hint, place):
+        return ('<div style="margin:8px 0"><label class=block>%s</label>'
+                '<input name=%s value="%s" placeholder="%s" autocomplete=off>'
+                '<div class=help>%s</div></div>'
+                % (_e(label), name, _e(str(values.get(name) or "")), _e(place), hint))
+
+    return ('<details id=ownmaps%s style="margin-top:16px">'
+            '<summary>Maps this cluster added</summary>'
+            '<div class=help style="margin:8px 0">A map Obelisk does not ship with '
+            '\u2014 a mod map, or an official one released since this build. Defining '
+            'it here only teaches Obelisk how to spell it; it is added to the cluster '
+            'from the list above, like any other map.</div>'
+            '%s'
+            '<form method=post action="/admin/maps/catalogue">'
+            '<div class=help style="margin:14px 0 6px"><b>Define a map</b></div>'
+            '%s%s%s'
+            '<button type=submit name=define value=1>Add this map</button>'
+            '</form></details>'
+            % (" open" if opened else "", rows,
+               field("key", "Key", 'Lowercase letters and digits, 3 to 24 of them. It '
+                     'becomes this map\u2019s container name, its folder and its web '
+                     'address here, and it cannot be changed later.', "svartalfheim"),
+               field("map_id", "Map id", MAP_ID_ADVICE, "Svartalfheim_WP"),
+               field("name", "Name", 'What players see in the server browser, and what '
+                     'this manager calls it. Up to %d characters.' % mapcat.NAME_MAX,
+                     "Svartalfheim")))
 
 
 def render_cluster(store, plan, status=None, roster=None, web_address="",

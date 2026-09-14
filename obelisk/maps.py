@@ -83,12 +83,47 @@ def _held(store):
     return list(held) if isinstance(held, list) else []
 
 
+def shape_problem(key, map_id):
+    """Why this key and level name cannot be used, or "" if they can.
+
+    The half of the rules that is about what these two strings *are*, rather than what
+    else is in the catalogue. Split out because it is wanted twice: once on the way in,
+    where it explains the refusal, and once on the way out, where a stored entry has to
+    answer for itself too. A file can be edited, restored from a backup, or written by a
+    later build, and the read path handing that straight to os.path.join and to Docker
+    is the write path's rules being a suggestion.
+    """
+    key = str(key or "").strip()
+    map_id = str(map_id or "").strip()
+    if not KEY_OK.match(key):
+        return ("a map key is 3 to 24 characters, lowercase letters and digits only, "
+                "starting with a letter - it becomes a container name and a web address")
+    if key in RESERVED:
+        return "%s is a name Obelisk uses for something else" % key
+    if not MAP_ID_OK.match(map_id):
+        return ("a map id is 3 to 64 characters, letters, digits and underscores only - "
+                "it is the folder the world is saved in, so it cannot contain a dot, a "
+                "slash or a space")
+    return ""
+
+
 def catalogue(store):
     """key -> entry: what Obelisk ships, plus what this cluster added.
 
     Built-ins win, always. add_entry refuses a key that collides with one, and this
     skips it as well - a store edited by hand, or restored from a backup taken against
     a different build, must not be able to redefine what TheIsland means.
+
+    An entry the write path would refuse today is dropped here too, and logged. Stored
+    text does not get to be trusted more than typed text: the key becomes a container
+    name and a URL, the level name becomes a folder, and this function is what hands
+    both to the rest of the manager. A dropped entry leaves its key unknown, which the
+    Cluster page already names in amber and the plan already reports - the same answer
+    as a map that was never defined, which is what this one now effectively is.
+
+    Names are not re-checked. A duplicate display name is confusing rather than unsafe,
+    and dropping a map's definition over one would take a running map out of the
+    catalogue to fix a label.
     """
     out = dict(BY_KEY)
     for e in _held(store):
@@ -100,6 +135,14 @@ def catalogue(store):
         if key in BY_KEY:
             log.warning("ignoring a stored map called %r: that is one of Obelisk's own "
                         "maps, and a stored entry does not get to redefine it", key)
+            continue
+        if key in out:
+            log.warning("ignoring a second stored map called %r: the first one in the "
+                        "file is the one this cluster means", key)
+            continue
+        why = shape_problem(key, e.get("map_id"))
+        if why:
+            log.warning("ignoring the stored map %r: %s", key, why)
             continue
         out[key] = dict(e, key=key, official=False, custom=True)
     return out
@@ -160,23 +203,16 @@ def check_entry(store, key, name, map_id, existing=None):
     if existing:
         cat = {k: v for k, v in cat.items() if k != existing}
 
-    if not KEY_OK.match(key):
-        raise ValueError(
-            "a map key is 3 to 24 characters, lowercase letters and digits only, "
-            "starting with a letter - it becomes a container name and a web address")
-    if key in RESERVED:
-        raise ValueError("%s is a name Obelisk uses for something else" % key)
+    # The rules about the two strings themselves, shared with the read path so a stored
+    # entry answers to exactly what a typed one does.
+    why = shape_problem(key, map_id)
+    if why:
+        raise ValueError(why)
     if key in BY_KEY:
         raise ValueError("%s is one of Obelisk's own maps - it is already in the list "
                          "to add" % key)
     if key in cat:
         raise ValueError("this cluster already has a map called %s" % key)
-
-    if not MAP_ID_OK.match(map_id):
-        raise ValueError(
-            "a map id is 3 to 64 characters, letters, digits and underscores only - "
-            "it is the folder the world is saved in, so it cannot contain a dot, a "
-            "slash or a space")
 
     if not name:
         raise ValueError("give the map a name - it is what players see in the browser")

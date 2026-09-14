@@ -139,6 +139,58 @@ check("and the shadowed entry is not offered as a second island",
 st.data[mapcat.SECTION] = [e for e in st.data[mapcat.SECTION]
                            if e["key"] != "island"]
 
+# ---- a stored entry answers to the same rules a typed one does
+#
+# check_entry is the way in, and nothing reaches it but the form. A settings.json can be
+# edited, restored from a backup, or written by a later build - and catalogue() is what
+# hands a key to Docker and a level name to os.path.join. A stored entry that the write
+# path would refuse is dropped here and logged, so the file cannot be the way around the
+# rules. A dropped key is simply unknown, which the plan reports and the Cluster page
+# already names in amber.
+# fresh() points OBELISK_ARK at its own folder, which is how layout finds the Ark
+# directory - so this block puts it back, or the path checks further down would be
+# looking in this fixture's folder instead of their own.
+_ark_was = os.environ.get("OBELISK_ARK")
+_bad_store, _ = fresh()
+_bad_store.data[mapcat.SECTION] = [
+    {"key": "escape", "name": "Escape", "map_id": "../../etc/passwd"},
+    {"key": "my_map", "name": "Underscore", "map_id": "Fine_WP"},
+    {"key": "Caps", "name": "Capitals", "map_id": "Fine_WP"},
+    {"key": "staging", "name": "Staging", "map_id": "Fine_WP"},
+    {"key": "dupe", "name": "First", "map_id": "First_WP"},
+    {"key": "dupe", "name": "Second", "map_id": "Second_WP"},
+    {"key": "fine", "name": "Fine", "map_id": "Fine_WP"},
+]
+_badcat = mapcat.catalogue(_bad_store)
+check("a stored map id that could leave its folder is dropped",
+      "escape" not in _badcat, sorted(_badcat))
+check("a stored key that two spellings would share a container name with is dropped",
+      "my_map" not in _badcat and "Caps" not in _badcat, sorted(_badcat))
+check("a stored key Obelisk uses for something else is dropped",
+      "staging" not in _badcat, sorted(_badcat))
+check("a key stored twice keeps the first, rather than the last one to be edited in",
+      _badcat.get("dupe", {}).get("name") == "First", _badcat.get("dupe"))
+check("and a well-formed one beside them is kept",
+      _badcat.get("fine", {}).get("map_id") == "Fine_WP", _badcat.get("fine"))
+check("dropping one leaves its key unknown, which is a state this manager reports",
+      mapcat.unknown(_bad_store, ["escape", "fine"]) == ["escape"],
+      mapcat.unknown(_bad_store, ["escape", "fine"]))
+# Names are not re-checked on the way out. A duplicate name is confusing; a duplicate
+# container name or a path with a "../" in it is not. Dropping a map's whole definition
+# to fix a label would take a running map out of the catalogue.
+_bad_store.data[mapcat.SECTION] = [
+    {"key": "twin", "name": "The Island", "map_id": "Twin_WP"}]
+check("a stored name that clashes with another map is kept, not dropped",
+      "twin" in mapcat.catalogue(_bad_store),
+      sorted(mapcat.catalogue(_bad_store)))
+check("and the map it clashes with is untouched",
+      mapcat.catalogue(_bad_store)["island"]["name"] == "The Island",
+      mapcat.catalogue(_bad_store)["island"])
+if _ark_was is None:
+    os.environ.pop("OBELISK_ARK", None)
+else:
+    os.environ["OBELISK_ARK"] = _ark_was
+
 # ---------------------------------------------------------------- the rules
 #
 # None of these are taste. A key becomes a container name and a web address, a map id

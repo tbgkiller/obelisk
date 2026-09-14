@@ -267,6 +267,9 @@ ICONS = {
     "stop": "■", "note": "•", "apply_note": "•",
     "staged": "•", "discarded": "•", "window_open": "•",
     "key_set": "•", "key_cleared": "•",
+    # Learning or forgetting how to spell a map. Quiet on purpose: neither starts,
+    # stops or deletes anything - the cluster runs exactly what it ran before.
+    "added": "•", "forgotten": "•",
     "reconfigured": "•",
 }
 

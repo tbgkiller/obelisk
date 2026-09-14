@@ -445,6 +445,28 @@ def build_app(store, docker=None):
         _said[token] = dict({"message": "", "problem": "", "refusal": ""}, at=now, **kw)
         return token
 
+    def _worlds_on_disk():
+        """{map_id: is there a folder} for the maps this cluster defined itself.
+
+        A look, not a check. The operator types the level name, and a wrong one that is
+        spelled legally cannot be told from a right one - the server simply makes a new
+        empty world under it. Whether a folder of that name already exists is the only
+        evidence available without launching, so it is shown and nothing is decided by
+        it. Read-only, and a filesystem that will not answer is not an error: the note
+        is left off rather than guessed at.
+        """
+        out = {}
+        try:
+            root = os.path.join(layout.ark_root_of(store),
+                                layout.SAVED_ARKS.replace("/", os.sep))
+            for m in mapsmod.ordered(store):
+                if m.get("custom"):
+                    out[m["map_id"]] = os.path.isdir(os.path.join(root, m["map_id"]))
+        except Exception as e:                       # noqa: BLE001 - advice only
+            log.info("could not look for saved worlds: %s", e)
+            return {}
+        return out
+
     def _asking(pending, where):
         """The pending question, if it is this section's to ask."""
         return pending if (pending or {}).get("where", "who") == where else None
@@ -454,7 +476,8 @@ def build_app(store, docker=None):
         # the top of the page: that is where the operator is looking when they press
         # the button, and where the answer changes something.
         notice = bans_notice = caps_notice = ""
-        maps_refusal = ""
+        maps_refusal = maps_message = ""
+        maps_values = None
         if not (message or problem or refusal):
             token = str((getattr(request, "query", None) or {}).get("said") or "")
             said = _said.pop(token, None) if token else None
@@ -468,6 +491,10 @@ def build_app(store, docker=None):
                         caps_notice = block
                     elif said["where"] == "maps":
                         maps_refusal = said.get("refusal") or said.get("problem") or ""
+                        maps_message = said.get("message") or ""
+                        # What was typed into the add form, so a refusal is a
+                        # correction rather than three fields to fill in again.
+                        maps_values = said.get("values")
                     else:
                         notice = block
                 else:
@@ -526,7 +553,8 @@ def build_app(store, docker=None):
                                   web_address=_web_address(),
                                   maps_editor=ui.render_maps_editor(
                                       store, running=bool(st.get("running")),
-                                      refusal=maps_refusal),
+                                      refusal=maps_refusal, message=maps_message,
+                                      values=maps_values, saves=_worlds_on_disk()),
                                   pending=_asking(pending, "who"), notice=notice,
                                   bans=bansctl.recent(store),
                                   bans_pending=_asking(pending, "bans"),
@@ -987,6 +1015,56 @@ def build_app(store, docker=None):
             return chrome(_cluster_body(request, problem=str(e)), "Cluster",
                           "/admin/cluster")
         raise web.HTTPFound("/admin/cluster#maps")
+
+    async def catalogue_edit(request):
+        """Teach this cluster a map Obelisk does not ship, or make it forget one.
+
+        A separate route from the map list on purpose: this writes the catalogue, and
+        the list reads it. Defining a map does not put it in the cluster - the list
+        above does that, with the same button every other map uses - so the two cannot
+        be one post, and saying "added" about something that is not running yet would
+        be the sentence doing two jobs.
+        """
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        form = await request.post()
+
+        def back(**kw):
+            return web.HTTPFound("/admin/cluster?said=%s#maps"
+                                 % _say_next(where="maps", **kw))
+
+        if form.get("forget"):
+            key = str(form.get("forget")).strip()
+            try:
+                gone = mapsmod.remove_entry(store, key)
+            except ValueError as e:
+                # A rule, not a failure: the map is running, or was never this
+                # cluster's to forget. Nothing was written either way.
+                raise back(refusal=str(e).strip())
+            announce.say("maps.forgotten",
+                         "Obelisk no longer knows the map %s (%s). Nothing was "
+                         "deleted: its world is still on disk under %s, and its "
+                         "settings are still in this cluster."
+                         % (gone.get("name") or key, key, gone.get("map_id") or "?"),
+                         map=key)
+            raise back(message="%s is no longer in this cluster's catalogue. Its world "
+                               "and its settings are untouched."
+                               % (gone.get("name") or key))
+
+        typed = {k: str(form.get(k) or "").strip() for k in ("key", "map_id", "name")}
+        try:
+            made = mapsmod.add_entry(store, typed["key"], typed["name"],
+                                     typed["map_id"])
+        except ValueError as e:
+            # Handed back with what was typed, so a refusal is a correction rather
+            # than three fields to fill in again.
+            raise back(refusal=str(e).strip(), values=typed)
+        announce.say("maps.added",
+                     "This cluster now knows the map %s (%s, saved as %s). It is not "
+                     "running yet - add it to the map list to do that."
+                     % (made["name"], made["key"], made["map_id"]), map=made["key"])
+        raise back(message="%s is now a map this cluster can run. Add it from the list "
+                           "above when you want it." % made["name"])
 
     cluster_busy = APPLY_LOCK          # module level: see the comment there
 
@@ -2464,6 +2542,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/save", save)
     app.router.add_get("/admin/cluster", cluster_page)
     app.router.add_post("/admin/maps", cluster_maps)
+    app.router.add_post("/admin/maps/catalogue", catalogue_edit)
     app.router.add_post("/admin/launch", cluster_launch)
     app.router.add_post("/admin/stop", cluster_stop)
     app.router.add_post("/admin/player/message", player_message)

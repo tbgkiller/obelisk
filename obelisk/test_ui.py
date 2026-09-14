@@ -176,6 +176,93 @@ check("presets are still offered", all(p in _me for p in
 # island. The help read "fills the list in", which is what adding does, and the
 # disabled state said "rewrites the whole list" a line later: one behaviour, two
 # descriptions, and the misleading one on the button you can actually press.
+# ---- the editor can define a map, and the two forms are two forms
+#
+# The list posts to /admin/maps and the catalogue behind it posts somewhere else, so
+# they cannot be one form - and a form inside a form is not a thing a browser will
+# render. One fieldset, two forms.
+_own = store()
+_own.data["map_catalogue"] = [{"key": "svart", "name": "Svartalfheim",
+                               "map_id": "Svartalfheim_WP", "custom": True,
+                               "official": False, "mod_id": "893657"}]
+_owned = render_maps_editor(_own, saves={"Svartalfheim_WP": False})
+check("the editor posts the list to the list's route",
+      _owned.count('action="/admin/maps"') == 1,
+      _owned.count('action="/admin/maps"'))
+check("and the catalogue to its own",
+      _owned.count('action="/admin/maps/catalogue"') == 1,
+      _owned.count('action="/admin/maps/catalogue"'))
+check("with every form closed, because one inside another renders as neither",
+      _owned.count("<form") == 2 and _owned.count("</form>") == 2,
+      [_owned.count("<form"), _owned.count("</form>")])
+# Counting tags is not enough: moving the close to the end keeps both counts at two and
+# nests the second form inside the first, which a browser resolves by dropping one of
+# them - and the dropped one is whichever the operator was trying to use.
+check("and the second form starts after the first one has ended",
+      "<form" not in _owned.split("<form", 1)[-1].split("</form>", 1)[0],
+      _owned.split("<form", 1)[-1].split("</form>", 1)[0][:200])
+check("both inside the one fieldset the operator sees as one place",
+      _in_order(_owned, "<fieldset id=maps>", 'action="/admin/maps"',
+                'action="/admin/maps/catalogue"', "</fieldset>"), _owned[:200])
+check("the define form asks for the three things a map is",
+      _in_order(_owned, "name=key", "name=map_id", "name=name"),
+      _window(_owned, "name=key", 400))
+check("folded away by default, because most clusters never open it",
+      "<details id=ownmaps " in _owned and "<details id=ownmaps open" not in _owned,
+      _window(_owned, "<details id=ownmaps", 100))
+check("and open when there is a refusal to read inside it",
+      "<details id=ownmaps open" in render_maps_editor(
+          _own, refusal="that key is not a key",
+          values={"key": "My_Map", "map_id": "X_WP", "name": "X"}),
+      "the form stayed folded over its own refusal")
+check("a refusal hands back what was typed",
+      'name=key value="My_Map"' in render_maps_editor(
+          _own, refusal="no", values={"key": "My_Map"}),
+      "the typed key was dropped")
+
+check("the maps this cluster added are listed with what defines them",
+      _in_order(_owned, "Maps this cluster added", ">Svartalfheim<", ">svart<",
+                ">Svartalfheim_WP<"), _window(_owned, "Maps this cluster", 500))
+check("including the mod they come from, when one was given",
+      "mod 893657" in _owned, _window(_owned, "893657", 200))
+check("and a way to forget one",
+      'name=forget value="svart"' in _owned, _window(_owned, "name=forget", 200))
+check("which says it deletes nothing",
+      "its world stays on disk" in _owned, _window(_owned, "Forgetting", 300))
+
+# The look at the disk is advice. A map that has never launched has no folder, and that
+# is the ordinary case - so it is a grey note, in the same place, either way.
+check("a map id with no world on disk says so in grey, not in amber",
+      "no saved world" in _window(_owned, "Svartalfheim_WP", 300)
+      and "<div class=warn>" not in _window(_owned, "Svartalfheim_WP", 300),
+      _window(_owned, "Svartalfheim_WP", 300))
+check("and one with a world says that instead",
+      "already on disk" in render_maps_editor(_own, saves={"Svartalfheim_WP": True}),
+      _window(render_maps_editor(_own, saves={"Svartalfheim_WP": True}),
+              "Svartalfheim_WP", 300))
+check("when the disk could not be read, neither is claimed",
+      "no saved world" not in render_maps_editor(_own)
+      and "already on disk" not in render_maps_editor(_own),
+      _window(render_maps_editor(_own), "Svartalfheim_WP", 300))
+check("a cluster with no maps of its own says that, rather than showing an empty table",
+      "Everything in the list above is a map Obelisk ships with"
+      in render_maps_editor(store()),
+      _window(render_maps_editor(store()), "None yet", 200))
+# In the list, so forgetting it would leave the cluster naming a map nothing can
+# explain. The route refuses it; the button says so first.
+_own_listed = store()
+_own_listed.data["map_catalogue"] = list(_own.data["map_catalogue"])
+_own_listed.patch({"maps": "island,svart"})
+_ol = render_maps_editor(_own_listed, saves={})
+check("a map the cluster is running cannot be forgotten from here",
+      'name=forget value="svart"' in _ol and " disabled>forget" in _ol,
+      _window(_ol, "name=forget", 240))
+check("and the button says why rather than just not working",
+      "is one of the maps this cluster runs" in _window(_ol, "name=forget", 240),
+      _window(_ol, "name=forget", 240))
+check("while one that is only defined can go",
+      " disabled>forget" not in _owned, _window(_owned, "name=forget", 240))
+
 # ---- the restore picker knows this cluster's own maps too
 #
 # The one page where leaving a map out is worst: an operator restoring a world is

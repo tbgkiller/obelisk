@@ -6248,6 +6248,192 @@ if _swwas42 is None:
 else:
     os.environ["OBELISK_ARK"] = _swwas42
 
+# ---- defining a map Obelisk does not ship, from the editor
+#
+# The write path behind the opened catalogue. It is its own route and its own form:
+# defining a map teaches this manager how to spell it, and adding it to the cluster is
+# the list above doing what it does for every other map. One post saying "added" about
+# both would be the sentence doing two jobs.
+_steps43 = []
+_t43 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _define(posts, worlds=()):
+        _real_st43 = _appmod.clusterctl.status
+        _was43 = os.environ.get("OBELISK_ARK")
+        _d43 = tempfile.mkdtemp()
+        _ark43 = os.path.join(_d43, "ark")
+        os.environ["OBELISK_ARK"] = _ark43
+        for w in worlds:
+            os.makedirs(os.path.join(_ark43, "shared", "SavedArks", w), exist_ok=True)
+        try:
+            _appmod.clusterctl.status = lambda store: {
+                "docker_ok": True, "compose_exists": False, "running": 0,
+                "services": []}
+            _bot_s1.LIVE = _kick_relay()
+            st43 = Store(os.path.join(_d43, "settings.json")).load()
+            st43.patch({"status_port": 8088}, source="install")
+            st43.patch({"maps": "island", "admin_password": "pw",
+                        "cluster_id": "definetest"})
+            st43.data["cluster"]["admin_token"] = "define-token"
+            st43.data["setup_done"] = True
+            st43.save()
+            client = TestClient(TestServer(build_app(st43, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies({COOKIE: "define-token"})
+            out = []
+            for post in posts:
+                if callable(post):
+                    # A setup step, not a post. It is allowed to fail - it depends on
+                    # the post before it having worked - and a failure here is recorded
+                    # rather than raised, so the checks below still run and name what
+                    # went wrong instead of the module stopping with a traceback.
+                    try:
+                        post(st43)
+                    except Exception as e:           # noqa: BLE001 - reported
+                        _steps43.append("%s: %s" % (type(e).__name__, e))
+                    continue
+                before = _copy38.deepcopy(st43.data)
+                r = await client.post("/admin/maps/catalogue", data=post,
+                                      allow_redirects=False)
+                where = r.headers.get("Location", "")
+                body = (await (await client.get(where)).text() if r.status == 302
+                        else await r.text())
+                out.append((r.status, where, body, before,
+                            _copy38.deepcopy(st43.data)))
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st43
+            _bot_s1.LIVE = _real_live
+            if _was43 is None:
+                os.environ.pop("OBELISK_ARK", None)
+            else:
+                os.environ["OBELISK_ARK"] = _was43
+        return out
+
+    _bad43, _trav43, _ok43 = _t43.run_until_complete(_define([
+        {"define": "1", "key": "My_Map", "map_id": "Svartalfheim_WP",
+         "name": "Svartalfheim"},
+        {"define": "1", "key": "svart", "map_id": "../../etc", "name": "Svart"},
+        {"define": "1", "key": "svart", "map_id": "Svartalfheim_WP",
+         "name": "Svartalfheim"}]))
+    _seen43, = _t43.run_until_complete(_define([
+        {"define": "1", "key": "svart", "map_id": "Svartalfheim_WP",
+         "name": "Svartalfheim"}], worlds=["Svartalfheim_WP"]))
+    # The lambda is a step, not a post: it puts the map in the list, and only the
+    # posts come back.
+    _made43, _held43, _builtin43 = _t43.run_until_complete(_define([
+        {"define": "1", "key": "svart", "map_id": "Svartalfheim_WP",
+         "name": "Svartalfheim"},
+        lambda st: st.patch({"maps": "island,svart"}),
+        {"forget": "svart"},
+        {"forget": "island"}]))
+    _made44, _gone44 = _t43.run_until_complete(_define([
+        {"define": "1", "key": "svart", "map_id": "Svartalfheim_WP",
+         "name": "Svartalfheim"},
+        {"forget": "svart"}]))
+finally:
+    _t43.close()
+
+
+def _maps43(res):
+    return _from(res[2], "<fieldset id=maps>").split("</fieldset>")[0]
+
+
+def _amber43(res):
+    return [w.split("</div>")[0] for w in _maps43(res).split("<div class=warn>")[1:]]
+
+
+def _cat43(res):
+    return res[4].get("map_catalogue")
+
+
+check("the fixture's own setup ran - a step that failed would leave the checks "
+      "below measuring the wrong thing", _steps43 == [], _steps43)
+
+# ---- a refusal is a correction, not three fields to fill in again
+for _what43, _res43, _phrase43 in (
+        ("a key that is not a key", _bad43, "lowercase letters and digits only"),
+        ("a map id that could leave its folder", _trav43,
+         "letters, digits and underscores only")):
+    check("%s is refused" % _what43, _res43[0] == 302 and _res43[1].endswith("#maps"),
+          [_res43[0], _res43[1]])
+    check("in amber, at the editor, naming the rule that was broken",
+          any(_phrase43 in a for a in _amber43(_res43)), _amber43(_res43))
+    check("nothing was written", _res43[3] == _res43[4], _cat43(_res43))
+
+check("what was typed comes back in the form",
+      _in_order(_maps43(_bad43), 'name=key value="My_Map"',
+                'name=map_id value="Svartalfheim_WP"',
+                'name=name value="Svartalfheim"'),
+      _window(_maps43(_bad43), "name=key", 400))
+check("and the form it is about is open, not folded away behind the refusal",
+      "<details id=ownmaps open" in _maps43(_bad43),
+      _window(_maps43(_bad43), "<details id=ownmaps", 120))
+
+# ---- what a definition does, and what it deliberately does not
+check("defining a map is accepted", _ok43[0] == 302, _ok43[0])
+check("and says so where the editor is",
+      any("now a map this cluster can run" in n.split("</div>")[0]
+          for n in _maps43(_ok43).split("<div class=note>")[1:]),
+      _window(_maps43(_ok43), "<div class=note>", 300))
+check("the entry lands in the catalogue",
+      [e["key"] for e in _cat43(_ok43) or []] == ["svart"], _cat43(_ok43))
+check("with the level name it was given",
+      (_cat43(_ok43) or [{}])[0].get("map_id") == "Svartalfheim_WP", _cat43(_ok43))
+_moved43 = [k for k in set(_ok43[3]) | set(_ok43[4])
+            if _ok43[3].get(k) != _ok43[4].get(k)]
+check("and nothing else in the store moves", _moved43 == ["map_catalogue"], _moved43)
+check("defining a map does not start running it",
+      (_ok43[4].get("cluster") or {}).get("maps") == "island",
+      (_ok43[4].get("cluster") or {}).get("maps"))
+check("it is offered in the quick-pick, like any other map",
+      'name=add value="svart"' in _maps43(_ok43),
+      _window(_maps43(_ok43), 'value="svart"', 200))
+check("tagged as this cluster's own, so it is clear which maps were typed in",
+      "custom</span></button>" in _maps43(_ok43),
+      _window(_maps43(_ok43), "custom</span>", 200))
+
+# ---- the look at the disk is advice, and says which way it went
+#
+# A map id that is well-formed and wrong cannot be told from a right one: the server
+# makes a new empty world under it. Whether a folder of that name is already there is
+# the only evidence available without launching, so it is shown and decides nothing -
+# the definition above was accepted with no world on disk at all.
+check("a map id with no world yet says so, without refusing anything",
+      "no saved world" in _maps43(_ok43) and _ok43[0] == 302,
+      _window(_maps43(_ok43), "no saved world", 200))
+check("and one that matches a folder on disk says that instead",
+      "already on disk" in _maps43(_seen43)
+      and "no saved world" not in _maps43(_seen43),
+      _window(_maps43(_seen43), "on disk", 200))
+
+# ---- forgetting one
+check("a map this cluster is running cannot be forgotten",
+      _held43[0] == 302 and any("is one of the maps this cluster runs" in a
+                                for a in _amber43(_held43)), _amber43(_held43))
+check("and it is still in the catalogue", _cat43(_held43), _cat43(_held43))
+check("nothing at all changed", _held43[3] == _held43[4], "the store moved")
+check("the button says so before the route has to",
+      'name=forget value="svart" title' in _maps43(_held43)
+      and 'name=forget value="svart" title="Svartalfheim is one of the maps this '
+          'cluster runs" disabled' in _maps43(_held43),
+      _window(_maps43(_held43), "name=forget", 200))
+check("one of Obelisk's own maps cannot be forgotten either",
+      _builtin43[0] == 302 and any("one of Obelisk" in a
+                                   for a in _amber43(_builtin43)),
+      _amber43(_builtin43))
+
+check("a map this cluster is not running can be forgotten", _gone44[0] == 302,
+      _gone44[0])
+check("and the catalogue no longer has it", _cat43(_gone44) == [], _cat43(_gone44))
+check("said plainly, including what was not deleted",
+      any("world and its settings are untouched" in n.split("</div>")[0]
+          for n in _maps43(_gone44).split("<div class=note>")[1:]),
+      _window(_maps43(_gone44), "<div class=note>", 300))
+check("and the map list is not touched by it",
+      (_gone44[4].get("cluster") or {}).get("maps") == "island",
+      (_gone44[4].get("cluster") or {}).get("maps"))
+
 # ---- a map this cluster added is a map, on every page that has one
 #
 # The catalogue used to be ten entries in a module, and the pages were written as though
