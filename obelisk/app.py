@@ -477,6 +477,7 @@ def build_app(store, docker=None):
         # the button, and where the answer changes something.
         notice = bans_notice = caps_notice = ""
         maps_refusal = maps_message = ""
+        maps_refusal_at = "maps"
         maps_values = None
         if not (message or problem or refusal):
             token = str((getattr(request, "query", None) or {}).get("said") or "")
@@ -492,6 +493,9 @@ def build_app(store, docker=None):
                     elif said["where"] == "maps":
                         maps_refusal = said.get("refusal") or said.get("problem") or ""
                         maps_message = said.get("message") or ""
+                        # Which part of the editor it is about. The list route does not
+                        # set it, so its refusals keep the head of the fieldset.
+                        maps_refusal_at = said.get("part") or "maps"
                         # What was typed into the add form, so a refusal is a
                         # correction rather than three fields to fill in again.
                         maps_values = said.get("values")
@@ -512,6 +516,9 @@ def build_app(store, docker=None):
         gone = mapsmod.unknown(store, mapsmod.listed(store.get("maps")))
         if gone:
             maps_refusal = ui.maps_unknown(gone)
+            # About the list, not the add form, and it wins the slot - so it also wins
+            # back the place the slot is drawn in.
+            maps_refusal_at = "maps"
         st = clusterctl.status(store)
         banner = ""
         if problem:
@@ -553,7 +560,9 @@ def build_app(store, docker=None):
                                   web_address=_web_address(),
                                   maps_editor=ui.render_maps_editor(
                                       store, running=bool(st.get("running")),
-                                      refusal=maps_refusal, message=maps_message,
+                                      refusal=maps_refusal,
+                                      refusal_at=maps_refusal_at,
+                                      message=maps_message,
                                       values=maps_values, saves=_worlds_on_disk()),
                                   pending=_asking(pending, "who"), notice=notice,
                                   bans=bansctl.recent(store),
@@ -1030,16 +1039,22 @@ def build_app(store, docker=None):
         form = await request.post()
 
         def back(anchor="maps", **kw):
+            # `part` travels with the result, not just in the fragment: the page
+            # has to know which part of the editor the message belongs beside, and a
+            # fragment is only where the browser scrolls. (Not `at` - _say_next keeps
+            # its own `at`, the timestamp the expiry sweep reads.)
             return web.HTTPFound("/admin/cluster?said=%s#%s"
-                                 % (_say_next(where="maps", **kw), anchor))
+                                 % (_say_next(where="maps", part=anchor, **kw),
+                                    anchor))
 
         def refused(text_, **kw):
-            """Back to the form, not to the top of the section.
+            """Back to the form, and the message goes with it.
 
             #maps is the head of the whole Maps fieldset, which is about a screen above
-            the three boxes this is a refusal about - so the message and the fields it
-            asks to be corrected were not on screen together. The form has its own id;
-            a refusal belongs beside the thing it refused.
+            the three boxes this is a refusal about. Moving the anchor alone only turned
+            the problem around: the page scrolled past the message to the form, so the
+            operator landed on their own text with nothing saying why it came back.
+            The `part` this carries puts the message beside the boxes as well.
             """
             return back(anchor="ownmaps", refusal=text_, **kw)
 

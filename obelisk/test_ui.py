@@ -309,6 +309,48 @@ check("a refusal hands back what was typed",
           _own, refusal="no", values={"key": "My_Map"}),
       "the typed key was dropped")
 
+# ---- and the refusal is drawn where the operator is sent
+#
+# Two slots, not one. The page scrolls to #ownmaps for a refusal about these three
+# boxes, so a message drawn at the head of the fieldset scrolls off above it - which
+# is the inverted version of the bug it was meant to fix, and the version that reads
+# worse: the operator lands on a form still holding their text with nothing on screen
+# saying why. A refusal about the list itself keeps the head, because that is where
+# the list is.
+_refused_own = render_maps_editor(_own, refusal="that key is not a key",
+                                  refusal_at="ownmaps",
+                                  values={"key": "My_Map"})
+_refused_list = render_maps_editor(_own, refusal="this cluster is running")
+
+
+def _ownblock(body):
+    return _from(body, "<details id=ownmaps").split("</details>")[0]
+
+
+def _abovedetails(body):
+    return body.split("<details id=ownmaps")[0]
+
+
+check("a refusal about the three boxes is drawn in the section holding them",
+      "that key is not a key" in _ownblock(_refused_own),
+      _window(_ownblock(_refused_own), "class=warn", 300))
+check("and not at the head of the fieldset, where the page has scrolled past it",
+      "that key is not a key" not in _abovedetails(_refused_own),
+      _window(_abovedetails(_refused_own), "class=warn", 300))
+check("it sits above the boxes it is asking to have corrected",
+      _in_order(_ownblock(_refused_own), "class=warn", "that key is not a key",
+                "name=key"), _window(_ownblock(_refused_own), "class=warn", 400))
+check("and the handed-back values are right there with it",
+      _in_order(_ownblock(_refused_own), "that key is not a key",
+                'name=key value="My_Map"'),
+      _window(_ownblock(_refused_own), "class=warn", 500))
+check("while a refusal about the list keeps the head of the fieldset",
+      "this cluster is running" in _abovedetails(_refused_list),
+      _window(_abovedetails(_refused_list), "class=warn", 300))
+check("and is not pushed down into a section it is not about",
+      "this cluster is running" not in _ownblock(_refused_list),
+      _window(_ownblock(_refused_list), "class=warn", 300))
+
 check("the maps this cluster added are listed with what defines them",
       _in_order(_owned, "Maps this cluster added", ">Svartalfheim<", ">svart<",
                 ">Svartalfheim_WP<"), _window(_owned, "Maps this cluster", 500))

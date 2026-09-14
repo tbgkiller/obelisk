@@ -2395,8 +2395,8 @@ MAP_ID_ADVICE = ("The map id is the level name the server expects, and the folde
 ONLY_MAP = ONLY_MAP_WHY + " \u2014 the list is unchanged."
 
 
-def render_maps_editor(store, running=False, refusal="", message="", values=None,
-                       saves=None):
+def render_maps_editor(store, running=False, refusal="", refusal_at="maps",
+                       message="", values=None, saves=None):
     """The maps this cluster runs, in the order it runs them.
 
     Four parts of one editor. The list, because order is a fact about this cluster that
@@ -2481,6 +2481,12 @@ def render_maps_editor(store, running=False, refusal="", message="", values=None
     # The two forms post to two different routes - the list, and the catalogue behind
     # it - so they cannot be one form, and a form cannot be nested in another. The
     # fieldset holds both, because to the operator this is one place.
+    # A refusal about the three boxes below goes down there with them; only a refusal
+    # about the list itself belongs at the head of the fieldset. Both used to render
+    # here, which is what put the message a screen above the form it was about.
+    own_refusal = refusal if refusal_at == "ownmaps" else ""
+    top_refusal = "" if refusal_at == "ownmaps" else refusal
+
     return ('<fieldset id=maps><legend>Maps</legend>%s%s%s'
             '<form method=post action="/admin/maps">'
             '<table><tr><th class=num>#</th><th>Map</th>'
@@ -2498,7 +2504,7 @@ def render_maps_editor(store, running=False, refusal="", message="", values=None
             '<div class=presets>%s</div>'
             '</form>%s'
             '</fieldset>'
-            % (warn_block(refusal) if refusal else "",
+            % (warn_block(top_refusal) if top_refusal else "",
                ('<div class=note>%s</div>' % _e(message)) if message else "", warn,
                "".join(rows), catalogue,
                " That needs the cluster stopped." if running else "", presets,
@@ -2509,16 +2515,25 @@ def render_maps_editor(store, running=False, refusal="", message="", values=None
                # the operator has that they typed the level name correctly, and the
                # moment they have just typed it is when it is worth reading.
                _own_maps(store, values=values, saves=saves, listed=keys,
+                         refusal=own_refusal,
                          opened=bool(refusal or values or message))))
 
 
-def _own_maps(store, values=None, saves=None, listed=(), opened=False):
+def _own_maps(store, values=None, saves=None, listed=(), opened=False,
+              refusal=""):
     """Maps this cluster defined for itself: what they are, and how to add one.
 
     Folded away by default. Most clusters run the ten maps Obelisk ships and never open
     this; the ones that need it need three fields and the sentence about what Obelisk
     cannot check for them. It springs open on a refusal, because a refusal that hides
     the form it is about is a refusal nobody can act on.
+
+    `refusal` is a refusal about this form - a define that broke a rule, or a forget
+    that is not allowed - and it renders here, between the table and the boxes, rather
+    than at the head of the fieldset. Moving only the anchor was not enough: the page
+    scrolls to this section, so a message left at the top scrolls off above it and the
+    operator lands on a form holding their own text with nothing on screen saying why
+    it came back. The message and the fields it asks to be corrected travel together.
     """
     values = values or {}
     saves = saves or {}
@@ -2579,12 +2594,13 @@ def _own_maps(store, values=None, saves=None, listed=(), opened=False):
             'it here only teaches Obelisk how to spell it; it is added to the cluster '
             'from the list above, like any other map.</div>'
             '<form method=post action="/admin/maps/catalogue">'
-            '%s'
+            '%s%s'
             '<div class=help style="margin:14px 0 6px"><b>Define a map</b></div>'
             '%s%s%s'
             '<button type=submit name=define value=1>Add this map</button>'
             '</form></details>'
             % (" open" if opened else "", rows,
+               warn_block(refusal) if refusal else "",
                field("key", "Key", 'Lowercase letters and digits, 3 to 24 of them. It '
                      'becomes this map\u2019s container name, its folder and its web '
                      'address here, and it cannot be changed later.', "svartalfheim"),

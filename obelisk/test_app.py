@@ -3349,9 +3349,12 @@ check("and the slot is capped, for redirects nobody ever follows",
       "SAID_MAX" in _saysrc, _saysrc[:400])
 check("the token is not guessable",
       "secrets" in _saysrc, _saysrc[:200])
+# A window over the head of the function, not a line count: what is being asked is
+# that the read is a pop. Widened from 600, which the slot's own bookkeeping had
+# already grown to within a line of.
 check("the result is taken out when it is read, not copied",
-      "_said.pop(" in _appsrc_n11.split("def _cluster_body")[1][:600],
-      _appsrc_n11.split("def _cluster_body")[1][:600])
+      "_said.pop(" in _appsrc_n11.split("def _cluster_body")[1][:900],
+      _appsrc_n11.split("def _cluster_body")[1][:900])
 
 
 # ---- the kick route: asked first, sent once, and only ever called "sent"
@@ -6487,6 +6490,20 @@ def _amber43(res):
     return [w.split("</div>")[0] for w in _maps43(res).split("<div class=warn>")[1:]]
 
 
+def _own43(res):
+    """Just the "Maps this cluster added" section - the form and the table in it."""
+    return _from(_maps43(res), "<details id=ownmaps").split("</details>")[0]
+
+
+def _above43(res):
+    """The fieldset ABOVE that section: the list, the chips, the presets.
+
+    The half of the page the refusal used to be stranded in. Scoping to it is what
+    makes "the message is not up there any more" a question this file can ask.
+    """
+    return _maps43(res).split("<details id=ownmaps")[0]
+
+
 def _cat43(res):
     return res[4].get("map_catalogue")
 
@@ -6506,6 +6523,20 @@ for _what43, _res43, _phrase43 in (
           _res43[1].endswith("#ownmaps"), _res43[1])
     check("in amber, at the editor, naming the rule that was broken",
           any(_phrase43 in a for a in _amber43(_res43)), _amber43(_res43))
+    # The anchor alone was not the fix, and asking only for the anchor let the
+    # inverted version through: the page scrolled to the form while the message stayed
+    # at the head of the fieldset, so the two were still never on screen together -
+    # only now it was the message that was off screen, above, and the operator landed
+    # on their own text with nothing saying why it came back. These three ask where
+    # the message actually rendered.
+    check("and the message renders inside that form's own section",
+          _phrase43 in _own43(_res43), _window(_own43(_res43), "class=warn", 300))
+    check("not stranded at the head of the fieldset, a screen above it",
+          _phrase43 not in _above43(_res43),
+          _window(_above43(_res43), "class=warn", 300))
+    check("and above the boxes it is asking to have corrected",
+          _in_order(_own43(_res43), "class=warn", _phrase43, "name=key"),
+          _window(_own43(_res43), "class=warn", 400))
     check("nothing was written", _res43[3] == _res43[4], _cat43(_res43))
 
 check("what was typed comes back in the form",
@@ -6601,6 +6632,16 @@ check("and the refusal does not claim the cluster is running, because it is not"
       _amber43(_held43))
 check("and it is still in the catalogue", _cat43(_held43), _cat43(_held43))
 check("nothing at all changed", _held43[3] == _held43[4], "the store moved")
+# A refused forget lands the same way a refused define does: the page scrolls to this
+# section, so the message has to be in it.
+check("a refused forget lands on the section too",
+      _held43[1].endswith("#ownmaps"), _held43[1])
+check("with its message inside that section, beside the table it is about",
+      "map list - take it out of the list first" in _own43(_held43),
+      _window(_own43(_held43), "class=warn", 300))
+check("and not at the head of the fieldset, a screen above it",
+      "map list - take it out of the list first" not in _above43(_held43),
+      _window(_above43(_held43), "class=warn", 300))
 check("the button says so before the route has to, and says the same reason",
       'name=forget value="svart" title="Svartalfheim is in the map list above" disabled'
       in _maps43(_held43), _window(_maps43(_held43), "name=forget", 200))
