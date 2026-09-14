@@ -496,6 +496,7 @@ def build_app(store, docker=None):
                 ui.render_stop_job(_sjob_live()) + ui.STOP_JS +
                 ui.render_cluster(store, plan, status=_label_services(st),
                                   roster=_roster_now(),
+                                  web_address=_web_address(),
                                   pending=_asking(pending, "who"), notice=notice,
                                   bans=bansctl.recent(store),
                                   bans_pending=_asking(pending, "bans"),
@@ -617,10 +618,12 @@ def build_app(store, docker=None):
             todo = store.readiness()
             note = ('<div class=note>Cluster not running. %s</div>'
                     % (("Still to set: " + ", ".join(b["label"] for b in todo))
-                       if todo else "Launch it below \u2014 the addresses people "
-                       "connect to are at the foot of this page."))
+                       if todo else "Launch it below \u2014 each map\u2019s address "
+                       "appears beside it once it is running."))
         return (note + _dashboard()
-                + ui.render_status(_label_services(st), players=_players_now())
+                + ui.render_status(_label_services(st), players=_players_now(),
+                                   addresses=_addresses(),
+                                   host_known=install.host_address() != "<this-host>")
                 + _recent_panel())
 
     def _reference_foot():
@@ -632,7 +635,7 @@ def build_app(store, docker=None):
         Down here it is where somebody looks when they want it and nowhere near what
         they read when something is wrong.
         """
-        return _connect_panel() + ui.render_version(VERSION_INFO) + ui.FEED_LIVE
+        return ui.render_version(VERSION_INFO) + ui.FEED_LIVE
 
     async def cluster_page(request):
         if not authed(request):
@@ -808,7 +811,10 @@ def build_app(store, docker=None):
         if not authed(request):
             raise web.HTTPFound("/setup")
         items = announce.recent(limit=200)
-        body = _dashboard() + ui.render_events(items, jobs=_jobs())
+        # No "Right now" card here. It is the same panel the cluster page draws
+        # from the same job state, and this page is the history - two live
+        # copies of one thing on two tabs is what this has been removing.
+        body = ui.render_events(items, jobs=_jobs())
         body = body.replace("<div id=feed>",
                             '<div id=feed data-newest="%d">' % announce.newest_id(), 1)
         return chrome(body + ui.FEED_LIVE, "Activity", "/admin/activity")
@@ -1679,25 +1685,24 @@ def build_app(store, docker=None):
         live["html"] = ui.render_stop_panel(live)
         return web.json_response(live)
 
-    def _connect_panel():
-        """The addresses people actually type, once there are maps to type them for."""
+    def _addresses():
+        """{map name: host:port}, for the column that replaced the Connect table.
+
+        Derived from the plan rather than measured, which is why it can sit in the same
+        row as the live state without the two being able to disagree: a port is a fact
+        about what was planned, not a reading of what is happening.
+        """
         try:
             plan = build_plan(store)
-        except Exception:
-            return ""
-        if not plan.get("maps"):
-            return ""
+        except Exception:                            # noqa: BLE001 - never a blank page
+            return {}
         host = install.host_address()
-        # Every map's address, again. It was cut to the web address alone when the
-        # per-map detail moved out, and that was the wrong fact to cut: an address is
-        # host:game_port, derived from the plan row rather than measured, so two
-        # renderings of it cannot disagree the way two readings of live state can - and
-        # handing somebody the list of addresses is a whole-cluster job that the
-        # drill-down had turned into ten page visits.
-        entries = [(r["name"], "%s:%d" % (host, r["game_port"])) for r in plan["maps"]]
-        return ui.render_connect(
-            entries, web_address="http://%s:%s/" % (host, store.get("status_port")),
-            host_known=host != "<this-host>")
+        return {r["name"]: "%s:%d" % (host, r["game_port"])
+                for r in (plan.get("maps") or [])}
+
+    def _web_address():
+        """Where Obelisk answers - not a fact about a map, so not in the map table."""
+        return "http://%s:%s/" % (install.host_address(), store.get("status_port"))
 
     # ---- backups
     def _flush_for(store_):

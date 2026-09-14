@@ -219,22 +219,45 @@ check("an error still renders above it",
       _in_order(render_setup(error="nope"), "nope", "First time?"))
 
 
-# ---- the status page answers "what do I type in"
-from .ui import render_connect
-c = render_connect([("The Island", "192.168.1.50:7877"),
-                    ("The Center", "192.168.1.50:7878")],
-                   web_address="http://192.168.1.50:18091/")
-check("every map gets a connect address", "192.168.1.50:7877" in c and "192.168.1.50:7878" in c)
-check("the map names are shown", "The Island" in c and "The Center" in c)
-check("Obelisk's own address is shown", "http://192.168.1.50:18091/" in c)
-check("it says how to use it in game", "open &lt;address&gt;" in c or "Unofficial" in c)
-check("no panel before a cluster is defined", render_connect([]) == "")
+from . import ui as _uicon                       # noqa: E402
+# ---- "what do I type in" is a column of the table that already names every map
+#
+# It was a second full-width table under that one, with the same ten names down its
+# left. A row already says which map it is; an address is one more thing true of that
+# map, so it is a column and the panel is gone.
+_cst = {"docker_ok": True, "compose_exists": True, "running": 2, "services": [
+    {"service": "island", "label": "The Island", "map": "island", "level": "ok",
+     "says": "Online"},
+    {"service": "center", "label": "The Center", "map": "center", "level": "ok",
+     "says": "Online"}]}
+_ADDR = {"The Island": "192.168.1.50:7877", "The Center": "192.168.1.50:7878"}
+c = _uicon.render_status(_cst, players={"by_map": {"The Island": 3}, "total": 3, "age": 5},
+                     addresses=_ADDR)
+check("every map gets a connect address",
+      "192.168.1.50:7877" in c and "192.168.1.50:7878" in c, c[:600])
+check("in the row that names that map",
+      _in_order(c, "The Island", "192.168.1.50:7877", "The Center",
+                "192.168.1.50:7878"), c[:800])
+check("under one Address heading, not a table of its own",
+      c.count("<th>Address</th>") == 1 and "<legend>Connect</legend>" not in c,
+      c[:400])
+check("the instance id is not a column here any more",
+      "<th>Service</th>" not in c, c[:400])
+check("it says how to use it in game", "open &lt;address&gt;" in c, c[-600:])
+check("a map with no address recorded shows a dash, not a blank cell",
+      "&mdash;" in _uicon.render_status(_cst, addresses={"The Island": "x:1"}),
+      _uicon.render_status(_cst, addresses={"The Island": "x:1"})[-400:])
 
-unknown = render_connect([("The Island", "<this-host>:7877")], host_known=False)
+unknown = _uicon.render_status(_cst, addresses={"The Island": "<this-host>:7877"},
+                           host_known=False)
 check("an unknown host address is admitted, not hidden",
-      "cannot see the address" in unknown and "Server address" in unknown)
+      "cannot see the address" in unknown and "Server address" in unknown,
+      unknown[-500:])
 check("a known host address needs no apology",
-      "cannot see the address" not in c)
+      "cannot see the address" not in c, c[-400:])
+check("and no in-game help when there are no addresses to use",
+      "open &lt;address&gt;" not in _uicon.render_status(_cst),
+      _uicon.render_status(_cst)[-300:])
 
 
 # ---- 194 settings need finding, not scrolling
@@ -1173,8 +1196,8 @@ check("the Map column shows the name the operator picked",
       "<td>The Island</td>" in _live, _live[:600])
 check("not the instance id under a Map heading",
       "<td>island</td>" not in _live, _live[:600])
-check("the instance is still shown, where it is diagnostic",
-      '<td class=help>island</td>' in _live, _live[:600])
+check("the instance is not a column here any more",
+      "<td class=help>island</td>" not in _live, _live[:600])
 check("a service with no label falls back rather than rendering blank",
       "asa-tbg-x" in ui.render_status(
           {"docker_ok": True, "compose_exists": True, "running": 1,
@@ -1277,13 +1300,23 @@ check("the no-relay note names where the relay is set up",
 check("and is a warning rather than a quiet aside",
       "<div class=warn>" in _norelay, _norelay[:200])
 
-# ---- the column header stopped over-promising
-check("the last column is called Service, which is what it holds",
-      "<th>Service</th>" in _live, _live[:500])
-check("not Container, which is a longer name it does not show",
-      "<th>Container</th>" not in _live, _live[:500])
-check("and it still shows the instance underneath",
-      "<td class=help>island</td>" in _live, _live[:700])
+# ---- the last column holds what people came to the row for
+#
+# It was the instance id, which is on each map's own page as Container and was never
+# something anybody acted on from here. The address it replaced used to be a second
+# full-width table under this one, with the same map names down its left.
+check("the last column is the address",
+      "<th>Address</th>" in _live, _live[:500])
+check("not the instance, which nobody typed anywhere",
+      "<th>Service</th>" not in _live and "<th>Container</th>" not in _live,
+      _live[:500])
+check("and the instance is still available where it is diagnostic",
+      "Container" in render_map(
+          "The Island", "island",
+          row={"map": "island", "name": "The Island", "instance": "island",
+               "game_port": 7777, "rcon_port": 27020, "memory": "12g",
+               "memory_why": "base", "role": "primary"}),
+      "the map page lost Container")
 
 
 

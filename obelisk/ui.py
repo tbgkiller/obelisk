@@ -1338,13 +1338,18 @@ def _ago(seconds):
     return "%dd ago" % (seconds // 86400)
 
 
-def render_status(status, players=None):
+def render_status(status, players=None, addresses=None, host_known=True):
     """What is actually running. Absent or empty is a normal state, not an error.
 
     `players` is the relay's cached population: {"by_map": {name: n}, "total": int,
     "age": seconds}, or None when there is no relay to have asked. None renders as a
     dash rather than a zero, because "nobody asked" is not "nobody is playing" - the
     same rule the update gate keeps about a map that did not answer.
+
+    `addresses` is {map name: host:port}. It used to be a table of its own under this
+    one - the same ten names down the left of both, which is the duplication the owner
+    kept pointing at. A row already says which map it is; the address is another thing
+    that is true of that map, so it is a column.
 
     The count is shown with its age. It comes from a poll that runs once a minute, so
     presenting it bare would be presenting a claim about now that it is not making.
@@ -1363,6 +1368,7 @@ def render_status(status, players=None):
     css = {"ok": "ok", "busy": "", "bad": "bad"}
     seen = (players or {}).get("by_map") or {}
     rows = ""
+    unknown_count = False
     for s in status.get("services", []):
         level = s.get("level") or ("ok" if s.get("state") == "running" else "bad")
         says = s.get("says") or s.get("status") or s.get("state") or "?"
@@ -1375,7 +1381,10 @@ def render_status(status, players=None):
         else:
             # The dash carries its own explanation, because a dash beside a row Docker
             # still calls "serving" is otherwise indistinguishable from a quiet map.
+            # The footnote below is keyed on this, not on scanning the finished markup:
+            # the address column has a dash of its own and means something else by it.
             cell = ('<td class=num title="%s">&mdash;</td>' % _e(DASH_MEANS))
+            unknown_count = True
         # The name is the way in. It is keyed on the map's own key, which the
         # status row carries because the same lookup that put the name there had it -
         # reversing a display name back into a key is the id-for-name slip this
@@ -1383,10 +1392,15 @@ def render_status(status, players=None):
         key = s.get("map") or ""
         named = ('<a class=maplink href="/admin/cluster/map/%s">%s</a>'
                  % (_e(key), _e(label)) if key else _e(label))
+        # The instance id used to be the fourth column. It is on the map's own page
+        # as Container, it is not something anybody acts on from here, and the address
+        # is what people actually came to this row for.
+        addr = (addresses or {}).get(label, "")
         rows += ("<tr><td>%s</td><td class=%s>%s</td>%s"
-                 "<td class=help>%s</td></tr>"
+                 "<td>%s</td></tr>"
                  % (named, css.get(level, ""), _e(says), cell,
-                    _e(s.get("service") or s.get("name") or "")))
+                    ('<code>%s</code>' % _e(addr)) if addr else
+                    '<span class=help>&mdash;</span>'))
         if s.get("log_tail"):
             rows += ('<tr><td colspan=4><details><summary class=help>why it is '
                      'failing</summary><pre class=logtail>%s</pre></details></td></tr>'
@@ -1436,18 +1450,21 @@ def render_status(status, players=None):
     # Only when there is a dash to explain. A note about a symbol that is not on the
     # page is noise that teaches people to stop reading the notes.
     dashes = ('<div class=help style="margin-top:10px">%s</div>' % _e(DASH_MEANS)
-              if "&mdash;" in rows else "")
+              if unknown_count else "")
 
-    # "Container" was the header over s["service"], which is the instance - the
-    # container name is a longer thing built from the cluster and the instance. The
-    # column was right and the word over it was not.
+    # The address column replaced the instance id, which is on each map's own page
+    # as Container and was never something anybody acted on from here. The two help
+    # lines under the table came from the Connect panel this absorbed - the same
+    # constants that panel used, and the same ones the map page uses.
     return (banner + head + '<fieldset id=run><legend>Running now</legend><table>'
             '<tr><th>Map</th><th>Doing</th><th class=num>Players</th>'
-            '<th>Service</th></tr>%s</table>%s'
+            '<th>Address</th></tr>%s</table>%s%s%s'
             '<div class=help style="margin-top:10px">A first start downloads about 12 GB '
             'of game files and then generates the world, so it is normally slow. The '
             'phase and elapsed time above are how you tell it is still moving.</div>'
-            '</fieldset>' % (rows, dashes))
+            '</fieldset>'
+            % (rows, dashes, IN_GAME_HELP if addresses else "",
+               "" if host_known else HOST_UNKNOWN_WHY))
 
 
 def stop_reason(counts, silent=()):
@@ -2174,10 +2191,12 @@ def render_cap(entries, notice=None, pending=None, now=None, total=None):
 # Two orders, because the page draws two: a cluster that has never been launched
 # has no running-maps table to point at, and its maps form comes first. A chip that
 # scrolls nowhere is worse than one that is missing.
+# "Addresses" rather than "Connect", and it points at the running table, because that
+# is where the addresses are now. A cluster that has never been launched has neither.
 JUMPS = (("#run", "Running"), ("#who", "Players"), ("#bans", "Bans"),
-         ("#cap", "Cap"), ("#maps", "Maps"), ("#connect", "Connect"))
+         ("#cap", "Cap"), ("#maps", "Maps"))
 JUMPS_FRESH = (("#maps", "Maps"), ("#who", "Players"), ("#bans", "Bans"),
-               ("#cap", "Cap"), ("#connect", "Connect"))
+               ("#cap", "Cap"))
 
 
 def render_area(anchor, title, body):
@@ -2281,7 +2300,7 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
             + (notice or "") + here + where + connect + saves + (overrides or ""))
 
 
-def render_cluster(store, plan, status=None, roster=None,
+def render_cluster(store, plan, status=None, roster=None, web_address="",
                    pending=None, notice=None, bans=None,
                    bans_pending=None, bans_notice=None,
                    bans_total=None,
@@ -2318,7 +2337,14 @@ def render_cluster(store, plan, status=None, roster=None,
     else:
         launch = ('<button type=submit formaction="/admin/launch"%s>Launch cluster</button>'
                   % ("" if plan["ok"] else " disabled"))
-    summary = ("%d map%s, %s of RAM at most, plus Obelisk on port %s."
+    # This sentence already named the port Obelisk answers on, and the Connect panel
+    # printed the whole URL a screen below it - the same fact twice on one page. The
+    # sentence carries it now, and the panel is gone.
+    summary = ("%d map%s, %s of RAM at most, plus Obelisk itself at %s."
+               % (len(plan["maps"]), "" if len(plan["maps"]) == 1 else "s",
+                  plan["total_memory"], web_address)
+               if web_address else
+               "%d map%s, %s of RAM at most, plus Obelisk on port %s."
                % (len(plan["maps"]), "" if len(plan["maps"]) == 1 else "s",
                   plan["total_memory"], plan["obelisk_port"]))
 
@@ -3092,25 +3118,3 @@ HOST_UNKNOWN_WHY = ('<div class=help>Obelisk cannot see the address this machine
 IN_GAME_HELP = ('<div class=help style="margin-top:10px">In game: <b>Join ARK</b> '
                 '&rarr; <b>Unofficial</b>, or open the console and type '
                 '<code>open &lt;address&gt;</code>.</div>')
-
-
-def render_connect(entries, web_address="", host_known=True):
-    """Where to actually connect, per map.
-
-    The one thing a status page is for is answering "what do I type in". A container
-    cannot see the address its host answers on, so this is only as good as what it was
-    told - and it says so rather than printing a confident guess.
-    """
-    if not entries:
-        return ""
-    rows = "".join(
-        "<tr><td>%s</td><td><code>%s</code></td></tr>" % (_e(n), _e(a))
-        for n, a in entries)
-    note = HOST_UNKNOWN_WHY if not host_known else ""
-    web = ""
-    if web_address:
-        web = ('<div class=help style="margin-bottom:8px">Obelisk itself: '
-               '<code>%s</code></div>' % _e(web_address))
-    return ('<fieldset id=connect><legend>Connect</legend>%s'
-            '<table><tr><th>Map</th><th>Address</th></tr>%s</table>'
-            '%s%s</fieldset>' % (web, rows, IN_GAME_HELP, note))

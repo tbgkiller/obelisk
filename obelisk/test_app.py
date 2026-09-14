@@ -2500,6 +2500,9 @@ for _name, _body in (("the front page", _front), ("the cluster page", _clusterpg
     check("%s does not head an instance id as a Map" % _name,
           "<td>%s</td>" % _linst["The Island"] not in _body,
           _body[_body.find("Running now"):][:400])
+    check("%s heads its last column Address, not Service" % _name,
+          "<th>Address</th>" in _runtable(_body)
+          and "<th>Service</th>" not in _runtable(_body), _runtable(_body)[:400])
     check("%s shows each map's own count" % _name,
           ">4</td>" in _body and ">1</td>" in _body,
           _body[_body.find("Running now"):][:400])
@@ -2650,8 +2653,8 @@ for _name, _body in (("the front page", _page_d), ("the cluster page", _cluster_
           _body[_body.find("not available") - 80:][:300])
     check("%s explains the dashes in its table" % _name,
           "did not answer the last poll" in _body, "no dash note")
-    check("%s heads the last column Service" % _name,
-          "<th>Service</th>" in _body and "<th>Container</th>" not in _body,
+    check("%s heads the last column Address" % _name,
+          "<th>Address</th>" in _body and "<th>Service</th>" not in _body,
           "wrong column header")
 
 check("and the no-relay page points at where to set one up",
@@ -4711,14 +4714,25 @@ check("and it is the one marked as where you are",
       _window(_merged_pg, "<nav>", 400))
 
 # ---- what Status brought with it
-check("the connect addresses came too",
-      "<legend>Connect</legend>" in _merged_pg, "no connect panel")
-check("with an address per map",
-      _from(_merged_pg, "<legend>Connect</legend>").count("<code>") >= 3,
-      _window(_merged_pg, "<legend>Connect</legend>", 400))
-check("and the address of Obelisk itself",
-      "Obelisk itself:" in _from(_merged_pg, "<legend>Connect</legend>"),
-      _window(_merged_pg, "<legend>Connect</legend>", 300))
+# The addresses are a column of the running table now. That table and the Connect
+# panel were two full-width tables with the same map names down the left of each.
+check("there is no separate Connect panel",
+      "<legend>Connect</legend>" not in _merged_pg, "the panel survived the merge")
+check("the addresses are in the running table instead",
+      "<th>Address</th>" in _runtable(_merged_pg), _runtable(_merged_pg)[:400])
+check("one line per map, which is the share-every-address job",
+      _runtable(_merged_pg).count("<tr><td>") == 2
+      and _runtable(_merged_pg).count("<code>") >= 2,
+      [_runtable(_merged_pg).count("<tr><td>"),
+       _runtable(_merged_pg).count("<code>")])
+check("beside the state and the count for that same map",
+      _in_order(_runtable(_merged_pg), "<th>Map</th>", "<th>Doing</th>",
+                "<th class=num>Players</th>", "<th>Address</th>"),
+      _runtable(_merged_pg)[:400])
+check("and Obelisk's own address is in the plan summary, which already named its port",
+      "Obelisk itself at" in _merged_pg, _window(_merged_pg, "of RAM at most", 200))
+check("stated exactly once on the page",
+      _merged_pg.count("Obelisk itself") == 1, _merged_pg.count("Obelisk itself"))
 check("the version panel came too",
       "<legend>Obelisk version</legend>" in _merged_pg
       and "abc1234" in _merged_pg, _window(_merged_pg, "Obelisk version", 300))
@@ -4784,12 +4798,11 @@ for _sec, _mark in (("the running-maps table", "<legend>Running now</legend>"),
 # crash-looping opened on a history log with the failing banner third.
 check("the page is in the order the questions are asked",
       _in_order(_merged_pg,
-                "<fieldset id=run>",                  # is it up
+                "<fieldset id=run>",                  # is it up, who is on, where
                 "<div id=feed",                       # what just happened
                 "ARK build and mods",                 # the operations
                 "<fieldset id=who>", "<fieldset id=bans>", "<fieldset id=cap>",
-                "<legend>Presets</legend>", "<legend>Plan</legend>",
-                "<fieldset id=connect>"),
+                "<legend>Presets</legend>", "<legend>Plan</legend>"),
       "the page is out of order")
 check("the population is stated before the history, not after it",
       _in_order(_merged_pg, "players online", "<div id=feed"),
@@ -4798,9 +4811,9 @@ check("and the running table is above the update panel, not below it",
       _in_order(_merged_pg, "<fieldset id=run>", "ARK build and mods"),
       "the table is below the panel")
 check("and the reference material sits below it, not between",
-      _in_order(_merged_pg, "<legend>Plan</legend>", "<legend>Connect</legend>",
+      _in_order(_merged_pg, "<legend>Plan</legend>",
                 "<legend>Obelisk version</legend>"),
-      "connect and version are not at the foot")
+      "version is not at the foot")
 
 # ---- what a page is FOR, when something is wrong
 #
@@ -4880,23 +4893,21 @@ check("near the top, where somebody deciding where to go is looking",
       "the jump row is not at the top")
 for _href, _target in (("#run", "<fieldset id=run>"), ("#who", "<fieldset id=who>"),
                        ("#bans", "<fieldset id=bans>"), ("#cap", "<fieldset id=cap>"),
-                       ("#maps", "<fieldset id=maps>"),
-                       ("#connect", "<fieldset id=connect>")):
+                       ("#maps", "<fieldset id=maps>")):
     check("%s is offered and lands somewhere" % _href,
           ('href="%s"' % _href) in _merged_pg and _target in _merged_pg,
           [_href, _target])
 
 # ---- the note that used to send people to a tab that no longer exists
-check("and the readiness note says where the addresses went",
-      "addresses people" in _idle_pg and "foot of this page" in _idle_pg,
+# The note used to promise addresses "at the foot of this page", which was a panel;
+# the addresses are a column of the running table now, and a cluster that is not running
+# has no such table - so the note says when they appear rather than where.
+check("and the readiness note says when the addresses appear",
+      "address" in _idle_pg and "once it is running" in _idle_pg,
       _window(_idle_pg, "not running", 260))
-# The note promises something at the foot of the page. For a while the foot held only
-# Obelisk's own address, so the promise pointed at a panel that no longer kept what it
-# was promising.
-_idle_connect = _from(_idle_pg, "<fieldset id=connect>").split("</fieldset>")[0]
-check("and what it points at is actually there",
-      _idle_connect.count("<tr><td>") >= 1 and "The Island" in _idle_connect,
-      _idle_connect)
+check("rather than pointing at a panel that is no longer there",
+      "foot of this page" not in _idle_pg and "<fieldset id=connect>" not in _idle_pg,
+      _window(_idle_pg, "not running", 260))
 
 # ---- one map, in detail, addressed by its own key
 #
@@ -5103,17 +5114,12 @@ check("the overview no longer tabulates every map's ports",
 # overview and the map page cannot drift apart the way two readings of live state can -
 # and handing somebody every address is a cluster-wide job that ten page visits made
 # worse rather than better.
-_ov_connect = _from(_merged_pg, "<fieldset id=connect>").split("</fieldset>")[0]
-check("the overview lists every map's address",
-      _ov_connect.count("<tr><td>") == 2
-      and "The Island" in _ov_connect and "Ragnarok" in _ov_connect, _ov_connect)
-check("with the port each map was planned on",
-      "7777" in _ov_connect, _ov_connect)
-check("and Obelisk's own address, which is not a fact about any map",
-      "Obelisk itself:" in _ov_connect, _ov_connect)
+_ov_run = _runtable(_merged_pg)
+check("the overview still lists every map's address",
+      "The Island" in _ov_run and "Ragnarok" in _ov_run, _ov_run[:500])
+check("with the port each map was planned on", "7777" in _ov_run, _ov_run[:600])
 check("the map page still carries its own, for whoever arrived there",
-      "papaship" in _mp_body or "7777" in
-      _from(_mp_body, "<fieldset id=connect>").split("</fieldset>")[0],
+      "7777" in _from(_mp_body, "<fieldset id=connect>").split("</fieldset>")[0],
       _from(_mp_body, "<fieldset id=connect>").split("</fieldset>")[0])
 check("the plan still says what it will cost and what is wrong with it",
       "of RAM at most" in _merged_pg, _window(_merged_pg, "<legend>Plan</legend>", 300))
@@ -5599,6 +5605,71 @@ for _bad in ("https://evil.example/x", "//evil.example",
     check("%r is not somewhere this form gets to send anybody" % _bad,
           _backs[_bad] == "/admin", [_bad, _backs[_bad]])
 
+# ---- the dashboard card is on the page about now, not the page about the past
+#
+# Both pages drew it from the same job state, which is two live copies of one thing on
+# two tabs - the shape this consolidation has been removing everywhere else.
+_t33 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _cluster_and_activity():
+        _real_st33 = _appmod.clusterctl.status
+        _real_relay33 = _appmod.RELAY_INFO
+        _appmod.RELAY_INFO = {"total": 2, "reachable": 2}
+        try:
+            _appmod.clusterctl.status = lambda store: dict(
+                _lstatus, services=[dict(x) for x in _lstatus["services"]])
+            _bot_s1.LIVE = _kick_relay()
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            cl = await (await client.get("/admin/cluster")).text()
+            act = await (await client.get("/admin/activity")).text()
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st33
+            _appmod.RELAY_INFO = _real_relay33
+            _bot_s1.LIVE = _real_live
+        return cl, act
+
+    _cl33, _act33 = _t33.run_until_complete(_cluster_and_activity())
+finally:
+    _t33.close()
+
+check("the live card is on the cluster page",
+      "<legend>Right now</legend>" in _cl33, _window(_cl33, "Right now", 200))
+check("and not on Activity, which is the history",
+      "<legend>Right now</legend>" not in _act33, _window(_act33, "Right now", 200))
+check("Activity still has the events it is for",
+      "<div id=feed" in _act33 and "<legend>Activity</legend>" in _act33,
+      _window(_act33, "id=feed", 200))
+check("and still updates itself",
+      "/admin/activity/feed?since=" in _act33, "the feed stopped polling")
+_actsrc = _after(_s1src, "async def activity_page").split(chr(10) + "    async def ")[0]
+check("the activity page does not build the card at all",
+      "_dashboard()" not in _actsrc, _actsrc[:400])
+check("the live poller can still refresh it where the page has one",
+      '"dash": _dashboard(),' in _s1src, _window(_s1src, '"dash"', 200))
+check("and the injection is guarded, so a page without one is not broken by it",
+      "if (dash && d.dash)" in _uisrc_merge,
+      _window(_uisrc_merge, "d.dash", 200))
+
+# ---- the address is derived, which is why it can share a row with live state
+_addrsrc = _after(_s1src, "def _addresses():").split(chr(10) + "    def ")[0]
+check("addresses come from the plan, not from a poll",
+      "build_plan(store)" in _addrsrc and "rcon" not in _addrsrc, _addrsrc[:400])
+check("keyed by the same name the status row carries",
+      'r["name"]' in _addrsrc, _window(_addrsrc, "return {", 200))
+check("and a plan that cannot be built does not blank the page",
+      "except Exception" in _addrsrc, _addrsrc[:400])
+check("the in-game help is the constant the map page uses, not a second copy",
+      _uisrc_merge.count("IN_GAME_HELP = ") == 1
+      and _uisrc_merge.count("HOST_UNKNOWN_WHY = ") == 1,
+      [_uisrc_merge.count("IN_GAME_HELP = "),
+       _uisrc_merge.count("HOST_UNKNOWN_WHY = ")])
+check("and the panel that used to render them is gone from the codebase",
+      "def render_connect(" not in _uisrc_merge, "render_connect survived")
+
 # ---- every anchor this manager offers has to land on something
 #
 # Four pages became four sections and a page grew a jump row, and an anchor that scrolls
@@ -5672,8 +5743,11 @@ check("a cluster that has never launched offers no chip for it",
 check("because it does not draw one",
       "<fieldset id=run>" not in _fresh5, "a run table appeared")
 check("and its jump row is in the order the page draws them",
-      _in_order(_window(_fresh5, "class=jump", 400), "#maps", "#who", "#bans", "#cap",
-                "#connect"), _window(_fresh5, "class=jump", 400))
+      _in_order(_window(_fresh5, "class=jump", 400), "#maps", "#who", "#bans", "#cap"),
+      _window(_fresh5, "class=jump", 400))
+check("with no chip for a panel that no longer exists",
+      "#connect" not in _fresh5 and "#connect" not in _up5,
+      _window(_fresh5, "class=jump", 400))
 check("which is Maps first, where the page starts",
       _in_order(_fresh5, "<fieldset id=maps>", "<fieldset id=who>"),
       "the fresh page does not lead with Maps")
