@@ -1231,7 +1231,8 @@ def render_settings(store, mods=""):
         # that govern the archives are rendered beside the actions that make them.
         rows = [s for s in SETTINGS
                 if s["group"] == g and s["key"] not in DATA_PAGE_KEYS
-                and s["key"] not in MODS_EDITOR_KEYS]
+                and s["key"] not in MODS_EDITOR_KEYS
+                and s["key"] not in CLUSTER_PAGE_KEYS]
         if not rows:
             continue
         gid = "g-" + re.sub(r"[^a-z0-9]+", "-", g.lower()).strip("-")
@@ -1432,7 +1433,14 @@ def render_status(status, players=None, addresses=None, host_known=True):
                      'failing</summary><pre class=logtail>%s</pre></details></td></tr>'
                      % _e(s["log_tail"]))
     if not rows:
-        return '<div class=note>The cluster is defined but nothing is running.</div>'
+        # Carries the table's id. After a real Stop, compose down removes the
+        # containers, so this note - not the table - is what a stopped-but-defined
+        # cluster renders, and the jump row and the map page's way back both key on
+        # compose_exists and offer #run. Without the id those are two links to nowhere,
+        # in the state an operator is in every time they stop the cluster. The note
+        # stands in for the table, so it answers to the table's name.
+        return ('<div class=note id=run>The cluster is defined but nothing is '
+                'running.</div>')
     banner = ""
     bad = [s for s in status.get("services", []) if s.get("level") == "bad"]
     if bad:
@@ -2326,22 +2334,135 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
             + (notice or "") + here + where + connect + saves + (overrides or ""))
 
 
+# Maps belong to the cluster, not to the settings form: this page is what the cluster
+# is. The text field there and the checkboxes here were one value with two editors, and
+# neither could express the thing that matters most about it - the order.
+CLUSTER_PAGE_KEYS = ("maps",)
+
+# Why a running cluster cannot be reordered, said once so the disabled button and the
+# route that refuses the post cannot describe it differently.
+#
+# Every other change in this manager queues: it is written down and applied the next
+# time the cluster is recreated, which is safe because the value means the same thing
+# before and after. An order does not. Ports are handed out walking the list, so moving
+# an entry moves the address people have in their launcher, and moving the first entry
+# changes which map downloads the server files for the rest. Queuing that would mean
+# agreeing to it now and discovering it at the restart.
+REORDER_RUNNING = ("Stop the cluster to reorder maps \u2014 reordering moves every "
+                   "map\u2019s ports and changes which map downloads the server files "
+                   "for the others. Nothing has been changed.")
+REMOVE_RUNNING = ("Stop the cluster to remove %s \u2014 every map after it moves down "
+                  "a port. The last map in the list can be removed while running, and "
+                  "adding to the end is always safe. Nothing has been changed.")
+PRESET_RUNNING = ("Stop the cluster to apply a preset \u2014 it rewrites the whole "
+                  "list, which moves ports and can change which map downloads the "
+                  "server files. Nothing has been changed.")
+
+# A cluster with no maps is not a state this manager has - validation refuses the empty
+# list - so removing the only map has no good outcome to offer. Said once, as the
+# button's reason for being disabled and as the route's refusal, so the two cannot
+# describe the same rule differently.
+ONLY_MAP_WHY = "A cluster needs at least one map"
+ONLY_MAP = ONLY_MAP_WHY + " \u2014 the list is unchanged."
+
+
+def render_maps_editor(store, running=False, refusal=""):
+    """The maps this cluster runs, in the order it runs them.
+
+    Three parts of one editor. The list, because order is a fact about this cluster that
+    nothing else could show: the first map is the update master and ports are handed out
+    walking down it. The catalogue, to add from, appending to the end - the one edit that
+    leaves every existing port alone. And presets, which are a bulk tick of the boxes and
+    nothing more.
+
+    A set of checkboxes cannot say any of that. It was sorted by whatever order the
+    catalogue happens to be in, and the value it posted was that order.
+    """
+    keys = mapcat.listed(store.get("maps"))
+    warn = ""
+    if running and keys:
+        # Said here rather than in a help string on another page. This is the moment
+        # somebody is about to change a cluster people are playing on.
+        warn = ('<div class=warn>This cluster is running. You can <b>add</b> a map - it '
+                'goes on the end, where it moves nobody else\u2019s ports - and that is '
+                'queued until the maps are next recreated. Reordering and removing are '
+                'not offered until the cluster is stopped, because both move the ports '
+                'people already have and can change which map downloads the server '
+                'files. %s</div>'
+                % ('The last map in the list is the exception: nothing comes after it, '
+                   'so it can go.' if len(keys) > 1 else
+                   '%s, so this one stays until you add another.' % ONLY_MAP_WHY))
+
+    rows = []
+    for i, key in enumerate(keys):
+        name = mapcat.BY_KEY[key]["name"] if key in mapcat.BY_KEY else key
+        first = i == 0
+        last = i == len(keys) - 1
+        only = len(keys) == 1
+        # Disabled while the cluster runs, and refused by the route as well. The button
+        # is the explanation; the route is the guard, because a disabled button is a
+        # suggestion to anything that is not a browser. Removing the only map is
+        # disabled in both states - see ONLY_MAP.
+        stuck = " disabled" if running else ""
+        rows.append(
+            '<tr><td class=num>%d</td><td>%s%s</td>'
+            '<td class=num>%s %s %s</td></tr>'
+            % (i + 1,
+               '<a class=maplink href="/admin/cluster/map/%s">%s</a>'
+               % (_e(key), _e(name)) if key in mapcat.BY_KEY else _e(name),
+               ' <span class="tag chg">update master</span>' if first else "",
+               '<button class=ghost type=submit name=up value="%s"%s%s>\u2191</button>'
+               % (_e(key), " disabled" if first else "", stuck),
+               '<button class=ghost type=submit name=down value="%s"%s%s>\u2193</button>'
+               % (_e(key), " disabled" if last else "", stuck),
+               '<button class=ghost type=submit name=drop value="%s"%s%s>remove'
+               '</button>'
+               % (_e(key),
+                  ' title="%s"' % _e(ONLY_MAP_WHY) if only else "",
+                  " disabled" if only or (running and not last) else "")))
+    if not rows:
+        rows.append('<tr><td colspan=3 class=help>No maps chosen yet. Add one '
+                    'below.</td></tr>')
+
+    chosen = set(keys)
+    catalogue = "".join(
+        '<button class=ghost type=submit name=add value="%s"%s title="%s">%s</button>'
+        % (_e(m["key"]), " disabled" if m["key"] in chosen else "",
+           _e("already in this cluster" if m["key"] in chosen else
+              "add %s to the end" % m["name"]), _e(m["name"]))
+        for m in mapcat.MAPS)
+    presets = "".join(
+        '<button class=ghost type=submit name=preset value="%s" title="%s"%s>%s</button>'
+        % (_e(p["key"]), _e(p["description"]), " disabled" if running else "",
+           _e(p["name"])) for p in PRESETS)
+
+    return ('<form method=post action="/admin/maps">'
+            '<fieldset id=maps><legend>Maps</legend>%s%s'
+            '<table><tr><th class=num>#</th><th>Map</th>'
+            '<th class=num>Order</th></tr>%s</table>'
+            '<div class=help style="margin-top:10px">The first map is the update '
+            'master: it downloads the server files once and the others wait for it '
+            'rather than all fetching the same thing at once. Ports are assigned down '
+            'this list, so adding to the end leaves everyone else where they are and '
+            'reordering does not.</div>'
+            '<div class=help style="margin:14px 0 6px">Add a map</div>'
+            '<div class=maps>%s</div>'
+            '<div class=help style="margin:14px 0 6px">Or start from a preset '
+            '\u2014 it rewrites the whole list and carries no settings of its '
+            'own.%s</div>'
+            '<div class=presets>%s</div>'
+            '</fieldset></form>'
+            % (warn_block(refusal) if refusal else "", warn,
+               "".join(rows), catalogue,
+               " That needs the cluster stopped." if running else "", presets))
+
+
 def render_cluster(store, plan, status=None, roster=None, web_address="",
-                   pending=None, notice=None, bans=None,
+                   maps_editor="", pending=None, notice=None, bans=None,
                    bans_pending=None, bans_notice=None,
                    bans_total=None,
                    caps=None, caps_pending=None,
                    caps_notice=None, caps_total=None):
-    selected = set(str(store.get("maps")).split(","))
-    presets = "".join(
-        '<button class=ghost type=button name=preset value="%s" title="%s">%s</button>'
-        % (_e(p["key"]), _e(p["description"]), _e(p["name"])) for p in PRESETS)
-
-    boxes = "".join(
-        '<label><input type=checkbox name=maps value="%s"%s>%s</label>'
-        % (_e(m["key"]), " checked" if m["key"] in selected else "", _e(m["name"]))
-        for m in mapcat.MAPS)
-
     # Ports, RAM and role left this page for each map's own. What stays is the way
     # in, which is also the only entry point before anything has been launched: there
     # is no running-maps row to click on a cluster that has never started.
@@ -2389,17 +2510,15 @@ def render_cluster(store, plan, status=None, roster=None, web_address="",
                         total=bans_total) +
             render_cap(caps, notice=caps_notice, pending=caps_pending,
                        total=caps_total))
-    form = (
-            '<form method=post action="/admin/maps" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
-            '<fieldset><legend>Presets</legend><div class=presets>%s</div>'
-            '<div class=help>A preset just ticks boxes - it carries no settings of its '
-            'own. Trim it afterwards.</div></fieldset>'
-            '<fieldset id=maps><legend>Maps</legend><div class=maps>%s</div>'
-            '<button type=submit class=ghost>Update plan</button>%s</fieldset>'
-            '<fieldset><legend>Plan</legend>'
+    # The maps editor is its own form, above this one: it posts one action at a time
+    # (add this, move that) the way the mod list does, and a form cannot nest. What is
+    # left here is the plan the choice produces and the buttons that act on it.
+    form = (maps_editor
+            + '<form method=post action="/admin/launch" onsubmit="for(const b of this.querySelectorAll(&quot;button&quot;)){b.disabled=true}this.querySelectorAll(&quot;button&quot;)[0].textContent=&quot;Working...&quot;">'
+            '<fieldset><legend>Plan</legend>%s'
             '<div class=help style="margin-top:10px">%s</div>%s'
             '<div style="margin-top:14px">%s</div></fieldset></form>'
-            % (presets, boxes, chosen_links, _e(summary), msgs, launch))
+            % (chosen_links, _e(summary), msgs, launch))
     launched = bool((status or {}).get("compose_exists"))
     return (moderation + form) if launched else (form + moderation)
 

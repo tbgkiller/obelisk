@@ -180,9 +180,17 @@ async def run():
           '/admin/cluster/map/island' in body and "<th>RCON</th>" not in body, body[:400])
     check("it offers a launch button", "/admin/launch" in body)
 
-    r = await client.post("/admin/maps", data={"maps": ["island", "ragnarok"]},
+    r = await client.post("/admin/maps", data={"add": "ragnarok"},
                           allow_redirects=False)
-    check("map selection saves from the UI", store.get("maps") == "island,ragnarok",
+    check("adding a map from the UI appends it", store.get("maps") == "island,ragnarok",
+          store.get("maps"))
+    r = await client.post("/admin/maps", data={"up": "ragnarok"},
+                          allow_redirects=False)
+    check("and the arrows reorder it", store.get("maps") == "ragnarok,island",
+          store.get("maps"))
+    r = await client.post("/admin/maps", data={"drop": "ragnarok"},
+                          allow_redirects=False)
+    check("and remove takes one out", store.get("maps") == "island",
           store.get("maps"))
 
     r = await client.post("/admin/maps", data={"preset": "single"}, allow_redirects=False)
@@ -3104,9 +3112,14 @@ for _name_r, _body_r in (("blank text", _blank_body),
     check("and not in the red kept for a send that broke" ,
           "<div class=problem>" not in _body_r, _body_r[:300])
 
+_who_only = lambda b: _from(b, "<fieldset id=who>").split("</fieldset>")[0]
+# The maps editor warns in amber whenever the cluster is running, which is a real
+# warn elsewhere on this page. This pin is about the who's-online section.
 check("a send that actually failed is still red",
-      "<div class=problem>" in _fail_body and "<div class=warn>" not in _fail_body,
-      _fail_body[:300])
+      "<div class=problem>" in _fail_body
+      and "<div class=warn>" not in _from(_fail_body, "<fieldset id=who>").split(
+          "</fieldset>")[0],
+      _from(_fail_body, "<fieldset id=who>")[:300])
 
 # ---- a refresh must not send it again
 #
@@ -3543,7 +3556,8 @@ for _what, _frag in sorted({
 # row below still offered a live Kick.
 check("the question lands on the row, not in a banner at the top",
       '<div class="whorow asking">' in _ask_body
-      and "<div class=warn>" not in _after(_ask_body, "<fieldset id=who>"),
+      and "<div class=warn>" not in _from(_ask_body, "<fieldset id=who>").split(
+          "</fieldset>")[0],
       _after(_ask_body, "whorow asking")[:250])
 check("and the page can be landed on at the roster",
       "<fieldset id=who>" in _ask_body, "no anchor")
@@ -4785,8 +4799,8 @@ for _sec, _mark in (("the running-maps table", "<legend>Running now</legend>"),
                     ("who is online", "<fieldset id=who>"),
                     ("the banned list", "<fieldset id=bans>"),
                     ("the cap log", "<fieldset id=cap>"),
-                    ("the presets", "<legend>Presets</legend>"),
-                    ("the map checkboxes", "<legend>Maps</legend>"),
+                    ("the presets", "Full cluster"),
+                    ("the maps editor", "<fieldset id=maps>"),
                     ("the plan", "<legend>Plan</legend>"),
                     ("the moderation controls", "/admin/player/kick"),
                     ("the launch controls", 'formaction="/admin/launch"')):
@@ -4802,7 +4816,7 @@ check("the page is in the order the questions are asked",
                 "<div id=feed",                       # what just happened
                 "ARK build and mods",                 # the operations
                 "<fieldset id=who>", "<fieldset id=bans>", "<fieldset id=cap>",
-                "<legend>Presets</legend>", "<legend>Plan</legend>"),
+                "<fieldset id=maps>", "<legend>Plan</legend>"),
       "the page is out of order")
 check("the population is stated before the history, not after it",
       _in_order(_merged_pg, "players online", "<div id=feed"),
@@ -4871,8 +4885,7 @@ check("and the table it belongs to right under it",
 # Three moderation sections about servers that do not exist, above the only controls
 # that would create them. Empty boxes are not the first thing to read on day one.
 check("the first thing offered is the thing to do",
-      _in_order(_fresh_pg, "<legend>Presets</legend>", "<fieldset id=maps>",
-                "<fieldset id=who>"),
+      _in_order(_fresh_pg, "<fieldset id=maps>", "<fieldset id=who>"),
       "the empty sections come first on a fresh install")
 check("the moderation sections are still there, underneath",
       _in_order(_fresh_pg, "<fieldset id=who>", "<fieldset id=bans>",
@@ -4883,7 +4896,7 @@ check("and it says there is nothing running yet, once",
       and "has been launched from this Obelisk yet" not in _fresh_pg,
       _window(_fresh_pg, "not running", 300))
 check("a launched cluster keeps the order the other way round",
-      _in_order(_merged_pg, "<fieldset id=who>", "<legend>Presets</legend>"),
+      _in_order(_merged_pg, "<fieldset id=who>", "<fieldset id=maps>"),
       "a running cluster leads with the form")
 
 # ---- and a way around a page this long
@@ -5888,6 +5901,373 @@ check("a map's own mod override is still the raw box",
 check("not a second list editor",
       "Mods, in load order" not in _mp_body, _window(_mp_body, "Mods", 200))
 
+# ---- one maps editor, and it can say what the checkboxes could not
+#
+# Maps had two editors: a text field on Settings that could express order and offered no
+# discovery, and a checkbox set here that offered discovery and could not express order.
+# Order is the thing that matters most about this value - the first map is the update
+# master, and ports are handed out down the list - so the list is the editor.
+import copy as _copy38                                               # noqa: E402
+
+_t38 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _maps_editor(running):
+        _real_st38 = _appmod.clusterctl.status
+        try:
+            _appmod.clusterctl.status = lambda store: (
+                dict(_lstatus, services=[dict(x) for x in _lstatus["services"]])
+                if running else
+                {"docker_ok": True, "compose_exists": False, "running": 0,
+                 "services": []})
+            _bot_s1.LIVE = _kick_relay()
+            _lstore.patch({"maps": "island,ragnarok"})
+            _lstore.data.setdefault("maps_overrides_probe", None)
+            _lstore.data.setdefault("maps", {})
+            _lstore.data["maps"]["ragnarok"] = {"max_players": 20}
+            _lstore.save()
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            page = await (await client.get("/admin/cluster")).text()
+            settings = await (await client.get("/admin")).text()
+
+            before = _copy38.deepcopy(_lstore.data)
+            add = await client.post("/admin/maps", data={"add": "center"},
+                                    allow_redirects=False)
+            after_add = _copy38.deepcopy(_lstore.data)
+
+            up = await client.post("/admin/maps", data={"up": "center"},
+                                   allow_redirects=False)
+            after_up = str(_lstore.get("maps") or "")
+
+            drop = await client.post("/admin/maps", data={"drop": "ragnarok"},
+                                     allow_redirects=False)
+            after_drop = _copy38.deepcopy(_lstore.data)
+
+            dup = await client.post("/admin/maps", data={"add": "island"},
+                                    allow_redirects=False)
+            dup_where = dup.headers.get("Location", "")
+            dup_landed = await (await client.get(dup_where)).text() if (
+                dup.status == 302) else ""
+            after_dup = str(_lstore.get("maps") or "")
+
+            bad = await client.post("/admin/maps", data={"add": "nosuchmap"},
+                                    allow_redirects=False)
+            after_bad = str(_lstore.get("maps") or "")
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st38
+            _bot_s1.LIVE = _real_live
+        return (page, settings, before, (add.status, add.headers.get("Location", "")),
+                after_add, after_up, after_drop,
+                (dup.status, dup_where, dup_landed, after_dup),
+                (bad.status, after_bad))
+
+    (_mp38, _set38, _before38, _add38, _after_add38, _after_up38, _after_drop38,
+     _dup38, _bad38) = _t38.run_until_complete(_maps_editor(running=True))
+    (_fresh38, _fset38, _fbefore38, _fadd38, _fafter_add38, _fafter_up38,
+     _fafter_drop38, _fdup38, _fbad38) = _t38.run_until_complete(
+        _maps_editor(running=False))
+finally:
+    _t38.close()
+
+_ed38 = _from(_mp38, "<fieldset id=maps>").split("</fieldset>")[0]
+_fed38 = _from(_fresh38, "<fieldset id=maps>").split("</fieldset>")[0]
+
+# ---- one editor
+check("the cluster page has a maps editor", "<fieldset id=maps>" in _mp38,
+      _window(_mp38, "id=maps", 200))
+check("with the maps in order, numbered",
+      _in_order(_ed38, "<th class=num>#</th>", ">The Island<", ">Ragnarok<"),
+      _ed38[:700])
+check("and no checkbox set competing with it",
+      "type=checkbox name=maps" not in _mp38, _window(_mp38, "checkbox", 200))
+check("the settings page has no maps field either",
+      'name="maps"' not in _set38, _window(_set38, "Maps to run", 200))
+check("so the page posts one maps form, not two",
+      _mp38.count('action="/admin/maps"') == 1, _mp38.count('action="/admin/maps"'))
+
+# ---- order, and what it costs
+check("the order can be changed", "name=up value=" in _ed38 and "name=down value=" in
+      _ed38, _window(_ed38, "name=up", 200))
+check("the first map is named as the update master",
+      ">update master</span>" in _ed38, _window(_ed38, "update master", 200))
+check("and the editor says order sets the ports",
+      "Ports are assigned down" in _ed38, _window(_ed38, "Ports are", 200))
+check("the arrows stop at the ends",
+      _ed38.count("disabled>\u2191") >= 1 and _ed38.count("disabled>\u2193") >= 1,
+      [_ed38.count("disabled>\u2191"), _ed38.count("disabled>\u2193")])
+
+# ---- quick-pick appends, and does not offer what is already there
+check("a catalogue map can be added",
+      'name=add value="center"' in _ed38, _window(_ed38, 'value="center"', 200))
+check("one already in the cluster is offered as added, not again",
+      'name=add value="island" disabled' in _ed38,
+      _window(_ed38, 'value="island"', 200))
+check("adding appends to the end, which leaves every other port alone",
+      (_fafter_add38.get("cluster") or {}).get("maps") == "island,ragnarok,center",
+      (_fafter_add38.get("cluster") or {}).get("maps"))
+check("and the arrows move it from there",
+      _fafter_up38 == "island,center,ragnarok", _fafter_up38)
+
+# ---- one value changed
+_moved38 = [k for k in set(_fbefore38.get("cluster") or {})
+            | set((_fafter_add38.get("cluster") or {}))
+            if (_fbefore38.get("cluster") or {}).get(k)
+            != (_fafter_add38.get("cluster") or {}).get(k)]
+check("a maps edit changes only the map list", _moved38 == ["maps"], _moved38)
+check("and no map's own settings move with it",
+      (_fafter_add38.get("maps") or {}) == (_fbefore38.get("maps") or {}),
+      [(_fbefore38.get("maps") or {}), (_fafter_add38.get("maps") or {})])
+check("removing a map leaves what that map was configured with",
+      (_fafter_drop38.get("maps") or {}).get("ragnarok") == {"max_players": 20},
+      (_fafter_drop38.get("maps") or {}))
+check("which is what makes putting it back cheap",
+      "ragnarok" not in str((_fafter_drop38.get("cluster") or {}).get("maps")),
+      (_fafter_drop38.get("cluster") or {}).get("maps"))
+
+# ---- and a running cluster queues instead of applying
+check("a change to a running cluster does not move the live value",
+      (_after_add38.get("cluster") or {}).get("maps")
+      == (_before38.get("cluster") or {}).get("maps"),
+      [(_before38.get("cluster") or {}).get("maps"),
+       (_after_add38.get("cluster") or {}).get("maps")])
+check("it is queued instead",
+      "maps" in ((_after_add38.get("pending") or {}).get("cluster") or {}),
+      (_after_add38.get("pending") or {}).get("cluster"))
+check("with the map list it is waiting to apply",
+      ((_after_add38.get("pending") or {}).get("cluster") or {}).get("maps")
+      == "island,ragnarok,center",
+      ((_after_add38.get("pending") or {}).get("cluster") or {}).get("maps"))
+
+# ---- rules refuse rather than crash
+check("adding a map already in the cluster is refused", _dup38[0] == 302, _dup38[0])
+check("in amber, at the editor",
+      _dup38[1].endswith("#maps") and "<div class=warn>" in
+      _from(_dup38[2], "<fieldset id=maps>"),
+      _window(_from(_dup38[2], "<fieldset id=maps>"), "warn", 300))
+check("saying the list is unchanged, and it is",
+      "the map list is unchanged" in _dup38[2] and _dup38[3] == _after_up38,
+      [_dup38[3], _after_up38])
+check("a key the catalogue does not know is still refused - (b) is not built",
+      _bad38[0] == 302 and "nosuchmap" not in _bad38[1], _bad38)
+
+# ---- a running cluster cannot be reordered at all
+#
+# This is the one change in this manager that is refused rather than queued. Everything
+# else means the same thing before and after a restart; an order does not. Ports are
+# handed out walking the list, so moving an entry moves an address somebody already has,
+# and moving the first changes which map downloads the server files for the rest.
+check("a running cluster says what it will not do",
+      "<div class=warn>" in _ed38 and "not offered until the cluster is stopped" in _ed38,
+      _window(_ed38, "<div class=warn>", 500))
+check("naming both consequences",
+      "move the ports people already have" in _ed38
+      and "downloads the server" in _ed38, _window(_ed38, "<div class=warn>", 500))
+check("and saying what is still allowed",
+      "<b>add</b> a map" in _ed38 and "on the end" in _ed38,
+      _window(_ed38, "<div class=warn>", 500))
+check("including the one removal that moves nobody",
+      "last map in the list is the exception" in _ed38,
+      _window(_ed38, "<div class=warn>", 500))
+check("a cluster that is not running is not warned about any of it",
+      "<div class=warn>" not in
+      _from(_fresh38, "<fieldset id=maps>").split("</fieldset>")[0],
+      _from(_fresh38, "<fieldset id=maps>")[:400])
+
+# ---- the controls say so before the route has to
+check("the arrows are disabled while it runs",
+      'name=up value="ragnarok" disabled' in _ed38
+      and 'name=down value="island" disabled' in _ed38,
+      _window(_ed38, "name=up", 300))
+check("so is removing anything but the last one",
+      'name=drop value="island" disabled' in _ed38, _window(_ed38, "name=drop", 300))
+check("the last one can still go, because nothing follows it to move",
+      'name=drop value="ragnarok">' in _ed38, _window(_ed38, 'value="ragnarok"', 300))
+check("presets are disabled too - a preset rewrites the whole list",
+      "disabled>Full cluster" in _ed38, _window(_ed38, "Full cluster", 200))
+check("adding is still offered, because it appends",
+      'name=add value="center" title' in _ed38, _window(_ed38, 'value="center"', 200))
+check("and a stopped cluster has all of them",
+      'name=up value="ragnarok">' in _fed38 and 'name=drop value="island">' in _fed38
+      and "disabled>Full cluster" not in _fed38, _fed38[:600])
+
+# ---- and the route refuses them, which is what actually holds
+#
+# The disabled buttons are the explanation. A disabled attribute is a suggestion to
+# anything that is not a browser, so the post is refused as well, and refused before
+# anything is written - not written and then rolled back.
+_t39 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _post_maps_running(body):
+        _real_st39 = _appmod.clusterctl.status
+        try:
+            _appmod.clusterctl.status = lambda store: dict(
+                _lstatus, services=[dict(x) for x in _lstatus["services"]])
+            _bot_s1.LIVE = _kick_relay()
+            _lstore.patch({"maps": "island,ragnarok"})
+            _lstore.data.pop("pending", None)
+            _lstore.save()
+            before = _copy38.deepcopy(_lstore.data)
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            r = await client.post("/admin/maps", data=body, allow_redirects=False)
+            where = r.headers.get("Location", "")
+            landed = await (await client.get(where)).text() if r.status == 302 else ""
+            await client.close()
+        finally:
+            _appmod.clusterctl.status = _real_st39
+            _bot_s1.LIVE = _real_live
+        return r.status, where, landed, before, _copy38.deepcopy(_lstore.data)
+
+    _up39 = _t39.run_until_complete(_post_maps_running({"up": "ragnarok"}))
+    _down39 = _t39.run_until_complete(_post_maps_running({"down": "island"}))
+    _midrm39 = _t39.run_until_complete(_post_maps_running({"drop": "island"}))
+    _preset39 = _t39.run_until_complete(_post_maps_running({"preset": "single"}))
+    _lastrm39 = _t39.run_until_complete(_post_maps_running({"drop": "ragnarok"}))
+    _add39 = _t39.run_until_complete(_post_maps_running({"add": "center"}))
+finally:
+    _t39.close()
+
+
+def _live_maps39(state):
+    return (state.get("cluster") or {}).get("maps")
+
+
+def _queued_maps39(state):
+    return ((state.get("pending") or {}).get("cluster") or {}).get("maps")
+
+
+for _what39, _res39, _phrase39 in (
+        ("moving a map up", _up39, "Stop the cluster to reorder maps"),
+        ("moving a map down", _down39, "Stop the cluster to reorder maps"),
+        ("removing one that is not last", _midrm39,
+         "Stop the cluster to remove The Island"),
+        ("applying a preset", _preset39, "Stop the cluster to apply a preset")):
+    _st39, _where39, _landed39, _before39, _after39 = _res39
+    check("%s on a running cluster is refused" % _what39, _st39 == 302,
+          [_what39, _st39])
+    # Not just "an amber block is on the page" - a running cluster always has one,
+    # explaining what is not offered, so that would pass with the guard taken out.
+    _fs39 = _from(_landed39, "<fieldset id=maps>").split("</fieldset>")[0]
+    _amber39 = [w.split("</div>")[0] for w in _fs39.split("<div class=warn>")[1:]]
+    check("in amber, at the editor, saying to stop the cluster first",
+          _where39.endswith("#maps") and any(_phrase39 in a for a in _amber39),
+          [_where39, _amber39[:1]])
+    check("and nothing was changed",
+          _live_maps39(_after39) == _live_maps39(_before39),
+          [_live_maps39(_before39), _live_maps39(_after39)])
+    check("nor queued for later, which is the whole point of refusing",
+          _queued_maps39(_after39) is None, _queued_maps39(_after39))
+
+# ---- what a running cluster may still do
+_st39, _where39, _landed39, _before39, _after39 = _add39
+check("adding a map to a running cluster still works", _st39 == 302, _st39)
+check("queued, because it only lands when the maps are next recreated",
+      _queued_maps39(_after39) == "island,ragnarok,center", _queued_maps39(_after39))
+check("and it does not move the live list under anybody",
+      _live_maps39(_after39) == "island,ragnarok", _live_maps39(_after39))
+
+_st39, _where39, _landed39, _before39, _after39 = _lastrm39
+check("removing the last map is allowed while running", _st39 == 302, _st39)
+check("because nothing after it moves down a port",
+      _queued_maps39(_after39) == "island", _queued_maps39(_after39))
+check("and it queues like any other change",
+      _live_maps39(_after39) == "island,ragnarok", _live_maps39(_after39))
+check("the refusals are one constant each, shared with the page that disables them",
+      _uisrc_merge.count("REORDER_RUNNING = ") == 1
+      and _uisrc_merge.count("REMOVE_RUNNING = ") == 1
+      and _s1src.count("ui.REORDER_RUNNING") == 1
+      and _s1src.count("ui.REMOVE_RUNNING") == 1,
+      [_uisrc_merge.count("REORDER_RUNNING = "), _s1src.count("ui.REORDER_RUNNING")])
+
+# ---- the only map a cluster has is not a button with no good outcome
+#
+# A single-map cluster is a normal thing to have: it is the "Single map" preset, and it
+# is what first run leaves. The remove beside that map used to be live, and taking it
+# left the list empty - which validation refuses. Stopped, that came back as a rendered
+# 200 carrying the validator's JSON on a screen away from the editor, which a refresh
+# re-posts. Running, it queued the empty list and said nothing at all, to break at the
+# next recreate. Emptying the list is a rule, so it is refused like one.
+_t40 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    async def _only_map(running):
+        _real_st40 = _appmod.clusterctl.status
+        try:
+            _appmod.clusterctl.status = (
+                (lambda store: dict(_lstatus,
+                                    services=[dict(_lstatus["services"][0])]))
+                if running else
+                (lambda store: {"docker_ok": True, "compose_exists": False,
+                                "running": 0, "services": []}))
+            _bot_s1.LIVE = _kick_relay()
+            _lstore.patch({"maps": "island"})
+            _lstore.data.pop("pending", None)
+            _lstore.save()
+            before = _copy38.deepcopy(_lstore.data)
+            client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+            await client.start_server()
+            client.session.cookie_jar.update_cookies(
+                {COOKIE: str(_lstore.get("admin_token"))})
+            page = await (await client.get("/admin/cluster")).text()
+            # Forged, because the button is disabled - which is exactly why the route
+            # has to answer for it too.
+            r = await client.post("/admin/maps", data={"drop": "island"},
+                                  allow_redirects=False)
+            where = r.headers.get("Location", "")
+            landed = await (await client.get(where)).text() if r.status == 302 else ""
+            body = landed if r.status == 302 else await r.text()
+            await client.close()
+            # Read before the fixture puts the store back: the restore below is
+            # housekeeping for the rest of the file, and copying after it would be
+            # measuring the housekeeping.
+            after = _copy38.deepcopy(_lstore.data)
+        finally:
+            _appmod.clusterctl.status = _real_st40
+            _bot_s1.LIVE = _real_live
+            _lstore.patch({"maps": "island,ragnarok"})
+            _lstore.data.pop("pending", None)
+            _lstore.save()
+        return page, r.status, where, body, before, after
+
+    _only_stop40 = _t40.run_until_complete(_only_map(running=False))
+    _only_run40 = _t40.run_until_complete(_only_map(running=True))
+finally:
+    _t40.close()
+
+for _what40, _res40 in (("stopped", _only_stop40), ("running", _only_run40)):
+    _pg40, _st40, _wh40, _body40, _bf40, _af40 = _res40
+    _fs40 = _from(_pg40, "<fieldset id=maps>").split("</fieldset>")[0]
+    _amber40 = [w.split("</div>")[0] for w in
+                _from(_body40, "<fieldset id=maps>").split("</fieldset>")[0]
+                .split("<div class=warn>")[1:]]
+    check("a %s single-map cluster does not offer to remove its only map" % _what40,
+          'name=drop value="island" title="A cluster needs at least one map" disabled'
+          in _fs40, _window(_fs40, "name=drop", 200))
+    check("and the route refuses the post as well, which is the guard",
+          _st40 == 302 and _wh40.endswith("#maps"), [_st40, _wh40])
+    check("in amber, at the editor, saying what the rule is",
+          any("A cluster needs at least one map" in a for a in _amber40), _amber40)
+    # The words themselves, not the JSON punctuation they arrived in: the page escapes
+    # the quotes, so pinning the braces would have been a check that cannot fail.
+    check("not the validator's own words on a page of their own",
+          "pick at least one map" not in _body40,
+          _window(_body40, "pick at least", 200))
+    check("the list is what it was",
+          (_af40.get("cluster") or {}).get("maps") == "island",
+          (_af40.get("cluster") or {}).get("maps"))
+    check("and nothing is queued to empty it at the next recreate",
+          ((_af40.get("pending") or {}).get("cluster") or {}).get("maps") is None,
+          (_af40.get("pending") or {}).get("cluster"))
+
+check("a running single-map cluster does not promise the last one can go",
+      "so this one stays until you add another" in _only_run40[0]
+      and "nothing comes after it, so it can go" not in _only_run40[0],
+      _window(_only_run40[0], "<div class=warn>", 500))
+
 # ---- one "Mods" on the page
 #
 # The index listed it twice: the settings group holding passive_mods and the launch
@@ -6121,14 +6501,22 @@ try:
                 "services": []}
             fresh = await (await client.get("/admin/cluster")).text()
             fresh_map = await (await client.get("/admin/cluster/map/island")).text()
+            # The third state, and the one an operator is in every time they press
+            # Stop: the cluster is defined, and compose down has removed the
+            # containers, so there are no rows to draw a table from.
+            _appmod.clusterctl.status = lambda store: {
+                "docker_ok": True, "compose_exists": True, "running": 0,
+                "services": []}
+            stopped = await (await client.get("/admin/cluster")).text()
+            stopped_map = await (await client.get("/admin/cluster/map/island")).text()
             await client.close()
         finally:
             _appmod.clusterctl.status = _real_st32
             _bot_s1.LIVE = _real_live
-        return up, up_map, data, settings, fresh, fresh_map
+        return (up, up_map, data, settings, fresh, fresh_map, stopped, stopped_map)
 
-    (_up5, _upmap5, _data5, _set5, _fresh5,
-     _freshmap5) = _t32.run_until_complete(_both_states())
+    (_up5, _upmap5, _data5, _set5, _fresh5, _freshmap5, _stop5,
+     _stopmap5) = _t32.run_until_complete(_both_states())
 finally:
     _t32.close()
 
@@ -6136,6 +6524,8 @@ finally:
 # resolve - those are pinned one by one below, against the page they point at.
 for _what, _page, _jumps in (("the cluster page, launched", _up5, True),
                              ("the cluster page, never launched", _fresh5, True),
+                             ("the cluster page, stopped after a Stop", _stop5, True),
+                             ("a map page, stopped after a Stop", _stopmap5, False),
                              ("a map page, launched", _upmap5, False),
                              ("a map page, never launched", _freshmap5, False),
                              ("the Data page", _data5, True),
@@ -6178,6 +6568,23 @@ check("and at the maps form when there is not",
 check("both of which the cluster page actually has in that state",
       "<fieldset id=run>" in _up5 and "<fieldset id=maps>" in _fresh5,
       "a back-link target is missing")
+
+# ---- N19 a stopped cluster's #run still lands on something
+#
+# After a real Stop there are no rows, so the table is not drawn and a note stands in
+# its place. The jump row and the map page's way back both key on "the cluster is
+# defined", so both still offer #run - and the note carries that id, rather than the
+# two of them scrolling nowhere in the state Stop leaves behind.
+check("a stopped cluster draws no running table", "<fieldset id=run>" not in _stop5,
+      _window(_stop5, "id=run", 200))
+check("it says so instead", "defined but nothing is running" in _stop5,
+      _window(_stop5, "defined but", 200))
+check("still offering the chip that goes there",
+      'href="#run"' in _stop5, _window(_stop5, "class=jump", 300))
+check("and the note answers to that name, so the chip lands",
+      "<div class=note id=run>" in _stop5, _window(_stop5, "nothing is running", 200))
+check("the map page's way back goes to the same place in that state",
+      'href="/admin/cluster#run"' in _stopmap5, _window(_stopmap5, "Back to the", 160))
 
 # ---- #1 the schedule is on this page, not two tabs away
 _bk5 = _area(_data5, "backups")

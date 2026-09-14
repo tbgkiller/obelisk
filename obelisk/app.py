@@ -454,17 +454,20 @@ def build_app(store, docker=None):
         # the top of the page: that is where the operator is looking when they press
         # the button, and where the answer changes something.
         notice = bans_notice = caps_notice = ""
+        maps_refusal = ""
         if not (message or problem or refusal):
             token = str((getattr(request, "query", None) or {}).get("said") or "")
             said = _said.pop(token, None) if token else None
             if said:
-                if said.get("where") in ("who", "bans", "cap"):
+                if said.get("where") in ("who", "bans", "cap", "maps"):
                     block = ui.warn_block(said["problem"]) if said["problem"] else (
                         '<div class=note>%s</div>' % ui._e(said["message"]))
                     if said["where"] == "bans":
                         bans_notice = block
                     elif said["where"] == "cap":
                         caps_notice = block
+                    elif said["where"] == "maps":
+                        maps_refusal = said.get("refusal") or said.get("problem") or ""
                     else:
                         notice = block
                 else:
@@ -515,6 +518,9 @@ def build_app(store, docker=None):
                 ui.render_cluster(store, plan, status=_label_services(st),
                                   roster=_roster_now(),
                                   web_address=_web_address(),
+                                  maps_editor=ui.render_maps_editor(
+                                      store, running=bool(st.get("running")),
+                                      refusal=maps_refusal),
                                   pending=_asking(pending, "who"), notice=notice,
                                   bans=bansctl.recent(store),
                                   bans_pending=_asking(pending, "bans"),
@@ -883,18 +889,86 @@ def build_app(store, docker=None):
             return ""
 
     async def cluster_maps(request):
-        """Update the map selection (or apply a preset) without launching anything."""
+        """Add, remove, reorder or preset the maps this cluster runs.
+
+        One action per post, like the mod list: the editor is a list with arrows rather
+        than a set of checkboxes, because the order is a fact about the cluster - the
+        first map is the update master and ports are handed out down the list - and a
+        checkbox set posts whatever order the catalogue happens to be in.
+
+        The whole ordered string is rebuilt and written through the same staging path
+        every other setting uses. Removing a map does not touch what that map was
+        configured with: those live under store["maps"][key] and are left alone, so
+        taking a map out for a month and putting it back finds it as it was.
+        """
         if not authed(request):
             raise web.HTTPFound("/setup")
         form = await request.post()
+        listed = str(store.get("maps") or "")
         preset = form.get("preset")
-        if preset:
-            from .presets import BY_KEY as PRESET_BY_KEY
-            chosen = PRESET_BY_KEY.get(preset, {}).get("maps", [])
-        else:
-            chosen = form.getall("maps", [])
+
+        def refuse_maps(text_):
+            return web.HTTPFound(
+                "/admin/cluster?said=%s#maps"
+                % _say_next(where="maps", refusal=text_))
+
+        # Emptying the list is a rule, not a failure. Validation refuses maps="" - a
+        # cluster with no maps is not a state this manager has - so without this the
+        # only remove on a single-map cluster either returned a rendered 200 carrying
+        # the validator's own words (a screen away from the editor, and a resubmit if
+        # the operator refreshes) or, while running, queued the empty list to break at
+        # the next recreate. Both are the "agree now, find out later" this route's
+        # other guard exists to prevent.
+        going_now = str(form.get("drop") or "").strip()
+        if going_now and mapsmod.listed(listed) == [going_now]:
+            raise refuse_maps(ui.ONLY_MAP)
+
+        # The guard, not the hint. The buttons for these are disabled while the cluster
+        # runs, which is the explanation; this is what actually holds, because a
+        # disabled attribute is a suggestion to anything that is not a browser.
+        #
+        # Reordering is refused rather than queued, which is the one place this manager
+        # does not queue a change. Everything else means the same thing before and after
+        # a restart; an order does not. Ports are handed out walking the list, so moving
+        # an entry moves the address somebody already has in their launcher, and moving
+        # the first changes which map downloads the server files. Queuing that would be
+        # agreeing now and finding out at the recreate.
+        if _running_now():
+            here = mapsmod.listed(listed)
+            if form.get("up") or form.get("down"):
+                raise refuse_maps(ui.REORDER_RUNNING)
+            if preset:
+                raise refuse_maps(ui.PRESET_RUNNING)
+            # Removing the last one is free: nothing comes after it to move down, and
+            # the first map - the update master - is not it unless it is the only one,
+            # which the rule above has already refused.
+            if going_now and here and going_now != here[-1]:
+                name = (mapsmod.BY_KEY[going_now]["name"]
+                        if going_now in mapsmod.BY_KEY else going_now)
+                raise refuse_maps(ui.REMOVE_RUNNING % name)
         try:
-            live, later = _stage_or_apply({"maps": ",".join(chosen)})
+            if preset:
+                from .presets import BY_KEY as PRESET_BY_KEY
+                chosen = PRESET_BY_KEY.get(preset, {}).get("maps", [])
+                listed = ",".join(chosen)
+            elif form.get("add"):
+                listed = mapsmod.add(listed, str(form.get("add")).strip())
+            elif form.get("drop"):
+                listed = mapsmod.remove(listed, str(form.get("drop")).strip())
+            elif form.get("up"):
+                listed = mapsmod.move(listed, str(form.get("up")).strip(), -1)
+            elif form.get("down"):
+                listed = mapsmod.move(listed, str(form.get("down")).strip(), 1)
+        except ValueError as e:
+            # A rule, not a failure: nothing was written and the list is what it was.
+            raise web.HTTPFound(
+                "/admin/cluster?said=%s#maps"
+                % _say_next(where="maps",
+                            refusal="%s - the map list is unchanged."
+                                    % str(e).strip().rstrip(".")))
+        chosen = mapsmod.listed(listed)
+        try:
+            live, later = _stage_or_apply({"maps": listed})
             store.patch(live)
             if later:
                 pendingctl.stage(store, later)
@@ -904,8 +978,9 @@ def build_app(store, docker=None):
                              count=pendingctl.count(store))
             store.save()
         except Invalid as e:
-            return chrome(_cluster_body(request, problem=str(e)), "Cluster", "/admin/cluster")
-        raise web.HTTPFound("/admin/cluster")
+            return chrome(_cluster_body(request, problem=str(e)), "Cluster",
+                          "/admin/cluster")
+        raise web.HTTPFound("/admin/cluster#maps")
 
     cluster_busy = APPLY_LOCK          # module level: see the comment there
 

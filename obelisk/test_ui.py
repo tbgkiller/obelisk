@@ -68,11 +68,12 @@ st = store()
 html_settings = render_settings(st)
 
 # ---- the page is generated, never hand-maintained
-from .ui import (DATA_PAGE_KEYS, MODS_EDITOR_KEYS, render_data_settings,
-                 render_map_overrides)
+from .ui import (CLUSTER_PAGE_KEYS, DATA_PAGE_KEYS, MODS_EDITOR_KEYS,
+                 render_data_settings, render_map_overrides, render_maps_editor)
 # mod_ids has a real editor of its own on this page now, so it is not one of the form's
 # fields any more - the same way the five schedule keys moved to the Data page.
-_ELSEWHERE = tuple(DATA_PAGE_KEYS) + tuple(MODS_EDITOR_KEYS)
+_ELSEWHERE = (tuple(DATA_PAGE_KEYS) + tuple(MODS_EDITOR_KEYS)
+              + tuple(CLUSTER_PAGE_KEYS))
 _here = [s for s in SETTINGS if s["key"] not in _ELSEWHERE]
 missing = [s["label"] for s in _here if s["label"] not in html_settings]
 check("every cluster-wide setting in the schema appears on the page", not missing,
@@ -149,12 +150,40 @@ check("a ready cluster shows no banner", "Before this cluster can start" not in 
 # ---- cluster page
 plan = build_plan(st, in_use_ports=[])
 h = render_cluster(st, plan)
-check("every known map is offered", all(('value="%s"' % m) in h for m in
-      ("island", "center", "scorched", "genesis")), h[:300])
-check("chosen maps are ticked", 'value="island" checked' in h.replace('" ', '" ')
-      or 'value="island"  checked' in h or 'value="island" checked>' in h, "island not checked")
-check("unchosen maps are not ticked", 'value="genesis" checked' not in h)
-check("presets are offered", all(p in h for p in ("Full cluster", "Starter", "The classics")))
+# The checkboxes are gone. They could not say what order the cluster runs its maps
+# in - the first is the update master and ports are handed out down the list - so they
+# posted whatever order the catalogue happened to be in.
+_me = render_maps_editor(st)
+check("every known map can be added", all(('value="%s"' % m) in _me for m in
+      ("island", "center", "scorched", "genesis")), _me[:400])
+check("a map already in the cluster is not offered twice",
+      'name=add value="island" disabled' in _me, _window(_me, 'value="island"', 200))
+check("one that is not is offered", 'name=add value="genesis" title' in _me,
+      _window(_me, 'value="genesis"', 200))
+check("the chosen maps are a list, in order",
+      _in_order(_me, "<th class=num>#</th>", "<th>Map</th>", ">The Island<"), _me[:700])
+check("with arrows to change that order",
+      "name=up value=" in _me and "name=down value=" in _me, _window(_me, "name=up", 200))
+check("and the first one is named as the update master",
+      ">update master</span>" in _me, _window(_me, "update master", 200))
+check("the consequence of the order is stated, not left in a help page",
+      "Ports are assigned down" in _me and "downloads the server files once" in _me,
+      _window(_me, "update master", 600))
+check("presets are still offered", all(p in _me for p in
+      ("Full cluster", "Starter", "The classics")), _window(_me, "presets", 300))
+# A preset replaces the list - island,center,aberration plus "Single map" leaves
+# island. The help read "fills the list in", which is what adding does, and the
+# disabled state said "rewrites the whole list" a line later: one behaviour, two
+# descriptions, and the misleading one on the button you can actually press.
+check("and the help says a preset replaces what is there, not adds to it",
+      "rewrites the whole list" in _window(_me, "Or start from a preset", 200),
+      _window(_me, "Or start from a preset", 200))
+_me_run = render_maps_editor(st, running=True)
+check("which is the same thing it says when the buttons are disabled",
+      "rewrites the whole list" in _window(_me_run, "Or start from a preset", 220),
+      _window(_me_run, "Or start from a preset", 220))
+check("and the editor posts one action at a time to the maps route",
+      _me.count('action="/admin/maps"') == 1, _me.count('action="/admin/maps"'))
 # Ports, RAM and the reason for it are one map's business, and ten copies of them
 # made a full-width table on the page that answers cluster-wide questions. The overview
 # keeps the way in; the numbers are on the map's own page.
