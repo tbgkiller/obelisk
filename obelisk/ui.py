@@ -2387,11 +2387,23 @@ ONLY_MAP_WHY = "A cluster needs at least one map"
 NO_WORLD_YET = ("no saved world under this map id yet — normal for a map that has "
                 "not launched")
 WORLD_THERE = "a saved world is already on disk under this map id"
+
+# The same advisory shape as the pair above, for the other hint a catalogue entry can
+# carry: whether the mod it names is one this map actually loads. Grey either way -
+# see maps.mod_state for the three states and why the third (nothing said) exists.
+NO_MOD_YET = ("this mod is not in this cluster's mod list yet — the map will not "
+             "load until the mod id is added under Mods")
+MOD_THERE = "this mod is already in this cluster's mod list"
 MAP_ID_ADVICE = ("The map id is the level name the server expects, and the folder its "
                  "world is saved in — <code>Ragnarok_WP</code>, "
                  "<code>Svartalfheim_WP</code>. Obelisk cannot tell a wrong one from a "
                  "right one: a map id nothing uses yet simply makes a new, empty world "
                  "under that name. Take it from the mod's own page.")
+MOD_ID_FIELD_ADVICE = ("Optional \u2014 the CurseForge mod id this map comes from, a "
+                       "number like <code>893657</code>. Obelisk checks it against "
+                       "this cluster's mod list once the map is added and says so "
+                       "here in grey; it is a hint, so it never blocks adding the map "
+                       "or running it.")
 ONLY_MAP = ONLY_MAP_WHY + " \u2014 the list is unchanged."
 
 
@@ -2550,11 +2562,20 @@ def _own_maps(store, values=None, saves=None, listed=(), opened=False,
         seen = saves.get(m["map_id"])
         note = "" if seen is None else (
             '<div class=help>%s</div>' % _e(WORLD_THERE if seen else NO_WORLD_YET))
+        # The mod hint gets a second, matching grey line beside it, once there is
+        # something truthful to say - mod_state answers None when there isn't (no hint,
+        # or a stored one too malformed to compare) and this says nothing then too.
+        mod_line = ""
+        if m.get("mod_id"):
+            mod_line = '<div class=help>mod %s</div>' % _e(m["mod_id"])
+            mod_seen = mapcat.mod_state(store, m["key"])
+            if mod_seen is not None:
+                mod_line += ('<div class=help>%s</div>'
+                             % _e(MOD_THERE if mod_seen else NO_MOD_YET))
         rows += ('<tr><td>%s</td><td><code>%s</code></td><td><code>%s</code>%s%s</td>'
                  '<td class=num>%s</td></tr>'
                  % (_e(m["name"]), _e(m["key"]), _e(m["map_id"]),
-                    ('<div class=help>mod %s</div>' % _e(m["mod_id"]))
-                    if m.get("mod_id") else "", note,
+                    mod_line, note,
                     '<button class=ghost type=submit name=forget value="%s"%s%s>'
                     'forget</button>'
                     % (_e(m["key"]),
@@ -2596,7 +2617,7 @@ def _own_maps(store, values=None, saves=None, listed=(), opened=False,
             '<form method=post action="/admin/maps/catalogue">'
             '%s%s'
             '<div class=help style="margin:14px 0 6px"><b>Define a map</b></div>'
-            '%s%s%s'
+            '%s%s%s%s'
             '<button type=submit name=define value=1>Add this map</button>'
             '</form></details>'
             % (" open" if opened else "", rows,
@@ -2607,7 +2628,8 @@ def _own_maps(store, values=None, saves=None, listed=(), opened=False,
                field("map_id", "Map id", MAP_ID_ADVICE, "Svartalfheim_WP"),
                field("name", "Name", 'What players see in the server browser, and what '
                      'this manager calls it. Up to %d characters.' % mapcat.NAME_MAX,
-                     "Svartalfheim")))
+                     "Svartalfheim"),
+               field("mod_id", "Mod id", MOD_ID_FIELD_ADVICE, "893657")))
 
 
 def render_cluster(store, plan, status=None, roster=None, web_address="",

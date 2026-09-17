@@ -26,6 +26,8 @@ import logging
 import re
 import time
 
+from . import mods
+
 log = logging.getLogger("obelisk.maps")
 
 MAPS = [
@@ -68,6 +70,12 @@ KEY_OK = re.compile(r"^[a-z][a-z0-9]{2,23}$")
 # traversal guard - no dot, no slash, no backslash, no space. Underscores are how these
 # are actually spelled (TheIsland_WP).
 MAP_ID_OK = re.compile(r"^[A-Za-z0-9_]{3,64}$")
+
+# The same shape the mod list itself requires - schema's item_pattern for mod_ids and
+# passive_mods, and the digit rule mods.add refuses against. mod_id is only a hint here
+# (see add_entry), but an unvalidated one can never match a list entry, so a typo would
+# make the cross-check confidently wrong about every single map that has one.
+MOD_ID_OK = re.compile(r"^\d{4,8}$")
 
 # Not a map. staging.py builds its container name from the cluster project and relies
 # on no map ever being called this.
@@ -186,6 +194,27 @@ def weight(store, key):
     return float((entry(store, key) or {}).get("weight") or 1.0)
 
 
+def mod_state(store, key):
+    """Whether this entry's mod_id hint shows up in this map's own effective mod list.
+
+    Three states, not two. None when there is nothing truthful to say: no mod_id was
+    given, or the stored one is malformed - the same honesty rule catalogue() already
+    follows for a stored name (see its docstring): an id that could not possibly be a
+    real one is not evidence it is missing, so this stays silent rather than guess.
+    True/False are read against mod_ids AND passive_mods, both taken per-map with
+    store.get(..., map_name=key) rather than cluster-wide, because both are per-map
+    overridable (schema.PER_MAP_KEYS) and a mod loaded only passively is still loaded -
+    the claim being checked is "nothing in this cluster loads that mod", and either
+    list loading it makes that claim false.
+    """
+    mod_id = str((entry(store, key) or {}).get("mod_id") or "").strip()
+    if not mod_id or not MOD_ID_OK.match(mod_id):
+        return None
+    known = set(mods.parse(store.get("mod_ids", map_name=key)))
+    known |= set(mods.parse(store.get("passive_mods", map_name=key)))
+    return mod_id in known
+
+
 # ---- adding a map Obelisk does not ship
 #
 # Everything here refuses before it writes. The rules are not taste: a key reaches a
@@ -194,11 +223,19 @@ def weight(store, key):
 # the *right* one - a well-formed wrong id means the server quietly creates a new world
 # under that name - so that is said plainly where it is asked for rather than pretended
 # about here.
-def check_entry(store, key, name, map_id, existing=None):
-    """Raise ValueError unless these three fields can be added. Returns the key."""
+def check_entry(store, key, name, map_id, mod_id="", existing=None):
+    """Raise ValueError unless these fields can be added. Returns the key.
+
+    mod_id is optional - a hint, not a fourth required box - but a non-empty one is
+    held to the shape the mod list itself requires (MOD_ID_OK). Refusing a typo here
+    rather than storing it is what keeps mod_state honest: an unvalidated id can never
+    match a list entry, so letting one through would make the cross-check confidently
+    wrong about every map that has one.
+    """
     key = str(key or "").strip().lower()
     name = str(name or "").strip()
     map_id = str(map_id or "").strip()
+    mod_id = str(mod_id or "").strip()
     cat = catalogue(store)
     if existing:
         cat = {k: v for k, v in cat.items() if k != existing}
@@ -234,6 +271,9 @@ def check_entry(store, key, name, map_id, existing=None):
             raise ValueError("%s is already the name of a map in this cluster - two "
                              "rows with one name is how the wrong one gets picked"
                              % other["name"])
+    if mod_id and not MOD_ID_OK.match(mod_id):
+        raise ValueError("a mod id is a number, 4 to 8 digits - copy it from the "
+                         "mod's CurseForge page")
     return key
 
 
@@ -243,14 +283,16 @@ def add_entry(store, key, name, map_id, mod_id="", weight=1.0, when=None):
     Nothing else in the store is touched: adding a map Obelisk can run is not the same
     act as choosing to run it, and the maps list is edited separately.
     """
-    key = check_entry(store, key, name, map_id)
+    mod_id = str(mod_id or "").strip()
+    key = check_entry(store, key, name, map_id, mod_id=mod_id)
     e = {"key": key, "name": str(name).strip(), "map_id": str(map_id).strip(),
          "official": False, "custom": True, "weight": float(weight or 1.0),
          "added": int(when if when is not None else time.time())}
-    mod_id = str(mod_id or "").strip()
     if mod_id:
-        # A hint, not a dependency: this module does not check the mod list, and a map
-        # whose mod is missing fails at the server, not here.
+        # A hint, not a dependency: adding it here never checks it against the mod
+        # list, and a map whose mod is missing fails at the server, not here. mod_state
+        # reads the same field later, but only to say something grey about it, not to
+        # gate this.
         e["mod_id"] = mod_id
     store.data.setdefault(SECTION, []).append(e)
     store.save()

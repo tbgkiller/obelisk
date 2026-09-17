@@ -1076,10 +1076,11 @@ def build_app(store, docker=None):
                                "and its settings are untouched."
                                % (gone.get("name") or key))
 
-        typed = {k: str(form.get(k) or "").strip() for k in ("key", "map_id", "name")}
+        typed = {k: str(form.get(k) or "").strip()
+                for k in ("key", "map_id", "name", "mod_id")}
         try:
             made = mapsmod.add_entry(store, typed["key"], typed["name"],
-                                     typed["map_id"])
+                                     typed["map_id"], mod_id=typed["mod_id"])
         except ValueError as e:
             # Handed back with what was typed, so a refusal is a correction rather
             # than three fields to fill in again.
