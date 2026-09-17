@@ -7496,6 +7496,82 @@ except ValueError as _e_dupe:
 check("two maps cannot share the name the console resolves its target by",
       "already the name of a map" in _dupe_refused, _dupe_refused)
 
+# -- a command carrying the admin password is refused at the door
+#
+# The gap the first round missed. console.result() scrubs everything it builds, and the
+# ungated and confirmed paths were both clean because they go through it - but the
+# CONFIRMATION a gated command draws does not, and cannot: it has to carry the real
+# command in a hidden field or the confirmed submit would have nothing to send. So
+# `DoExit <password>` came back on the page three times over - in the question, in the
+# hidden field and in the button label.
+#
+# Redaction could not have fixed that. Refusal at the route can, and does it for both
+# submits, so the confirmed one cannot be used to walk around the first.
+_t42 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _c_pw_cases = {}
+    for _what, _data in (
+            ("a gated command on the first submit", {"text": "DoExit %s" % _CONSOLE_PW}),
+            ("the same command confirmed",
+             {"command": "DoExit %s" % _CONSOLE_PW, "confirm": "1"}),
+            ("an ungated command", {"text": "ServerChat hello %s" % _CONSOLE_PW}),
+            ("a noise-prefixed gated command",
+             {"text": "cheat DoExit %s" % _CONSOLE_PW})):
+        _st, _where, _body = _t42.run_until_complete(
+            _console_post(_data, answer="anything"))
+        _c_pw_cases[_what] = (_st, _body, list(_rcon_calls), _drain2())
+
+    # A button click wins over whatever is in the box beside it, so this sends
+    # ListPlayers and the typed line is discarded rather than refused.
+    _c_pw_beside = _t42.run_until_complete(
+        _console_post({"command": "ListPlayers", "text": "DoExit %s" % _CONSOLE_PW},
+                      answer="0. Bob"))
+    _c_pw_beside_calls = list(_rcon_calls)
+    _drain2()
+
+    # And the seven spellings that walked past the whitespace split, through the route.
+    _c_sneak = {}
+    for _line in ("cheat DoExit", "admincheat DestroyAll", "/DoExit", "/destroyall",
+                  "DoExit;ListPlayers", "doexit()", '"DoExit"'):
+        _st, _, _body = _t42.run_until_complete(
+            _console_post({"text": _line}, answer="anything"))
+        _c_sneak[_line] = (_st, _body, list(_rcon_calls))
+        _drain2()
+finally:
+    _t42.close()
+
+for _what, (_st, _body, _calls, _ev) in sorted(_c_pw_cases.items()):
+    check("the admin password is nowhere on the page after %s" % _what,
+          _body.count(_CONSOLE_PW) == 0, [_what, _body.count(_CONSOLE_PW)])
+    check("nothing was sent for %s" % _what, _calls == [], [_what, _calls])
+    check("nothing was announced about %s" % _what,
+          not any(e["event"].startswith("map.rcon") for e in _ev), [_what, _ev])
+# The apostrophe in the refusal is escaped on the page, so the needle avoids one.
+check("the refusal says why, without repeating the command back",
+      "admin password in it, so it was not sent"
+      in _c_pw_cases["a gated command on the first submit"][1],
+      _window(_c_pw_cases["a gated command on the first submit"][1],
+              "admin password", 400))
+check("and says no RCON command needs it",
+      "Obelisk gives it to the server itself" in _c_pw_cases["an ungated command"][1],
+      _window(_c_pw_cases["an ungated command"][1], "warn", 400))
+# The one the gate turns on: the question is never drawn for a command it would have
+# had to quote in a hidden field.
+check("no confirmation is drawn for a command carrying the password",
+      all("Send <code>" not in _b for _s, _b, _c, _e in _c_pw_cases.values()),
+      "the question was asked with the password in it")
+check("a button click beside a box holding the password sends the button's command",
+      [c["command"] for c in _c_pw_beside_calls] == ["ListPlayers"],
+      _c_pw_beside_calls)
+check("and the discarded box does not come back on the page either",
+      _CONSOLE_PW not in _c_pw_beside[2], "the text field was echoed")
+
+# -- the noise-prefixed and punctuated spellings are asked about, through the route
+for _line, (_st, _body, _calls) in sorted(_c_sneak.items()):
+    check("%r is not sent on the first submit" % _line, _calls == [], [_line, _calls])
+    check("%r draws the question instead" % _line,
+          _st == 200 and "Send <code>" in _body, [_line, _st])
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

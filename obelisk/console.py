@@ -7,10 +7,14 @@ relay has existed.
 **Which commands need asking about first.** A console that will send anything is a
 console that will send `DoExit` to a full map because the operator was looking at a
 different tab. So the destructive and the disruptive ones are named here and gated by a
-confirmation. Classified on the *first token only*, lowercased: the effect of a line is
-decided by its verb and by nothing else, and a substring test would refuse
+confirmation. Classified on the *verb only*, lowercased: the effect of a line is decided
+by the word that runs and by nothing else, and a substring test would refuse
 `ServerChat DestroyAll is banned` - an announcement - while a `destroyall` typed in
-lowercase sailed past. The word in the argument is a word. The word in front is an act.
+lowercase sailed past. The word in the argument is a word. The word in front is an act -
+including when somebody has written `cheat` or a slash in front of it, which see.
+
+**And a command carrying the admin password is refused, not redacted.** See
+carries_password: the page cannot show what the route never accepted.
 
 **What the answer is worth.** This is the half that matters and the half that is easy to
 get wrong, because ARK answers most commands that change something with
@@ -28,6 +32,7 @@ that cannot tell "the server is down" from "the server is busy saving".
 Nothing here opens a socket, reads the disk or touches the store, so all of it is
 testable without a cluster.
 """
+import re
 
 # ---------------------------------------------------------------- what to offer
 #
@@ -57,12 +62,12 @@ CONSUMING_WHY = ("GetChat and GetGameLog hand over the lines since the last read
 
 def consuming(command):
     """Does this command take something away from the relay by reading it?"""
-    return first_token(command) in CONSUMING
+    return verb(command) in CONSUMING
 
 
 # ---------------------------------------------------------------- what to ask about
 #
-# Named by first token, lowercased. Every Destroy* command destroys, including the ones
+# Named by verb, lowercased. Every Destroy* command destroys, including the ones
 # this list has never heard of - DestroyTribeIdDinos, and whatever the next build adds -
 # so that family is matched by its verb rather than enumerated. Over-gating costs a
 # click. Under-gating costs a world.
@@ -74,8 +79,7 @@ GATED = frozenset((
 ))
 GATED_PREFIXES = ("destroy",)
 
-# What sending it will actually do, said in the confirmation. Keyed by the same first
-# token. A question that only names the command is a question nobody can answer without
+# What sending it will actually do, said in the confirmation. Keyed by the same verb. A question that only names the command is a question nobody can answer without
 # already knowing the answer.
 EFFECTS = {
     "doexit": ("stop %s. The server exits, everyone on it is disconnected, and this "
@@ -96,27 +100,97 @@ DESTROYS = ("destroy things on %s that the game cannot bring back. There is no u
             "for this short of a restore from a save")
 
 
-def first_token(command):
-    """The command word: the first whitespace-separated token, lowercased.
+# Words that are not the command. An ARK admin types `cheat DestroyWildDinos` out of
+# habit - it is how the in-game console wants it - and a leading slash is the other
+# reflex. Neither changes what the line does, so neither may change how it is judged.
+NOISE = ("cheat", "admincheat")
 
-    The whole classification hangs off this one line, so it is written down once. A
-    command with nothing in front of it - blank, or whitespace - answers "", which is
-    not any command and so is gated by nothing and sent by nobody.
+# A verb is a run of letters and digits. Everything else - a slash, a quote, a
+# semicolon, a bracket - is punctuation somebody put around it.
+_WORD = re.compile(r"[A-Za-z0-9_]+")
+
+
+def verb(command):
+    """The word this line will actually run, lowercased. "" when there isn't one.
+
+    The whole classification hangs off this, so it is written down once, and it is
+    deliberately more generous than "the first whitespace-separated token" was.
+
+    Splitting on whitespace alone let seven spellings of a gated command through
+    unasked: `cheat DoExit`, `admincheat DestroyAll`, `/DoExit`, `/destroyall`,
+    `DoExit;ListPlayers`, `doexit()` and `"DoExit"`. So the leading noise words are
+    walked off the front - repeatedly, because `admincheat cheat DoExit` is a thing
+    somebody will type - and the verb itself is taken as the first run of letters and
+    digits rather than up to the first space, because a semicolon, a bracket or a quote
+    ends a word just as well.
+
+    **We are deliberately over-gating here.** Whether ASA's RCON actually executes the
+    `cheat`-prefixed form is unsettled: it could not be established without driving a
+    live server, and this cluster's fleet is not available to experiment on. So it is
+    resolved the conservative way, on this module's own standard - the asymmetry is
+    that over-gating costs a click and under-gating costs a world. If it turns out
+    `cheat DoExit` is inert over RCON, the only cost of this is a confirmation on a
+    command that would have done nothing.
+
+    What it must NOT do is start reading arguments as verbs. `ServerChat DestroyAll is
+    banned` is an announcement about a rule, and the word in the argument is a word -
+    so only the front of the line is walked, and only over words that are known noise.
     """
-    parts = str(command or "").split()
-    return parts[0].lower() if parts else ""
+    text = str(command or "")
+    while True:
+        m = _WORD.search(text)
+        if not m:
+            return ""
+        word = m.group(0).lower()
+        if word not in NOISE:
+            return word
+        # Strictly shorter every turn - a match is at least one character - so
+        # this terminates on any input. It is deliberately not capped at a few
+        # turns: a cap would answer "" for a line padded with noise words, and
+        # "" is not gated, which would hand back the hole this closes.
+        text = text[m.end():]
 
 
 def gated(command):
     """Does this command have to be confirmed before it is sent?
 
-    First token only. `ServerChat DestroyAll is banned` is an announcement about a rule
-    and is sent as typed; `destroyall` is the rule being broken and is asked about.
+    The verb only. `ServerChat DestroyAll is banned` is an announcement about a rule
+    and is sent as typed; `destroyall`, `/DoExit` and `cheat DestroyWildDinos` are the
+    rule being broken and are asked about.
     """
-    word = first_token(command)
+    word = verb(command)
     if not word:
         return False
     return word in GATED or word.startswith(GATED_PREFIXES)
+
+
+# How short an admin password has to be before looking for it in a command does more
+# harm than good. A three-character password appears inside half the words in the
+# language, and a console that refuses every line because the password is "ark" is a
+# console nobody can use - which is a worse outcome than the one being prevented,
+# because it is certain rather than possible. Below the floor the check simply does not
+# run; above it, a match is exact and case-sensitive, because that is how a secret is
+# compared.
+PASSWORD_FLOOR = 8
+
+
+def carries_password(command, password):
+    """Is this cluster's admin password somewhere in this command line?
+
+    Asked at the door, before anything is classified or rendered, because the answer is
+    "refuse" rather than "redact". Redacting would not be enough: the confirmation a
+    gated command draws has to carry the real command in a hidden field to be sendable
+    at all, so the only way the password cannot reach the page is for the command never
+    to get that far.
+
+    No RCON command takes the admin password as an argument - Obelisk hands it to the
+    server itself, at authentication - so refusing one that contains it costs nothing
+    real and closes the path completely.
+    """
+    pw = str(password or "")
+    if len(pw) < PASSWORD_FLOOR:
+        return False
+    return pw in str(command or "")
 
 
 def effect(command, map_name):
@@ -128,7 +202,7 @@ def effect(command, map_name):
     """
     if not gated(command):
         return ""
-    word = first_token(command)
+    word = verb(command)
     if word in EFFECTS:
         text = EFFECTS[word]
         return text % ((map_name, map_name) if text.count("%s") == 2 else map_name)

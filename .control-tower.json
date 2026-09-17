@@ -56,6 +56,14 @@
       "why": "mod_state answers None when there is nothing truthful to say - no mod_id, or a stored one too malformed to compare - and the render has to treat that the same way it treats an unreadable disk: no note at all, never a guessed one, even though the raw mod id is still shown"
     },
     {
+      "id": "a-command-carrying-the-password-is-refused",
+      "file": "obelisk/console.py",
+      "guard": "    return pw in str(command or \"\")",
+      "disable": "    return False  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "ui",
+      "why": "the console refuses a command containing the admin password rather than redacting it, because redaction cannot work: the confirmation a gated command draws has to carry the real command in a hidden field or the confirmed submit would have nothing to send, so `DoExit <password>` came back on the page three times over - in the question, in the hidden field and in the button label. This is the one check standing between a typed password and a rendered one, and the floor above it is what stops a short password refusing every command instead"
+    },
+    {
       "id": "received-is-not-a-result",
       "file": "obelisk/console.py",
       "guard": "    if text.strip() == NO_RESPONSE:",

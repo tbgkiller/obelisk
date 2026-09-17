@@ -2735,8 +2735,69 @@ check("nor is one that carries it as an argument",
 check("an unban is not a ban", not _con.gated("UnbanPlayer 7656119"), "unban gated")
 check("and nothing at all is not a command",
       not _con.gated("") and not _con.gated("   "), "blank gated")
-check("the first token is the verb, lowercased",
-      _con.first_token("  DoExit now ") == "doexit", _con.first_token("  DoExit now "))
+check("the verb is the word that runs, lowercased",
+      _con.verb("  DoExit now ") == "doexit", _con.verb("  DoExit now "))
+
+# -- the spellings of a gated command that a whitespace split let through
+#
+# All seven were driven through the live route and every one of them sent immediately,
+# unasked. `cheat` and a leading slash are what an ARK admin's hands type, and a
+# semicolon, a bracket or a quote ends a word as well as a space does.
+#
+# Whether ASA's RCON really executes the cheat-prefixed form is unsettled - it cannot be
+# established without driving a live server - so it is resolved conservatively and
+# deliberately over-gated. Over-gating costs a click; under-gating costs a world.
+for _sneak in ("cheat DoExit", "admincheat DestroyAll", "/DoExit", "/destroyall",
+               "DoExit;ListPlayers", "doexit()", '"DoExit"', "cheat /DoExit",
+               "admincheat cheat DoExit", "CHEAT doexit", "  cheat   shutdown  "):
+    check("%r is asked about, not sent" % _sneak, _con.gated(_sneak),
+          [_sneak, _con.verb(_sneak)])
+# And the distinction the whole rule exists for still holds: only the front of the line
+# is walked, and only over words that are known noise.
+check("the gated word as an argument still does not gate, after all that",
+      not _con.gated("ServerChat DestroyAll is banned on this cluster")
+      and not _con.gated("ServerChat cheat DoExit is not allowed here"),
+      "an argument was read as a verb")
+check("and a noise word on its own is not a command at all",
+      _con.verb("cheat") == "" and not _con.gated("cheat"), _con.verb("cheat"))
+check("a safe command wrapped the same way is still safe",
+      not _con.gated("cheat SaveWorld") and _con.verb("/ListPlayers") == "listplayers",
+      _con.verb("/ListPlayers"))
+# A cap on how far the noise walk goes would answer "" for a line padded with noise
+# words, and "" is not gated - which is the hole, handed back through the door it
+# was closed at. The walk terminates because each turn consumes at least one
+# character, not because it gives up.
+check("a line padded with noise words still resolves its verb",
+      _con.gated("cheat " * 500 + "DoExit")
+      and _con.verb("cheat " * 500 + "DoExit") == "doexit",
+      _con.verb("cheat " * 500 + "DoExit"))
+
+# -- a command carrying the admin password is refused at the door, not redacted
+#
+# The confirmation a gated command draws has to carry the real command in a hidden field
+# or the confirmed submit would have nothing to send - so redacting the question cannot
+# keep the password off the page. Only refusing the command can.
+_PWLONG = "correct-horse-battery-staple"
+check("a command with the admin password in it is spotted",
+      _con.carries_password("DoExit %s" % _PWLONG, _PWLONG), "not spotted")
+check("wherever in the line it appears",
+      _con.carries_password("ServerChat hey %s ok" % _PWLONG, _PWLONG), "not spotted")
+check("an ordinary command is not",
+      not _con.carries_password("DoExit", _PWLONG), "a clean command was refused")
+check("the match is exact, not case-folded",
+      not _con.carries_password("DoExit %s" % _PWLONG.upper(), _PWLONG),
+      "a secret was compared case-insensitively")
+# The robustness half. A three-character password is inside half the words in the
+# language, and a console that refuses every line is a certain failure where the one
+# being prevented is a possible one.
+check("a password too short to be a needle turns the check off rather than everything",
+      not _con.carries_password("ListPlayers", "ark")
+      and not _con.carries_password("ListPlayers", "s")
+      and not _con.carries_password("ListPlayers", ""), "the console would be bricked")
+check("and the floor is stated rather than implied",
+      _con.PASSWORD_FLOOR == 8, _con.PASSWORD_FLOOR)
+check("a password exactly at the floor still counts",
+      _con.carries_password("DoExit abcd1234", "abcd1234"), "the floor is off by one")
 
 # -- the confirmation says what it will do, not just what it is called
 _eff = _con.effect("DoExit", "The Island")

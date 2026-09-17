@@ -1873,11 +1873,32 @@ def build_app(store, docker=None):
             str(form.get("text") or "").split())
         confirmed = bool(form.get("confirm"))
         name = mapsmod.entry(store, key)["name"]
+        password = str(store.get("admin_password") or "")
 
         def said(**kw):
             raise web.HTTPFound("/admin/cluster/map/%s?said=%s#console"
                                 % (key, _say_next(where="map", **kw)))
 
+        # First, before it is classified and before any of it is rendered anywhere.
+        #
+        # console.result() scrubs the password out of everything it builds, but the
+        # confirmation a gated command draws does not go through console.result() - it
+        # has to carry the command itself, in a hidden field, or the confirmed submit
+        # would have nothing to send. So a typed `DoExit <password>` came back on the
+        # page three times over. Redacting the question would not have fixed it either,
+        # for the same reason: the hidden field has to hold the real string.
+        #
+        # Refusing at the door makes the property absolute rather than careful. Both
+        # submits are refused, so the confirmed one cannot be used to walk around the
+        # first, and the refusal does not echo the command back - which is the entire
+        # point of it. No RCON command takes the admin password as an argument; Obelisk
+        # gives it to the server itself, at authentication.
+        if consolelib.carries_password(command, password):
+            said(refusal="That command had this cluster's admin password in it, so it "
+                         "was not sent - and it is not shown back here, which is why "
+                         "you are reading this instead of the command. No RCON command "
+                         "needs the password: Obelisk gives it to the server itself "
+                         "when it connects.")
         if not command:
             said(refusal="Type a command first - nothing was sent to %s." % name)
         if consolelib.gated(command) and not confirmed:
@@ -1896,7 +1917,6 @@ def build_app(store, docker=None):
                          % name)
 
         from . import bot
-        password = str(store.get("admin_password") or "")
         try:
             body = await bot.rcon_with(target[0], target[1], password, command,
                                        timeout=RCON_TIMEOUT)
