@@ -2892,8 +2892,28 @@ for _cmd, _why in _con.CURATED:
           'name=command value="%s"' % _cmd in _con_box, _window(_con_box, "button", 400))
 check("with a box to type anything else into",
       "name=text" in _con_box and "Send" in _con_box, _window(_con_box, "name=text", 300))
-check("all of it in one form, so a button and the box cannot post to two places",
-      _con_box.count("<form") == 1, _con_box)
+# -- two forms, because Enter in a text field submits the form's FIRST submit button
+#
+# One form held the three curated buttons and then the box, so pressing Enter after
+# typing SaveWorld submitted ListPlayers - and the route prefers `command` over `text`,
+# so the operator got a player list that reads exactly like a result and went on to
+# DoExit having never saved. The invariant that stops it coming back is here: the box
+# lives in a form whose only submit button is Send.
+_con_forms = [f.split("</form>")[0] for f in _con_box.split("<form method=post")[1:]]
+check("the console is two forms, not one", len(_con_forms) == 2, len(_con_forms))
+check("both posting to this map's own route",
+      all('action="/admin/cluster/map/island/rcon"' in f for f in _con_forms),
+      _con_forms)
+check("the curated buttons are in the first, with no text field to race",
+      "name=command" in _con_forms[0] and "name=text" not in _con_forms[0],
+      _con_forms[0])
+check("the box is in the second, and Enter there can only reach Send",
+      "name=text" in _con_forms[1] and _con_forms[1].count("type=submit") == 1
+      and 'name=send value="1"' in _con_forms[1], _con_forms[1])
+check("so no curated command sits in front of the box's own submit",
+      "name=command" not in _con_forms[1], _con_forms[1])
+check("and the buttons still read above the box, in that order",
+      _in_order(_con_box, 'value="ListPlayers"', "name=text"), _con_box)
 check("and the page says it reaches this map and nothing else",
       "no other map" in _con_box, _window(_con_box, "<legend>Console", 500))
 check("it says what a received-but-no-response answer is worth before one arrives",
@@ -2938,7 +2958,8 @@ _world = {"path": "/srv/ark/TheIsland_WP.ark", "present": True,
           "size": 79 * 1024 * 1024, "mtime": _time_con.time() - 90, "hot": []}
 _with_world = _mapc(world=_world)
 check("a world that is on disk is reported, with when it was last written",
-      "World file on disk" in _with_world and "1m ago" in _with_world,
+      "World file on disk, read just now: last written <b>1m ago</b>"
+      in _with_world,
       _window(_with_world, "World file", 300))
 check("and how big it is, so a save that wrote nothing is visible",
       "79.0 MB" in _with_world, _window(_with_world, "World file", 300))
@@ -2954,6 +2975,91 @@ check("a filesystem that cannot answer is not guessed at",
 check("a world still being written says so rather than looking finished",
       "part-way through writing" in _mapc(world=dict(_world, hot=["-wal"])),
       _window(_mapc(world=dict(_world, hot=["-wal"])), "World file", 500))
+
+# -- the chrome says the same thing the words do
+#
+# A bare submit button is painted the ordinary blue this UI gives Save, Apply and Send.
+# The kick guard - which its own comment calls the light one - wears `bite`, and a ban
+# wears `worst`. So "stop this map and disconnect everyone on it" was styled below a
+# kick, and the colour is read before the sentence is.
+check("the confirm button wears this file's heaviest severity, not the primary blue",
+      'class="whoact worst" type=submit>Yes, send DoExit to The Island</button>' in _ask,
+      _window(_ask, "Yes, send", 200))
+check("and not the bare submit it was",
+      "<button type=submit>Yes, send" not in _ask, _window(_ask, "Yes, send", 200))
+check("which is the vocabulary the other guards on this page already use",
+      'class="whoact bite"' in ui.render_kick_confirm("The Island", "Bob", "765"),
+      "the severity classes have drifted")
+
+# -- the box says which map it is
+#
+# Every answer this console gives scrolls the #detail legend out of view, so the state
+# the operator types DoExit in was a box headed "Console" with no map name on screen.
+check("the console legend names the map",
+      "<legend>Console — The Island</legend>" in _con_box,
+      _window(_con_box, "<legend>", 120))
+check("so the name is on screen without the heading above it",
+      "The Island" in _con_box.split("<form")[0], _con_box.split("<form")[0][:400])
+
+# -- sent, then answered, then what the disk says now
+#
+# The stat is taken on the way to drawing the page, so after a SaveWorld it is the state
+# of the disk after the send. Drawn above the verdict it read as the figure from before.
+_ordered = _mapc(result=_v_del, world=_world)
+check("the verdict comes before the look at the disk",
+      _in_order(_from(_ordered, "<fieldset id=console>"),
+                "Delivered, not confirmed.", "World file on disk"),
+      _window(_ordered, "id=console", 1200))
+check("and the look says when it was taken",
+      "World file on disk, read just now: last written" in _ordered,
+      _window(_ordered, "World file", 200))
+check("without telling the operator to reload, which would delete the verdict",
+      "reload after a SaveWorld" not in _ordered
+      and "reload to look again." in _ordered, _window(_ordered, "World file", 400))
+
+# -- a refused send says so where the send was made
+#
+# An amber at the head of this page is about a screen above the box, and a console the
+# operator lands on looks identical to the one they pressed Send on.
+_refused = _mapc(refusal="Type a command first - nothing was sent to The Island.")
+check("a refusal draws inside the console box",
+      "Type a command first" in _from(_refused, "<fieldset id=console>"),
+      _window(_refused, "id=console", 600))
+check("in the amber that means nothing happened and nothing broke",
+      "<div class=warn>Type a command first" in _refused,
+      _window(_refused, "Type a command", 200))
+check("above the form it is asking to be corrected",
+      _in_order(_from(_refused, "<fieldset id=console>"),
+                "Type a command first", "name=text"), _window(_refused, "id=console", 800))
+check("and nowhere else on the page",
+      _refused.count("Type a command first") == 1,
+      _refused.count("Type a command first"))
+
+# -- the confirmation seen most often is not the one that cries wolf
+#
+# DestroyWildDinos is the most routine admin command in ARK and the game undoes it
+# itself. On the generic sentence it claimed to be irreversible, which is how the same
+# words in front of a Destroy* that really is irreversible stop being read.
+_wild = _con.effect("DestroyWildDinos", "The Island")
+check("destroying wild dinos says what it actually costs",
+      _wild == ("remove every wild creature on The Island. Tames, structures and "
+                "players are untouched, and wild dinos respawn over the following "
+                "minutes"), _wild)
+check("and no longer claims the game cannot bring them back",
+      "cannot bring back" not in _wild, _wild)
+check("while a Destroy* nobody enumerated still says it cannot be undone",
+      "cannot bring back" in _con.effect("DestroyTribeIdDinos 42", "The Island"),
+      _con.effect("DestroyTribeIdDinos 42", "The Island"))
+check("it is still asked about, either way", _con.gated("DestroyWildDinos"), "not gated")
+
+# -- and an empty answer does not open with ANSWERED's words
+check("the empty verdict does not start by saying the server answered",
+      _con.HEADLINES[_con.EMPTY] == "The server said nothing at all.",
+      _con.HEADLINES[_con.EMPTY])
+check("which is a different opening from a server that did",
+      not _con.HEADLINES[_con.EMPTY].startswith(
+          _con.HEADLINES[_con.ANSWERED].split(" ", 3)[0] + " server answered"),
+      [_con.HEADLINES[_con.EMPTY], _con.HEADLINES[_con.ANSWERED]])
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

@@ -7451,9 +7451,9 @@ check("a timeout says it ran out of time and may still be running",
       "No answer in time." in _c_slow_body and "still be running" in _c_slow_body,
       _window(_c_slow_body, "id=console", 900))
 check("an empty answer is neither of those, and not the receipt either",
-      "answered with nothing at all" in _c_mt_body
+      "<b>The server said nothing at all.</b>" in _c_mt_body
       and "Delivered, not confirmed." not in _c_mt_body,
-      _window(_c_mt_body, "id=console", 900))
+      "the empty verdict did not render as itself")
 check("the three do not render as one another",
       len({_window(b, " rcon\">", 300)
            for b in (_c_ref_body, _c_slow_body, _c_mt_body)}) == 3,
@@ -7571,6 +7571,37 @@ for _line, (_st, _body, _calls) in sorted(_c_sneak.items()):
     check("%r is not sent on the first submit" % _line, _calls == [], [_line, _calls])
     check("%r draws the question instead" % _line,
           _st == 200 and "Send <code>" in _body, [_line, _st])
+
+# -- a refused send says so inside the box the send was made from
+#
+# All three console refusals redirect to the page with #console on the end, but the
+# refusal itself used to draw as a banner at the top - about a screen above the anchor.
+# The operator landed on a console byte-identical to the one they pressed Send on, with
+# the reason scrolled out of view, so a refusal was indistinguishable from a button that
+# did nothing. This page learned that once already, with the map-catalogue refusal that
+# scrolled off above the form it was asking to be corrected.
+_t43 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _c_ref_st2, _c_ref_where2, _c_ref_body2 = _t43.run_until_complete(
+        _console_post({"text": "   "}, answer="x", follow=False))
+    _c_ref_page = _t43.run_until_complete(
+        _console_post({"text": "   "}, answer="x"))[2]
+finally:
+    _t43.close()
+
+check("a refusal still lands on the console anchor",
+      _c_ref_where2.endswith("#console"), _c_ref_where2)
+check("and the refusal is drawn inside the console fieldset",
+      "Type a command first" in _from(_c_ref_page, "<fieldset id=console>"),
+      _window(_c_ref_page, "id=console", 500))
+check("not as a banner above it",
+      "Type a command first" not in _c_ref_page.split("<fieldset id=console>")[0],
+      "the refusal is still at the top of the page")
+check("and exactly once", _c_ref_page.count("Type a command first") == 1,
+      _c_ref_page.count("Type a command first"))
+check("the box that was refused is still on the page to correct",
+      "name=text" in _from(_c_ref_page, "<fieldset id=console>"),
+      "the form went away with the refusal")
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)

@@ -1761,7 +1761,7 @@ def build_app(store, docker=None):
             log.info("could not look at %s's world file: %s", key, e)
             return None
 
-    async def _map_body(request, key, result=None, ask=None):
+    async def _map_body(request, key, result=None, ask=None, refusal=""):
         """The per-map page's markup, for the GET and for the console's own POST.
 
         The POST that renders a confirmation has to draw the same page the question was
@@ -1808,7 +1808,14 @@ def build_app(store, docker=None):
             # command. It is shown in the console's own box rather than as a banner at
             # the top: it is the answer to the thing the operator is looking at.
             result = result or said.get("console")
-            if said.get("message") or said.get("problem") or said.get("refusal"):
+            # And so is a refusal from the console, for a harder reason. The answer
+            # to a send belongs where the send was made: an amber at the head of this
+            # page is about a screen above the box, and the console the operator
+            # lands on looks byte-identical to the one they pressed Send on - so a
+            # refused command is indistinguishable from a button that did nothing.
+            if said.get("part") == "console":
+                refusal = refusal or said.get("refusal") or said.get("problem")
+            elif said.get("message") or said.get("problem") or said.get("refusal"):
                 notice = ('<div class=note>%s</div>' % ui._e(said["message"])
                           if said.get("message") else
                           ui.warn_block(said.get("problem") or said.get("refusal")))
@@ -1822,7 +1829,7 @@ def build_app(store, docker=None):
                                     job=rjob, state=state, overrides=overrides,
                                     notice=notice, launched=launched,
                                     world=_world_look(key) if row else None,
-                                    result=result, ask=ask),
+                                    result=result, ask=ask, refusal=refusal),
                       name, "/admin/cluster")
 
     async def map_page(request):
@@ -1876,8 +1883,16 @@ def build_app(store, docker=None):
         password = str(store.get("admin_password") or "")
 
         def said(**kw):
-            raise web.HTTPFound("/admin/cluster/map/%s?said=%s#console"
-                                % (key, _say_next(where="map", **kw)))
+            """Park the answer and land on the console, which is where it draws.
+
+            `part="console"` is what puts a refusal inside the box rather than in the
+            banner at the top of the page - see _map_body. Without it the operator
+            lands on a console identical to the one they pressed Send on, with the
+            reason it did nothing scrolled off above them.
+            """
+            raise web.HTTPFound(
+                "/admin/cluster/map/%s?said=%s#console"
+                % (key, _say_next(where="map", part="console", **kw)))
 
         # First, before it is classified and before any of it is rendered anywhere.
         #

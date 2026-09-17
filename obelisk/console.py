@@ -92,6 +92,13 @@ EFFECTS = {
             "no other map"),
     "banplayer": ("ban somebody from %s. ARK keeps a ban list per server, so this is "
                   "%s and no other map"),
+    # The one Destroy* that the game undoes by itself. It is also the one an admin runs
+    # most often, so leaving it on the generic sentence below meant the confirmation
+    # seen most often was the one that cried wolf - which is how the identical words in
+    # front of a genuinely irreversible Destroy* stop being read at all.
+    "destroywilddinos": ("remove every wild creature on %s. Tames, structures and "
+                         "players are untouched, and wild dinos respawn over the "
+                         "following minutes"),
     "killplayer": "kill somebody on %s. They lose whatever they were carrying",
     "clearplayerinventory": ("empty somebody’s inventory on %s. What it takes is "
                              "gone - there is no undo in the game for this"),
@@ -231,7 +238,10 @@ BROKE = "broke"              # anything else, reported as itself
 HEADLINES = {
     DELIVERED: "Delivered, not confirmed.",
     ANSWERED: "The server answered.",
-    EMPTY: "The server answered with nothing at all.",
+    # Not "answered with nothing" - the scanned bold line opened with the same three
+    # words as ANSWERED, and these two mean opposite things. An empty reply is most
+    # often a typo in the free-text box.
+    EMPTY: "The server said nothing at all.",
     TIMEOUT: "No answer in time.",
     REFUSED: "Nothing was sent — the connection was refused.",
     DENIED: "Nothing was sent — RCON refused the admin password.",

@@ -2308,9 +2308,15 @@ def _console_world(world):
         return '<div class=help>%s</div>' % _e(NO_WORLD_YET)
     from .backup import human_size
     when = float(world.get("mtime") or 0)
-    said = ('<div class=help>World file on disk, last written <b>%s</b> '
+    # "read just now" is the whole difference between a fact and a puzzle. This stat is
+    # taken on the way to drawing the page, so after a SaveWorld it is the state of the
+    # disk *after* the send - but nothing said so, and the line sat above the verdict,
+    # so it read as the figure from before. The old copy made that worse by telling the
+    # operator to reload: reloading pops the parked result and deletes the very verdict
+    # they were being told to compare this against.
+    said = ('<div class=help>World file on disk, read just now: last written <b>%s</b> '
             '<span title="%s">(%s)</span> — %s. A save that has landed moves this '
-            'time; reload after a SaveWorld to watch it.</div>'
+            'time — reload to look again.</div>'
             % (_e(_ago(max(0, time.time() - when))), _e(_when_title(when)),
                _e(time.strftime("%d %b %H:%M:%S", time.localtime(when))),
                _e(human_size(world.get("size") or 0))))
@@ -2347,49 +2353,73 @@ def _console_ask(name, key, command):
 
     The form it replaces is not drawn underneath it. Two routes to the same act, one of
     them unconfirmed, is exactly what this step is for.
+
+    The button wears `worst`, which is this file's heaviest severity, because the chrome
+    is read before the words are. A bare submit button is painted the ordinary blue this
+    UI gives Save and Apply, which made "stop this map and disconnect everyone on it"
+    look lighter than a kick - and the kick guard says in its own comment that a kick is
+    the light one. Honest sentence, inverted colour, and at four in the morning the
+    colour wins.
     """
     return ('<div class=warn><b>Send <code>%s</code> to %s?</b> This will %s. '
             'Nothing has been sent yet.</div>'
             '<form method=post action="/admin/cluster/map/%s/rcon">'
             '<input type=hidden name=command value="%s">'
             '<input type=hidden name=confirm value="1">'
-            '<button type=submit>Yes, send %s to %s</button> '
+            '<button class="whoact worst" type=submit>Yes, send %s to %s</button> '
             '<a class=help href="/admin/cluster/map/%s#console">Cancel</a></form>'
             % (_e(command), _e(name), _e(consolelib.effect(command, name)),
                _e(key), _e(command), _e(command), _e(name), _e(key)))
 
 
-def render_console(name, key, world=None, result=None, ask=""):
+def render_console(name, key, world=None, result=None, ask="", refusal=""):
     """One map's RCON console: the safe commands, a box to type in, and the answer.
 
-    One form, one route, one map - the map is the one in the URL and there is no picker,
-    because a console that can be pointed at the wrong server by a select box left on a
-    default is a console that will be.
+    One route, one map - the map is the one in the URL and there is no picker, because a
+    console that can be pointed at the wrong server by a select box left on a default is
+    a console that will be. The map is named in the legend for the same reason: every
+    answer this console gives scrolls the page's own heading out of view, and "Console"
+    over a box somebody is about to type DoExit into is not enough with three map tabs
+    open.
+
+    **Two forms, not one.** They look like one row of buttons above one text field, and
+    that is the point - but a single form submits its FIRST submit button when Enter is
+    pressed in a text field, and the first one here is ListPlayers. So typing SaveWorld
+    and pressing Enter sent ListPlayers, came back with a player list that reads exactly
+    like a result, and the operator went on to DoExit having never saved. That is the
+    sequence this console was built for, failing silently. Split, Enter in the box can
+    only reach Send, and a curated click carries no typed text at all.
+
+    Order is sent, then answered, then what the disk says now: the verdict for the
+    command, and under it a stat taken after it.
     """
     buttons = "".join(
         '<button class=ghost type=submit name=command value="%s" title="%s">%s</button>'
         % (_e(cmd), _e(why), _e(cmd)) for cmd, why in consolelib.CURATED)
     what = "".join('<div class=help><code>%s</code> — %s</div>' % (_e(c), _e(w))
                    for c, w in consolelib.CURATED)
-    form = ('<form method=post action="/admin/cluster/map/%s/rcon">'
-            '<div class=rconrow>%s</div>%s'
+    action = '/admin/cluster/map/%s/rcon' % _e(key)
+    form = ('<form method=post action="%s"><div class=rconrow>%s</div></form>%s'
+            '<form method=post action="%s">'
             '<div class=rconrow>'
             '<input type=text name=text placeholder="ListPlayers" autocomplete=off '
             'spellcheck=false>'
             '<button type=submit name=send value="1">Send</button></div>'
             '<div class=help>Anything that destroys, kicks, bans or stops is asked '
             'about before it is sent. %s</div>'
-            '</form>' % (_e(key), buttons, what, _e(consolelib.CONSUMING_WHY)))
-    return ('<fieldset id=console><legend>Console</legend>'
-            '<div class=help>%s</div><div class=help>%s</div>%s%s%s'
+            '</form>' % (action, buttons, what, action,
+                         _e(consolelib.CONSUMING_WHY)))
+    return ('<fieldset id=console><legend>Console — %s</legend>'
+            '<div class=help>%s</div><div class=help>%s</div>%s%s%s%s'
             '</fieldset>'
-            % (_e(CONSOLE_IS), _e(CONSOLE_ANSWERS), _console_world(world),
-               _console_result(name, result), ask or form))
+            % (_e(name), _e(CONSOLE_IS), _e(CONSOLE_ANSWERS),
+               warn_block(refusal) if refusal else "",
+               _console_result(name, result), _console_world(world), ask or form))
 
 
 def render_map(name, key, row=None, address="", host_known=True, points=None,
                job=None, state=None, overrides="", notice="",
-               launched=True, world=None, result=None, ask=None):
+               launched=True, world=None, result=None, ask=None, refusal=""):
     """One map, in detail, for the things that are only true of that map.
 
     The overview answers "is it up, who is on, is anything broken" for a cluster. Ports,
@@ -2397,9 +2427,16 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
     none of those things: they are a paragraph per map, and ten of them made two
     full-width tables that pushed the answers off the top of the page.
 
-    `world`, `result` and `ask` belong to the console below the detail and are passed
-    straight through: one look at this map's world file, one command's answer, and the
-    command that is waiting to be confirmed. All three are None on an ordinary GET.
+    `world`, `result`, `ask` and `refusal` belong to the console below the detail and are
+    passed straight through: one look at this map's world file, one command's answer, the
+    command that is waiting to be confirmed, and a send that was refused before it left.
+    All four are empty on an ordinary GET.
+
+    The refusal goes to the console rather than to `notice` at the top of the page. A
+    console answer scrolls the heading out of view, so an amber up there lands about a
+    screen above the box that caused it - and a refused send then looks exactly like a
+    button that did nothing. This page learned that once already, with the map-catalogue
+    refusal that scrolled off above the form it was asking to be corrected.
 
     Detail only, on purpose. Whether this map is up and how many are on it is the
     overview's row to state, and stating it here too would be a second copy that can
@@ -2463,7 +2500,7 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
                  'starts.</div>' % back_to)
     # The console goes directly under the detail it belongs to: the RCON port is two
     # rows up, and the map this sends to is the map whose page this is.
-    console = render_console(name, key, world=world, result=result,
+    console = render_console(name, key, world=world, result=result, refusal=refusal,
                              ask=_console_ask(name, key, ask) if ask else "")
     return ('<div class=jump><a href="%s">Back to the cluster</a></div>' % back_to
             + (notice or "") + here + where + console + connect + saves
