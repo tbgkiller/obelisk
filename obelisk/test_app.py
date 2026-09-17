@@ -7264,6 +7264,22 @@ check("and the page carries a route to where per-map values live",
 # What is pinned here is what the console is NOT allowed to do: send to a second map,
 # send a destructive command without being asked, call a receipt a result, or put the
 # admin password on a page.
+def _flat(detail, cap=400):
+    """A failure detail this file can actually print.
+
+    check() prints its detail to stdout, and stdout on a Windows dev box is cp1252 -
+    so a detail carrying the console's arrow crashes the suite instead of failing a
+    check. A crash names no check and stops the module before the rest of it runs,
+    which is the exact failure _from, _window and _in_order all exist to avoid.
+    """
+    return str(detail)[:cap].encode("ascii", "replace").decode("ascii")
+
+
+def _ccheck(name, cond, detail=""):
+    """check(), with a detail that survives being printed. See _flat."""
+    check(name, cond, _flat(detail))
+
+
 _CONSOLE_PW = "console-fixture-admin-password"
 _lstore.patch({"maps": "island,ragnarok", "admin_password": _CONSOLE_PW})
 _lstore.save()
@@ -7379,106 +7395,106 @@ finally:
     _t41.close()
 
 # -- auth, like every other /admin route
-check("the console route turns an unauthenticated post away",
+_ccheck("the console route turns an unauthenticated post away",
       _c_out_st == 302 and _c_out_where == "/setup", [_c_out_st, _c_out_where])
-check("and sends nothing on the way out", _c_out_calls == [], _c_out_calls)
+_ccheck("and sends nothing on the way out", _c_out_calls == [], _c_out_calls)
 
 # -- a safe command goes once, to one map, with the password from the store
-check("a curated command is sent exactly once", len(_c_safe_calls) == 1, _c_safe_calls)
-check("to the RCON target of the map in the URL and no other",
+_ccheck("a curated command is sent exactly once", len(_c_safe_calls) == 1, _c_safe_calls)
+_ccheck("to the RCON target of the map in the URL and no other",
       (_c_safe_calls[0]["host"], _c_safe_calls[0]["port"])
       == _CONSOLE_TARGETS["The Island"], [_c_safe_calls, _CONSOLE_TARGETS])
-check("never to the other map in the cluster",
+_ccheck("never to the other map in the cluster",
       (_c_safe_calls[0]["host"], _c_safe_calls[0]["port"])
       != _CONSOLE_TARGETS["Ragnarok"], _c_safe_calls)
-check("as the command that was asked for, unchanged",
+_ccheck("as the command that was asked for, unchanged",
       _c_safe_calls[0]["command"] == "ListPlayers", _c_safe_calls)
-check("with the admin password out of the store, not an empty string",
+_ccheck("with the admin password out of the store, not an empty string",
       _c_safe_calls[0]["password"] == _CONSOLE_PW, "the password did not reach RCON")
-check("and bounded, so a hung server cannot hang the request",
+_ccheck("and bounded, so a hung server cannot hang the request",
       0 < _c_safe_calls[0]["timeout"] <= 30, _c_safe_calls)
-check("the answer comes back on this map's page",
+_ccheck("the answer comes back on this map's page",
       "0. Bob, 76561198" in _c_safe_body and "The server answered." in _c_safe_body,
       _window(_c_safe_body, "id=console", 900))
-check("and the send is said out loud, like every other command this manager sends",
+_ccheck("and the send is said out loud, like every other command this manager sends",
       any(e["event"] == "map.rcon_sent" for e in _c_safe_ev), _c_safe_ev)
 
 # -- the answer that means the least
-check("a typed command is sent as typed", _c_typed_calls[0]["command"] == "saveworld",
+_ccheck("a typed command is sent as typed", _c_typed_calls[0]["command"] == "saveworld",
       _c_typed_calls)
-check("ARK's receipt is shown as delivered, not confirmed",
+_ccheck("ARK's receipt is shown as delivered, not confirmed",
       "Delivered, not confirmed." in _c_typed_body,
       _window(_c_typed_body, "id=console", 900))
-check("and is not presented as the save having happened",
+_ccheck("and is not presented as the save having happened",
       not any(w in _window(_c_typed_body, "id=console", 1400).lower()
               for w in ("saved.", "success", "world was written")),
       _window(_c_typed_body, "id=console", 1400))
 
 # -- a gated command is asked about before it is sent
-check("DoExit does not send on the first submit", _c_ask_calls == [], _c_ask_calls)
-check("it draws the question on the page rather than redirecting away",
+_ccheck("DoExit does not send on the first submit", _c_ask_calls == [], _c_ask_calls)
+_ccheck("it draws the question on the page rather than redirecting away",
       _c_ask_st == 200 and _c_ask_where == "", [_c_ask_st, _c_ask_where])
-check("the question names the command and the map",
+_ccheck("the question names the command and the map",
       "Send <code>DoExit</code> to The Island?" in _c_ask_body,
       _window(_c_ask_body, "Send <code>", 300))
-check("and says plainly that it stops that map",
+_ccheck("and says plainly that it stops that map",
       "stop The Island" in _c_ask_body, _window(_c_ask_body, "Send <code>", 400))
-check("nothing is announced for a command that was not sent",
+_ccheck("nothing is announced for a command that was not sent",
       not any(e["event"].startswith("map.rcon") for e in _c_ask_ev), _c_ask_ev)
-check("the confirmed submit sends it, once",
+_ccheck("the confirmed submit sends it, once",
       [c["command"] for c in _c_go_calls] == ["DoExit"], _c_go_calls)
-check("to the one map that was asked about",
+_ccheck("to the one map that was asked about",
       (_c_go_calls[0]["host"], _c_go_calls[0]["port"])
       == _CONSOLE_TARGETS["The Island"], _c_go_calls)
 
 # -- classification is the verb, not a word that appears somewhere in the line
-check("an announcement that mentions DestroyAll is sent as typed",
+_ccheck("an announcement that mentions DestroyAll is sent as typed",
       [c["command"] for c in _c_chat_calls]
       == ["ServerChat DestroyAll is banned on this cluster"], _c_chat_calls)
-check("and is not turned into a question",
+_ccheck("and is not turned into a question",
       "Send <code>" not in _c_chat_body, _window(_c_chat_body, "id=console", 600))
-check("while a gated verb in lower case is still gated",
+_ccheck("while a gated verb in lower case is still gated",
       _c_lower_calls == [] and _c_lower_st == 200, _c_lower_calls)
-check("an empty box sends nothing at all", _c_none_calls == [], _c_none_calls)
-check("and says so rather than pretending", "Type a command first" in _c_none_body,
+_ccheck("an empty box sends nothing at all", _c_none_calls == [], _c_none_calls)
+_ccheck("and says so rather than pretending", "Type a command first" in _c_none_body,
       _window(_c_none_body, "warn", 300))
 
 # -- three failures, three different pages
-check("a refused connection says nothing was sent",
+_ccheck("a refused connection says nothing was sent",
       "the connection was refused" in _c_ref_body and "not proof" in _c_ref_body,
       _window(_c_ref_body, "id=console", 900))
-check("a timeout says it ran out of time and may still be running",
+_ccheck("a timeout says it ran out of time and may still be running",
       "No answer in time." in _c_slow_body and "still be running" in _c_slow_body,
       _window(_c_slow_body, "id=console", 900))
-check("an empty answer is neither of those, and not the receipt either",
+_ccheck("an empty answer is neither of those, and not the receipt either",
       "<b>The server said nothing at all.</b>" in _c_mt_body
       and "Delivered, not confirmed." not in _c_mt_body,
       "the empty verdict did not render as itself")
-check("the three do not render as one another",
+_ccheck("the three do not render as one another",
       len({_window(b, " rcon\">", 300)
            for b in (_c_ref_body, _c_slow_body, _c_mt_body)}) == 3,
       "two outcomes rendered alike")
-check("a failure is said out loud as a failure",
+_ccheck("a failure is said out loud as a failure",
       any(e["event"] == "map.rcon_failed" for e in _c_ref_ev), _c_ref_ev)
 
 # -- the password is not on the page, on any path
 for _what, _body in sorted(_c_leak_bodies.items()):
-    check("the admin password is not on the page after %s" % _what,
+    _ccheck("the admin password is not on the page after %s" % _what,
           _CONSOLE_PW not in _body, _what)
-check("even when the server itself echoed it back",
+_ccheck("even when the server itself echoed it back",
       "auth ok pw=" in _c_leak_bodies["an answer that quotes it"]
       and _CONSOLE_PW not in _c_leak_bodies["an answer that quotes it"],
       _window(_c_leak_bodies["an answer that quotes it"], "<pre>", 200))
 
 # -- and the two spellings of ARK's receipt stay one spelling
-check("the console and the relay agree on what ARK's receipt looks like",
+_ccheck("the console and the relay agree on what ARK's receipt looks like",
       _appmod.consolelib.NO_RESPONSE in _bot_s1.IGNORE, _bot_s1.IGNORE)
 
 # -- and the console's own two events resolve an icon rather than a bullet default
-check("a console send is quiet in the channel, not a green tick",
+_ccheck("a console send is quiet in the channel, not a green tick",
       _appmod.announce.ICONS.get("rcon_sent") == "•",
       _appmod.announce.ICONS.get("rcon_sent"))
-check("and a send that never left is a failure there too",
+_ccheck("and a send that never left is a failure there too",
       _appmod.announce.ICONS.get("rcon_failed") == "❌",
       _appmod.announce.ICONS.get("rcon_failed"))
 
@@ -7493,7 +7509,7 @@ try:
     _dupe_refused = ""
 except ValueError as _e_dupe:
     _dupe_refused = str(_e_dupe)
-check("two maps cannot share the name the console resolves its target by",
+_ccheck("two maps cannot share the name the console resolves its target by",
       "already the name of a map" in _dupe_refused, _dupe_refused)
 
 # -- a command carrying the admin password is refused at the door
@@ -7541,35 +7557,35 @@ finally:
     _t42.close()
 
 for _what, (_st, _body, _calls, _ev) in sorted(_c_pw_cases.items()):
-    check("the admin password is nowhere on the page after %s" % _what,
+    _ccheck("the admin password is nowhere on the page after %s" % _what,
           _body.count(_CONSOLE_PW) == 0, [_what, _body.count(_CONSOLE_PW)])
-    check("nothing was sent for %s" % _what, _calls == [], [_what, _calls])
-    check("nothing was announced about %s" % _what,
+    _ccheck("nothing was sent for %s" % _what, _calls == [], [_what, _calls])
+    _ccheck("nothing was announced about %s" % _what,
           not any(e["event"].startswith("map.rcon") for e in _ev), [_what, _ev])
 # The apostrophe in the refusal is escaped on the page, so the needle avoids one.
-check("the refusal says why, without repeating the command back",
+_ccheck("the refusal says why, without repeating the command back",
       "admin password in it, so it was not sent"
       in _c_pw_cases["a gated command on the first submit"][1],
       _window(_c_pw_cases["a gated command on the first submit"][1],
               "admin password", 400))
-check("and says no RCON command needs it",
+_ccheck("and says no RCON command needs it",
       "Obelisk gives it to the server itself" in _c_pw_cases["an ungated command"][1],
       _window(_c_pw_cases["an ungated command"][1], "warn", 400))
 # The one the gate turns on: the question is never drawn for a command it would have
 # had to quote in a hidden field.
-check("no confirmation is drawn for a command carrying the password",
+_ccheck("no confirmation is drawn for a command carrying the password",
       all("Send <code>" not in _b for _s, _b, _c, _e in _c_pw_cases.values()),
       "the question was asked with the password in it")
-check("a button click beside a box holding the password sends the button's command",
+_ccheck("a button click beside a box holding the password sends the button's command",
       [c["command"] for c in _c_pw_beside_calls] == ["ListPlayers"],
       _c_pw_beside_calls)
-check("and the discarded box does not come back on the page either",
+_ccheck("and the discarded box does not come back on the page either",
       _CONSOLE_PW not in _c_pw_beside[2], "the text field was echoed")
 
 # -- the noise-prefixed and punctuated spellings are asked about, through the route
 for _line, (_st, _body, _calls) in sorted(_c_sneak.items()):
-    check("%r is not sent on the first submit" % _line, _calls == [], [_line, _calls])
-    check("%r draws the question instead" % _line,
+    _ccheck("%r is not sent on the first submit" % _line, _calls == [], [_line, _calls])
+    _ccheck("%r draws the question instead" % _line,
           _st == 200 and "Send <code>" in _body, [_line, _st])
 
 # -- a refused send says so inside the box the send was made from
@@ -7589,17 +7605,17 @@ try:
 finally:
     _t43.close()
 
-check("a refusal still lands on the console anchor",
+_ccheck("a refusal still lands on the console anchor",
       _c_ref_where2.endswith("#console"), _c_ref_where2)
-check("and the refusal is drawn inside the console fieldset",
+_ccheck("and the refusal is drawn inside the console fieldset",
       "Type a command first" in _from(_c_ref_page, "<fieldset id=console>"),
       _window(_c_ref_page, "id=console", 500))
-check("not as a banner above it",
+_ccheck("not as a banner above it",
       "Type a command first" not in _c_ref_page.split("<fieldset id=console>")[0],
       "the refusal is still at the top of the page")
-check("and exactly once", _c_ref_page.count("Type a command first") == 1,
+_ccheck("and exactly once", _c_ref_page.count("Type a command first") == 1,
       _c_ref_page.count("Type a command first"))
-check("the box that was refused is still on the page to correct",
+_ccheck("the box that was refused is still on the page to correct",
       "name=text" in _from(_c_ref_page, "<fieldset id=console>"),
       "the form went away with the refusal")
 

@@ -2698,6 +2698,25 @@ check("and shares one id whitelist with the bans, rather than growing a second",
 # its first word and by nothing else, so an announcement that mentions DestroyAll is an
 # announcement. And ARK's "Server received, But no response!!" means the line arrived
 # and nothing else, so it is shown as delivered-not-confirmed - never as a result.
+def _flat(detail, cap=400):
+    """A failure detail this file can actually print.
+
+    check() prints its detail to stdout, and stdout on a Windows dev box is cp1252 -
+    so a detail carrying the console's arrow crashes the suite instead of failing a
+    check. A crash names no check and stops the module before the rest of it runs,
+    which is the exact failure _from, _window and _in_order all exist to avoid. The
+    mutation check found this the hard way: a disabled guard made a check fail, the
+    failure tried to print the rendered console, and the guard came back "died
+    without a test failure".
+    """
+    return str(detail)[:cap].encode("ascii", "replace").decode("ascii")
+
+
+def _ccheck(name, cond, detail=""):
+    """check(), with a detail that survives being printed. See _flat."""
+    check(name, cond, _flat(detail))
+
+
 from . import console as _con
 from . import ui as _ui
 
@@ -2711,31 +2730,31 @@ def _mapc(**kw):
 
 
 # -- classification is on the first token, case-insensitively
-check("a save is safe whatever case it is typed in",
+_ccheck("a save is safe whatever case it is typed in",
       not any(_con.gated(c) for c in ("SaveWorld", "saveworld", "SAVEWORLD")),
       "a save asked to be confirmed")
-check("and so is everything the page offers as a button",
+_ccheck("and so is everything the page offers as a button",
       not any(_con.gated(c) for c, _w in _con.CURATED), _con.CURATED)
 for _cmd in ("DestroyAll", "DestroyWildDinos", "DestroyStructures", "DestroyMyTarget",
              "KillPlayer", "Shutdown", "DoExit", "Kick", "Ban",
              "ClearPlayerInventory", "DestroyTribeDinos", "DestroyTribeStructures",
              "DestroyTribeIdPlayers"):
-    check("%s is asked about before it is sent" % _cmd, _con.gated(_cmd), _cmd)
-    check("and so is %s in lower case" % _cmd, _con.gated(_cmd.lower()), _cmd.lower())
-check("with its arguments still attached",
+    _ccheck("%s is asked about before it is sent" % _cmd, _con.gated(_cmd), _cmd)
+    _ccheck("and so is %s in lower case" % _cmd, _con.gated(_cmd.lower()), _cmd.lower())
+_ccheck("with its arguments still attached",
       _con.gated("KillPlayer 12345") and _con.gated("  doexit  "),
       "arguments changed the classification")
 # The whole reason classification is a token test and not a substring test.
-check("a command that only mentions a gated word is not that command",
+_ccheck("a command that only mentions a gated word is not that command",
       not _con.gated("ServerChat DestroyAll is banned on this cluster"),
       "an announcement was read as a destruction")
-check("nor is one that carries it as an argument",
+_ccheck("nor is one that carries it as an argument",
       not _con.gated('ServerChatToPlayer "Bob" doexit means stop'),
       "an argument was read as a verb")
-check("an unban is not a ban", not _con.gated("UnbanPlayer 7656119"), "unban gated")
-check("and nothing at all is not a command",
+_ccheck("an unban is not a ban", not _con.gated("UnbanPlayer 7656119"), "unban gated")
+_ccheck("and nothing at all is not a command",
       not _con.gated("") and not _con.gated("   "), "blank gated")
-check("the verb is the word that runs, lowercased",
+_ccheck("the verb is the word that runs, lowercased",
       _con.verb("  DoExit now ") == "doexit", _con.verb("  DoExit now "))
 
 # -- the spellings of a gated command that a whitespace split let through
@@ -2750,24 +2769,24 @@ check("the verb is the word that runs, lowercased",
 for _sneak in ("cheat DoExit", "admincheat DestroyAll", "/DoExit", "/destroyall",
                "DoExit;ListPlayers", "doexit()", '"DoExit"', "cheat /DoExit",
                "admincheat cheat DoExit", "CHEAT doexit", "  cheat   shutdown  "):
-    check("%r is asked about, not sent" % _sneak, _con.gated(_sneak),
+    _ccheck("%r is asked about, not sent" % _sneak, _con.gated(_sneak),
           [_sneak, _con.verb(_sneak)])
 # And the distinction the whole rule exists for still holds: only the front of the line
 # is walked, and only over words that are known noise.
-check("the gated word as an argument still does not gate, after all that",
+_ccheck("the gated word as an argument still does not gate, after all that",
       not _con.gated("ServerChat DestroyAll is banned on this cluster")
       and not _con.gated("ServerChat cheat DoExit is not allowed here"),
       "an argument was read as a verb")
-check("and a noise word on its own is not a command at all",
+_ccheck("and a noise word on its own is not a command at all",
       _con.verb("cheat") == "" and not _con.gated("cheat"), _con.verb("cheat"))
-check("a safe command wrapped the same way is still safe",
+_ccheck("a safe command wrapped the same way is still safe",
       not _con.gated("cheat SaveWorld") and _con.verb("/ListPlayers") == "listplayers",
       _con.verb("/ListPlayers"))
 # A cap on how far the noise walk goes would answer "" for a line padded with noise
 # words, and "" is not gated - which is the hole, handed back through the door it
 # was closed at. The walk terminates because each turn consumes at least one
 # character, not because it gives up.
-check("a line padded with noise words still resolves its verb",
+_ccheck("a line padded with noise words still resolves its verb",
       _con.gated("cheat " * 500 + "DoExit")
       and _con.verb("cheat " * 500 + "DoExit") == "doexit",
       _con.verb("cheat " * 500 + "DoExit"))
@@ -2778,61 +2797,61 @@ check("a line padded with noise words still resolves its verb",
 # or the confirmed submit would have nothing to send - so redacting the question cannot
 # keep the password off the page. Only refusing the command can.
 _PWLONG = "correct-horse-battery-staple"
-check("a command with the admin password in it is spotted",
+_ccheck("a command with the admin password in it is spotted",
       _con.carries_password("DoExit %s" % _PWLONG, _PWLONG), "not spotted")
-check("wherever in the line it appears",
+_ccheck("wherever in the line it appears",
       _con.carries_password("ServerChat hey %s ok" % _PWLONG, _PWLONG), "not spotted")
-check("an ordinary command is not",
+_ccheck("an ordinary command is not",
       not _con.carries_password("DoExit", _PWLONG), "a clean command was refused")
-check("the match is exact, not case-folded",
+_ccheck("the match is exact, not case-folded",
       not _con.carries_password("DoExit %s" % _PWLONG.upper(), _PWLONG),
       "a secret was compared case-insensitively")
 # The robustness half. A three-character password is inside half the words in the
 # language, and a console that refuses every line is a certain failure where the one
 # being prevented is a possible one.
-check("a password too short to be a needle turns the check off rather than everything",
+_ccheck("a password too short to be a needle turns the check off rather than everything",
       not _con.carries_password("ListPlayers", "ark")
       and not _con.carries_password("ListPlayers", "s")
       and not _con.carries_password("ListPlayers", ""), "the console would be bricked")
-check("and the floor is stated rather than implied",
+_ccheck("and the floor is stated rather than implied",
       _con.PASSWORD_FLOOR == 8, _con.PASSWORD_FLOOR)
-check("a password exactly at the floor still counts",
+_ccheck("a password exactly at the floor still counts",
       _con.carries_password("DoExit abcd1234", "abcd1234"), "the floor is off by one")
 
 # -- the confirmation says what it will do, not just what it is called
 _eff = _con.effect("DoExit", "The Island")
-check("a stop says it stops that map", "stop The Island" in _eff, _eff)
-check("and says the map stays down", "stays down" in _eff, _eff)
-check("a destroy nobody enumerated still says it destroys",
+_ccheck("a stop says it stops that map", "stop The Island" in _eff, _eff)
+_ccheck("and says the map stays down", "stays down" in _eff, _eff)
+_ccheck("a destroy nobody enumerated still says it destroys",
       "cannot bring back" in _con.effect("DestroyTribeIdDinos 42", "The Island"),
       _con.effect("DestroyTribeIdDinos 42", "The Island"))
-check("a ban names the map it is a ban from",
+_ccheck("a ban names the map it is a ban from",
       _con.effect("BanPlayer 765", "The Island").count("The Island") == 2,
       _con.effect("BanPlayer 765", "The Island"))
-check("a safe command has nothing to confirm",
+_ccheck("a safe command has nothing to confirm",
       _con.effect("ListPlayers", "The Island") == "", "a safe command had an effect")
 
 # -- what came back, and what it is worth
 _v_del = _con.result("SaveWorld", body=_con.NO_RESPONSE, password="pw")
-check("ARK's received-but-no-response is delivered, not confirmed",
+_ccheck("ARK's received-but-no-response is delivered, not confirmed",
       _v_del["kind"] == _con.DELIVERED
       and _v_del["headline"] == "Delivered, not confirmed.", _v_del)
-check("it says the line arrived and says the rest is unknown",
+_ccheck("it says the line arrived and says the rest is unknown",
       "arrived" in _v_del["detail"] and "nothing at all about whether" in _v_del["detail"],
       _v_del["detail"])
-check("and it is never dressed up as a result",
+_ccheck("and it is never dressed up as a result",
       not any(w in (_v_del["headline"] + _v_del["detail"]).lower()
               for w in ("success", "saved.", "worked", "done.")), _v_del)
-check("it is not the colour of a finished thing either",
+_ccheck("it is not the colour of a finished thing either",
       _v_del["level"] == "warn", _v_del)
 
 _v_ans = _con.result("ListPlayers", body="0. Bob, 7656119\n", password="pw")
-check("a real answer is shown as the server said it",
+_ccheck("a real answer is shown as the server said it",
       _v_ans["kind"] == _con.ANSWERED and "Bob" in _v_ans["text"], _v_ans)
 _v_empty = _con.result("Nonsense", body="", password="pw")
-check("an empty answer is its own outcome, not the received one",
+_ccheck("an empty answer is its own outcome, not the received one",
       _v_empty["kind"] == _con.EMPTY and _v_empty["kind"] != _v_del["kind"], _v_empty)
-check("and it reads differently, rather than borrowing the other's words",
+_ccheck("and it reads differently, rather than borrowing the other's words",
       _v_empty["detail"] != _v_del["detail"]
       and "does not know the command" in _v_empty["detail"], _v_empty)
 
@@ -2843,18 +2862,18 @@ _v_ref = _con.result("SaveWorld", error=ConnectionRefusedError("refused"), passw
 _v_den = _con.result("SaveWorld", error=PermissionError("RCON auth failed"),
                      password="pw")
 _v_broke = _con.result("SaveWorld", error=ValueError("packet too short"), password="pw")
-check("a timeout says it ran out of time and may still be running",
+_ccheck("a timeout says it ran out of time and may still be running",
       _v_time["kind"] == _con.TIMEOUT and "within 20s" in _v_time["detail"]
       and "still be running" in _v_time["detail"], _v_time)
-check("a refusal says nothing was sent, and is not proof the world closed",
+_ccheck("a refusal says nothing was sent, and is not proof the world closed",
       _v_ref["kind"] == _con.REFUSED and "never left" in _v_ref["detail"]
       and "not proof" in _v_ref["detail"], _v_ref)
-check("a rejected password is neither of those",
+_ccheck("a rejected password is neither of those",
       _v_den["kind"] == _con.DENIED and "would not accept" in _v_den["detail"], _v_den)
-check("and anything else is reported as itself",
+_ccheck("and anything else is reported as itself",
       _v_broke["kind"] == _con.BROKE and "packet too short" in _v_broke["detail"],
       _v_broke)
-check("the seven outcomes each read as themselves",
+_ccheck("the seven outcomes each read as themselves",
       len({v["headline"] for v in (_v_del, _v_ans, _v_empty, _v_time, _v_ref,
                                    _v_den, _v_broke)}) == 7,
       [v["headline"] for v in (_v_del, _v_ans, _v_empty, _v_time, _v_ref, _v_den,
@@ -2869,28 +2888,28 @@ for _what, _res in (
          _con.result("x", error=OSError("connect failed [pw=%s]" % _PW), password=_PW)),
         ("the command itself", _con.result("Whatever %s" % _PW, body="fine",
                                            password=_PW))):
-    check("the admin password is taken out of %s" % _what,
+    _ccheck("the admin password is taken out of %s" % _what,
           _PW not in (_res["text"] + _res["detail"] + _res["command"]), _res)
-    check("and the page built from it does not carry it either",
+    _ccheck("and the page built from it does not carry it either",
           _PW not in _mapc(result=_res), _what)
 
 # -- the fieldset itself
 _con_pg = _mapc()
 _con_box = _from(_con_pg, "<fieldset id=console>")
-check("the map page carries a console", "<fieldset id=console>" in _con_pg,
+_ccheck("the map page carries a console", "<fieldset id=console>" in _con_pg,
       _window(_con_pg, "id=console", 200))
-check("directly after the detail it belongs to",
+_ccheck("directly after the detail it belongs to",
       _in_order(_con_pg, "<fieldset id=detail>", "<fieldset id=console>"),
       "the console is not below the detail")
-check("posting to this map's own route",
+_ccheck("posting to this map's own route",
       'action="/admin/cluster/map/island/rcon"' in _con_box,
       _window(_con_box, "<form", 200))
-check("and to no other map's",
+_ccheck("and to no other map's",
       "/admin/cluster/map/ragnarok" not in _con_box, _con_box)
 for _cmd, _why in _con.CURATED:
-    check("%s is offered as a button" % _cmd,
+    _ccheck("%s is offered as a button" % _cmd,
           'name=command value="%s"' % _cmd in _con_box, _window(_con_box, "button", 400))
-check("with a box to type anything else into",
+_ccheck("with a box to type anything else into",
       "name=text" in _con_box and "Send" in _con_box, _window(_con_box, "name=text", 300))
 # -- two forms, because Enter in a text field submits the form's FIRST submit button
 #
@@ -2900,79 +2919,79 @@ check("with a box to type anything else into",
 # DoExit having never saved. The invariant that stops it coming back is here: the box
 # lives in a form whose only submit button is Send.
 _con_forms = [f.split("</form>")[0] for f in _con_box.split("<form method=post")[1:]]
-check("the console is two forms, not one", len(_con_forms) == 2, len(_con_forms))
-check("both posting to this map's own route",
+_ccheck("the console is two forms, not one", len(_con_forms) == 2, len(_con_forms))
+_ccheck("both posting to this map's own route",
       all('action="/admin/cluster/map/island/rcon"' in f for f in _con_forms),
       _con_forms)
-check("the curated buttons are in the first, with no text field to race",
+_ccheck("the curated buttons are in the first, with no text field to race",
       "name=command" in _con_forms[0] and "name=text" not in _con_forms[0],
       _con_forms[0])
-check("the box is in the second, and Enter there can only reach Send",
+_ccheck("the box is in the second, and Enter there can only reach Send",
       "name=text" in _con_forms[1] and _con_forms[1].count("type=submit") == 1
       and 'name=send value="1"' in _con_forms[1], _con_forms[1])
-check("so no curated command sits in front of the box's own submit",
+_ccheck("so no curated command sits in front of the box's own submit",
       "name=command" not in _con_forms[1], _con_forms[1])
-check("and the buttons still read above the box, in that order",
+_ccheck("and the buttons still read above the box, in that order",
       _in_order(_con_box, 'value="ListPlayers"', "name=text"), _con_box)
-check("and the page says it reaches this map and nothing else",
+_ccheck("and the page says it reaches this map and nothing else",
       "no other map" in _con_box, _window(_con_box, "<legend>Console", 500))
-check("it says what a received-but-no-response answer is worth before one arrives",
+_ccheck("it says what a received-but-no-response answer is worth before one arrives",
       "it is not a result" in _con_box, _window(_con_box, "<legend>Console", 800))
-check("the two consuming reads are explained rather than offered",
+_ccheck("the two consuming reads are explained rather than offered",
       "GetChat" in _con_box and 'value="GetChat"' not in _con_box, _con_box)
 
 # -- the answer, on the page
 _shown = _mapc(result=_v_del)
-check("a delivered answer is amber on the page, in its own words",
+_ccheck("a delivered answer is amber on the page, in its own words",
       "Delivered, not confirmed." in _shown and "warn rcon" in _shown,
       _window(_shown, "Delivered", 300))
-check("and it names the command and the map it went to",
+_ccheck("and it names the command and the map it went to",
       _in_order(_window(_shown, "Delivered", 300), "SaveWorld", "The Island"),
       _window(_shown, "Delivered", 300))
-check("a refusal is red, and not the same box",
+_ccheck("a refusal is red, and not the same box",
       "problem rcon" in _mapc(result=_v_ref), _window(_mapc(result=_v_ref), "rcon", 300))
-check("what the server said is shown as it said it",
+_ccheck("what the server said is shown as it said it",
       "<pre>0. Bob, 7656119</pre>" in _mapc(result=_v_ans),
       _window(_mapc(result=_v_ans), "<pre>", 200))
-check("and an outcome with nothing to quote quotes nothing",
+_ccheck("and an outcome with nothing to quote quotes nothing",
       "<pre>" not in _window(_mapc(result=_v_time), "No answer in time", 400),
       _window(_mapc(result=_v_time), "No answer", 400))
 
 # -- the question a gated command has to pass
 _ask = _mapc(ask="DoExit")
-check("the confirmation names the command and the map",
+_ccheck("the confirmation names the command and the map",
       "Send <code>DoExit</code> to The Island?" in _ask, _window(_ask, "Send <code>", 300))
-check("and says plainly that it will stop that map",
+_ccheck("and says plainly that it will stop that map",
       "stop The Island" in _ask, _window(_ask, "Send <code>", 400))
-check("it carries the command through to the confirmed post",
+_ccheck("it carries the command through to the confirmed post",
       'name=command value="DoExit"' in _ask and "name=confirm" in _ask,
       _window(_ask, "<form", 400))
-check("and the unconfirmed form is not left underneath it",
+_ccheck("and the unconfirmed form is not left underneath it",
       "name=text" not in _from(_ask, "<fieldset id=console>"),
       _from(_ask, "<fieldset id=console>"))
-check("with a way out that does not send anything",
+_ccheck("with a way out that does not send anything",
       "Cancel" in _ask, _window(_ask, "Cancel", 200))
 
 # -- the save-landed indicator
 _world = {"path": "/srv/ark/TheIsland_WP.ark", "present": True,
           "size": 79 * 1024 * 1024, "mtime": _time_con.time() - 90, "hot": []}
 _with_world = _mapc(world=_world)
-check("a world that is on disk is reported, with when it was last written",
+_ccheck("a world that is on disk is reported, with when it was last written",
       "World file on disk, read just now: last written <b>1m ago</b>"
       in _with_world,
       _window(_with_world, "World file", 300))
-check("and how big it is, so a save that wrote nothing is visible",
+_ccheck("and how big it is, so a save that wrote nothing is visible",
       "79.0 MB" in _with_world, _window(_with_world, "World file", 300))
-check("a world that is not there yet says so in grey",
+_ccheck("a world that is not there yet says so in grey",
       _ui.NO_WORLD_YET in _mapc(world=dict(_world, present=False)),
       _window(_mapc(world=dict(_world, present=False)), "id=console", 600))
 # The same rule the map-id note keeps: an absence nobody could look for is not an
 # absence, and a page that guesses one is a page that lies about a disk.
-check("a filesystem that cannot answer is not guessed at",
+_ccheck("a filesystem that cannot answer is not guessed at",
       "World file on disk" not in _mapc(world=None)
       and _ui.NO_WORLD_YET not in _from(_mapc(world=None), "<fieldset id=console>"),
       _from(_mapc(world=None), "<fieldset id=console>"))
-check("a world still being written says so rather than looking finished",
+_ccheck("a world still being written says so rather than looking finished",
       "part-way through writing" in _mapc(world=dict(_world, hot=["-wal"])),
       _window(_mapc(world=dict(_world, hot=["-wal"])), "World file", 500))
 
@@ -2982,12 +3001,12 @@ check("a world still being written says so rather than looking finished",
 # The kick guard - which its own comment calls the light one - wears `bite`, and a ban
 # wears `worst`. So "stop this map and disconnect everyone on it" was styled below a
 # kick, and the colour is read before the sentence is.
-check("the confirm button wears this file's heaviest severity, not the primary blue",
+_ccheck("the confirm button wears this file's heaviest severity, not the primary blue",
       'class="whoact worst" type=submit>Yes, send DoExit to The Island</button>' in _ask,
       _window(_ask, "Yes, send", 200))
-check("and not the bare submit it was",
+_ccheck("and not the bare submit it was",
       "<button type=submit>Yes, send" not in _ask, _window(_ask, "Yes, send", 200))
-check("which is the vocabulary the other guards on this page already use",
+_ccheck("which is the vocabulary the other guards on this page already use",
       'class="whoact bite"' in ui.render_kick_confirm("The Island", "Bob", "765"),
       "the severity classes have drifted")
 
@@ -2995,10 +3014,10 @@ check("which is the vocabulary the other guards on this page already use",
 #
 # Every answer this console gives scrolls the #detail legend out of view, so the state
 # the operator types DoExit in was a box headed "Console" with no map name on screen.
-check("the console legend names the map",
+_ccheck("the console legend names the map",
       "<legend>Console — The Island</legend>" in _con_box,
       _window(_con_box, "<legend>", 120))
-check("so the name is on screen without the heading above it",
+_ccheck("so the name is on screen without the heading above it",
       "The Island" in _con_box.split("<form")[0], _con_box.split("<form")[0][:400])
 
 # -- sent, then answered, then what the disk says now
@@ -3006,14 +3025,14 @@ check("so the name is on screen without the heading above it",
 # The stat is taken on the way to drawing the page, so after a SaveWorld it is the state
 # of the disk after the send. Drawn above the verdict it read as the figure from before.
 _ordered = _mapc(result=_v_del, world=_world)
-check("the verdict comes before the look at the disk",
+_ccheck("the verdict comes before the look at the disk",
       _in_order(_from(_ordered, "<fieldset id=console>"),
                 "Delivered, not confirmed.", "World file on disk"),
       _window(_ordered, "id=console", 1200))
-check("and the look says when it was taken",
+_ccheck("and the look says when it was taken",
       "World file on disk, read just now: last written" in _ordered,
       _window(_ordered, "World file", 200))
-check("without telling the operator to reload, which would delete the verdict",
+_ccheck("without telling the operator to reload, which would delete the verdict",
       "reload after a SaveWorld" not in _ordered
       and "reload to look again." in _ordered, _window(_ordered, "World file", 400))
 
@@ -3022,16 +3041,16 @@ check("without telling the operator to reload, which would delete the verdict",
 # An amber at the head of this page is about a screen above the box, and a console the
 # operator lands on looks identical to the one they pressed Send on.
 _refused = _mapc(refusal="Type a command first - nothing was sent to The Island.")
-check("a refusal draws inside the console box",
+_ccheck("a refusal draws inside the console box",
       "Type a command first" in _from(_refused, "<fieldset id=console>"),
       _window(_refused, "id=console", 600))
-check("in the amber that means nothing happened and nothing broke",
+_ccheck("in the amber that means nothing happened and nothing broke",
       "<div class=warn>Type a command first" in _refused,
       _window(_refused, "Type a command", 200))
-check("above the form it is asking to be corrected",
+_ccheck("above the form it is asking to be corrected",
       _in_order(_from(_refused, "<fieldset id=console>"),
                 "Type a command first", "name=text"), _window(_refused, "id=console", 800))
-check("and nowhere else on the page",
+_ccheck("and nowhere else on the page",
       _refused.count("Type a command first") == 1,
       _refused.count("Type a command first"))
 
@@ -3041,22 +3060,22 @@ check("and nowhere else on the page",
 # itself. On the generic sentence it claimed to be irreversible, which is how the same
 # words in front of a Destroy* that really is irreversible stop being read.
 _wild = _con.effect("DestroyWildDinos", "The Island")
-check("destroying wild dinos says what it actually costs",
+_ccheck("destroying wild dinos says what it actually costs",
       _wild == ("remove every wild creature on The Island. Tames, structures and "
                 "players are untouched, and wild dinos respawn over the following "
                 "minutes"), _wild)
-check("and no longer claims the game cannot bring them back",
+_ccheck("and no longer claims the game cannot bring them back",
       "cannot bring back" not in _wild, _wild)
-check("while a Destroy* nobody enumerated still says it cannot be undone",
+_ccheck("while a Destroy* nobody enumerated still says it cannot be undone",
       "cannot bring back" in _con.effect("DestroyTribeIdDinos 42", "The Island"),
       _con.effect("DestroyTribeIdDinos 42", "The Island"))
-check("it is still asked about, either way", _con.gated("DestroyWildDinos"), "not gated")
+_ccheck("it is still asked about, either way", _con.gated("DestroyWildDinos"), "not gated")
 
 # -- and an empty answer does not open with ANSWERED's words
-check("the empty verdict does not start by saying the server answered",
+_ccheck("the empty verdict does not start by saying the server answered",
       _con.HEADLINES[_con.EMPTY] == "The server said nothing at all.",
       _con.HEADLINES[_con.EMPTY])
-check("which is a different opening from a server that did",
+_ccheck("which is a different opening from a server that did",
       not _con.HEADLINES[_con.EMPTY].startswith(
           _con.HEADLINES[_con.ANSWERED].split(" ", 3)[0] + " server answered"),
       [_con.HEADLINES[_con.EMPTY], _con.HEADLINES[_con.ANSWERED]])
