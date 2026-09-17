@@ -58,7 +58,7 @@
     {
       "id": "refused-rcon-is-not-an-exited-server",
       "file": "obelisk/cluster.py",
-      "guard": "        if _container_running(one[\"name\"], details):",
+      "guard": "        if _might_be_running(one[\"name\"], details):",
       "disable": "        if False:  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "a refused RCON connection has two opposite meanings - the world has closed, or the server has not opened its RCON port yet - and only the container tells them apart. Reading a refusal from a RUNNING container as \"exited\" is what let a stop signal three booting servers into a kill-revive-boot loop, so exited may only ever be true for a map whose container is gone"

@@ -583,15 +583,43 @@ check("and the reason names both halves of the evidence",
       all("did not answer" in o["why"] and "not running" in o["why"]
           for o in out_g.values()), out_g)
 
-# A container Docker will not answer about is not a container that is running. This is
-# the conservative half of the same rule: "up" has to be asserted, never assumed.
+# The two halves of that, side by side, because they are one line apart in the code and
+# opposite in what they permit. Docker ANSWERING that nothing is there is a fact, and a
+# fact is what already-gone needs. Docker not answering at all is not a fact about
+# anything - and reading "I could not ask" as "it has exited" is the same inference this
+# whole section exists to delete one layer up. An unknown is possibly-up, so it is
+# not-ready, so an apply holds: a held apply costs a window, and the other way cost two
+# hours and three maps in a restart loop.
+stopped_u = []
 out_u = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
     wait=lambda s: None, budget=30,
     details=lambda names: (_ for _ in ()).throw(OSError("docker did not answer")),
-    stop_container=lambda k: (True, "stopped"))
-check("a container Docker cannot be asked about does not count as running",
-      all(o["state"] == clusterctl.ALREADY_GONE for o in out_u.values()), out_u)
+    stop_container=lambda k: (stopped_u.append(k), (True, "stopped"))[1])
+check("a container Docker could not be asked about is NEVER called exited",
+      not any(o["exited"] for o in out_u.values()), out_u)
+check("an unknown is not-ready - possibly up, which is not the same as gone",
+      all(o["state"] == clusterctl.NOT_READY for o in out_u.values()), out_u)
+check("and nothing is stopped on the strength of a question nobody answered",
+      stopped_u == [], stopped_u)
+check("while Docker ANSWERING that nothing is there still means already-gone",
+      all(o["state"] == clusterctl.ALREADY_GONE for o in out_g.values()), out_g)
+check("so it is only the unanswerable ask that was tightened, not the empty answer",
+      all(o["exited"] for o in out_g.values()), out_g)
+
+# And the consequence that matters: an apply holds rather than signalling into the dark.
+clusterctl.dockerctl = FakeDocker()
+calls.clear()
+ok_u, msg_u = clusterctl.stop(
+    st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
+    wait=lambda s: None, budget=30,
+    details=lambda names: (_ for _ in ()).throw(OSError("docker did not answer")),
+    stop_container=lambda k: (True, "stopped"), say=lambda *a, **k: None,
+    require_ready=True)
+check("an apply will not stop a cluster it could not ask Docker about", not ok_u, msg_u)
+check("and it names the maps it could not establish anything about",
+      "The Island" in msg_u and "Ragnarok" in msg_u, msg_u)
+check("docker compose down is never reached on an unknown either", calls == [], calls)
 
 # 3. DoExit taken, then silence: closed - and the container is stopped there and then,
 #    inside the loop, not left for the batch `down` up to fifteen minutes later. That

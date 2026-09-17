@@ -273,25 +273,39 @@ def _exit_names(store):
     return out
 
 
-def _container_running(name, details):
-    """Is there a container of this name that Docker says is running?
+def _might_be_running(name, details):
+    """Is this container up - or is there any chance it still is? True if either.
 
-    This is the discriminator the four states turn on, and it is asked per map per turn
-    rather than once for the batch, because the answer changes while a stop is
-    happening - a map that was booting a minute ago may be serving now, and that is
-    exactly what the retry is watching for.
+    The discriminator the four states turn on, and deliberately not a plain "is it
+    running", because there are three answers and only two of them are facts:
 
-    Asked the way wait_healthy already asks it. "Could not ask" is read as not running,
-    which is what Docker itself says about a container that does not exist: a name it
-    cannot inspect is a name that is not up.
+        Docker says running          - a fact. The server is alive.
+        Docker answers, nothing there - a fact. That container is gone.
+        Docker does not answer at all - neither. Nothing has been established.
+
+    An unknown is "possibly up". Reading "I could not ask" as "it has exited" is the
+    same inference this whole section exists to delete one layer further up: a refused
+    RCON connection is not proof of an exit, and an unanswerable Docker is not proof
+    either. So an unknown makes the map NOT_READY, which makes an apply hold - and
+    holding an apply because Docker hiccuped costs a window, while signalling a booting
+    server because Docker hiccuped cost two hours and three maps in a restart loop.
+
+    Asked per map per turn, the way wait_healthy already asks it, because the answer
+    changes while a stop is happening - a map that was booting a minute ago may be
+    serving now, and that is exactly what the retry is watching for.
     """
     if not name:
+        # No container was ever derived for this target, so there is nothing to ask
+        # about - a different thing from an ask that failed. Both callers take the name
+        # from the target they were handed, so this is a guard rather than a path.
         return False
     try:
         got = details([name]) or {}
     except Exception as e:                          # noqa: BLE001 - reported, not fatal
-        log.warning("could not ask Docker about %s: %s", name, e)
-        return False
+        log.warning("could not ask Docker whether %s is still running (%s) - treating "
+                    "it as possibly up, which holds the stop rather than signalling a "
+                    "server that may still be booting", name, e)
+        return True
     return (got.get(name) or {}).get("state") == "running"
 
 
@@ -305,16 +319,19 @@ def _ask_to_exit(one, rcon, details):
     try:
         rcon(host, port, "DoExit")
     except Exception as e:                          # noqa: BLE001 - reported, not raised
-        if _container_running(one["name"], details):
-            # Refused by a container that is up. This is a server that has not opened
-            # RCON yet, not one that has closed - and signalling it is what put three
-            # maps in a boot loop. It is not exited, it is not finished, and it will be
-            # asked again on the next turn.
+        if _might_be_running(one["name"], details):
+            # Refused by a container that is up, or that Docker could not be asked
+            # about. This is a server that has not opened RCON yet, not one that has
+            # closed - and signalling it is what put three maps in a boot loop. It is
+            # not exited, it is not finished, and it will be asked again next turn.
             one["state"], one["exited"] = NOT_READY, False
             one["why"] = ("its container is running but it is not answering RCON yet "
                           "(%s) - it has not finished starting" % e)
         else:
-            # Refused, and nothing is running under that name. Nothing to shut down.
+            # Refused, and Docker answered that nothing is running under that name.
+            # Both halves are facts, and together they mean there is nothing to shut
+            # down. Note the asymmetry with the branch above: "gone" has to be
+            # established, never assumed.
             one["state"], one["exited"] = ALREADY_GONE, True
             one["why"] = ("did not answer DoExit (%s) and its container is not running"
                           % e)
