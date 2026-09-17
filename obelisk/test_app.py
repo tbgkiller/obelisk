@@ -7482,6 +7482,20 @@ check("and a send that never left is a failure there too",
       _appmod.announce.ICONS.get("rcon_failed") == "❌",
       _appmod.announce.ICONS.get("rcon_failed"))
 
+# -- the target is found by the plan's label, and one label means one map
+#
+# rcon_targets is keyed by the map's display name, so "send to exactly the map in the
+# URL" rests on no two maps sharing one. That is not an assumption: the catalogue
+# refuses it at the door, in the words it refuses it with - two rows with one name is
+# how the wrong one gets picked.
+try:
+    _appmod.mapsmod.check_entry(_lstore, "island2", "The Island", "TheIsland2_WP")
+    _dupe_refused = ""
+except ValueError as _e_dupe:
+    _dupe_refused = str(_e_dupe)
+check("two maps cannot share the name the console resolves its target by",
+      "already the name of a map" in _dupe_refused, _dupe_refused)
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 
