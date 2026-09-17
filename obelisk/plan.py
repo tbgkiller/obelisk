@@ -100,7 +100,7 @@ def build_plan(store, in_use_ports=None, host_ram_gb=None):
                "name": m["name"], "map_id": m["map_id"],
                "game_port": g, "rcon_port": r,
                "memory": mem, "memory_mb": _mem_to_mb(mem), "memory_why": why,
-               "role": "update master" if i == 0 else "follower"}
+               "role": "downloads first" if i == 0 else "waits for the download"}
         if m.get("unknown"):
             row["unknown"] = True
         rows.append(row)

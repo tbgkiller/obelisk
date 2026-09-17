@@ -74,8 +74,8 @@ text, and encodes the sharp edges as validation you can't save past.
 ## What it does
 
 - **Generates the cluster.** Pick your maps; it writes the compose file, assigns game and
-  RCON ports in order, wires one shared copy of the server files, and makes the first map
-  the update master the others wait on.
+  RCON ports in order, wires one shared copy of the server files, and has the first map
+  download it while the others wait.
 - **One settings store.** Everything is declared once with a type, a range and help text.
   The UI renders from it, the API validates against it, the docs generate from it. Edit
   in the browser or edit `settings.json` in a text editor — same validation either way.

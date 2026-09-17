@@ -3,8 +3,8 @@ Generates the compose file for a cluster from the settings store.
 
 Nobody hand-maintains ten near-identical service blocks. Pick your maps in the
 UI, and this writes them - ports assigned in order from a base, one shared copy
-of the server files, one shared config folder, and the first map acting as the
-update master. The others wait on it only until the server files exist; after
+of the server files, one shared config folder, and the first map downloading
+that copy first. The others wait on it only until the server files exist; after
 that they all start together.
 
 The output is deliberately plain YAML with no anchors: it is meant to be read
@@ -120,9 +120,9 @@ def generate_compose(store, project="ark", in_use_ports=None, wait_for_master=No
             "      TZ: %s"                    % _q(store.get("timezone")),
             "      MAP_NAME: %s"              % _q(m["map_id"]),
             # POK keys the per-map instance folder off this, and coordinates updates
-            # across the cluster with the role/priority pair: the master fetches the
-            # new build, the followers wait their turn instead of ten containers
-            # downloading the same 30 GB at once.
+            # across the cluster with the role/priority pair below: the map that
+            # downloads first fetches the new build, the rest wait their turn instead
+            # of ten containers downloading the same 30 GB at once.
             "      INSTANCE_NAME: %s"         % _q(instance),
             "      UPDATE_COORDINATION_ROLE: %s" % _q("MASTER" if key == master else "FOLLOWER"),
             "      UPDATE_COORDINATION_PRIORITY: %s" % _q(i + 1),

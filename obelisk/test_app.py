@@ -5941,8 +5941,8 @@ check("not a second list editor",
 #
 # Maps had two editors: a text field on Settings that could express order and offered no
 # discovery, and a checkbox set here that offered discovery and could not express order.
-# Order is the thing that matters most about this value - the first map is the update
-# master, and ports are handed out down the list - so the list is the editor.
+# Order is the thing that matters most about this value - the first map downloads the
+# server files, and ports are handed out down the list - so the list is the editor.
 import copy as _copy38                                               # noqa: E402
 
 _t38 = _aio2.get_event_loop_policy().new_event_loop()
@@ -6027,8 +6027,8 @@ check("so the page posts one maps form, not two",
 # ---- order, and what it costs
 check("the order can be changed", "name=up value=" in _ed38 and "name=down value=" in
       _ed38, _window(_ed38, "name=up", 200))
-check("the first map is named as the update master",
-      ">update master</span>" in _ed38, _window(_ed38, "update master", 200))
+check("the first map is named as the one that downloads first",
+      ">downloads first</span>" in _ed38, _window(_ed38, "downloads first", 200))
 check("and the editor says order sets the ports",
       "Ports are assigned down" in _ed38, _window(_ed38, "Ports are", 200))
 check("the arrows stop at the ends",

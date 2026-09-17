@@ -99,23 +99,25 @@ check("an unrecognised phase still shows it is alive",
       level == "busy" and "Starting up" in says and "30s" in says, says)
 
 
-# ---- a follower waiting on a master that is not running
+# ---- a map waiting on a download that is never going to happen
 #
-# During a rolling migration the update master is the map that moves last, so for the
-# whole run there is no master. A follower that finds a new build published waits for
-# one, and the wait never ends. The container stays "running (health: starting)" the
-# entire time, which is indistinguishable from a slow first start - so this line has to
-# be read as a failure, with the reason, or a person spends twenty minutes finding out.
+# During a rolling migration the map that downloads first may not have moved yet, so for
+# part of the run nothing is fetching the new build. A map that finds one published
+# waits for that download, and the wait never ends. The container stays "running
+# (health: starting)" the entire time, which is indistinguishable from a slow first
+# start - so this has to be read as a failure, with the reason, or a person spends
+# twenty minutes finding out.
 _phase, _pct, _fail = progress.read_log(
     "[INFO] Installed build ID: 25090264\n"
     "[INFO] Available build ID: 25117056\n"
     "[INFO] Installed build (25090264) differs from latest (25117056). Update required\n"
     "[INFO] FOLLOWER waiting for configured master before touching shared server files\n")
 check("waiting on an absent master is recognised as a failure", _fail, _fail)
-check("and the reason names the master", "update master" in (_fail or ""), _fail)
+check("and the reason names the map that downloads first",
+      "downloads first" in (_fail or ""), _fail)
 check("and says the wait will not end", "will not end" in (_fail or ""), _fail)
 check("and says what to do about it",
-      "pre-stage" in (_fail or "") or "Start the master" in (_fail or ""), _fail)
+      "pre-stage" in (_fail or "") or "Start the map" in (_fail or ""), _fail)
 
 level, says = progress.describe({"state": "running", "health": "starting",
                                  "uptime_seconds": 900, "failure": _fail})
@@ -125,10 +127,10 @@ check("and a healthy container is still fine even with an old failure in its log
       progress.describe({"state": "running", "health": "healthy",
                          "failure": _fail})[0] == "ok")
 
-# A follower that is simply up to date says nothing of the sort.
+# A map that is simply up to date says nothing of the sort.
 _p2, _pc2, _f2 = progress.read_log("[INFO] Installed build ID: 25090264\n"
                                    "[INFO] Available build ID: 25090264\n")
-check("a follower on the current build is not a failure", _f2 is None, _f2)
+check("a map on the current build is not a failure", _f2 is None, _f2)
 
 print("\nFAILURES: %s" % fails if fails else "\nall progress tests passed")
 sys.exit(1 if fails else 0)

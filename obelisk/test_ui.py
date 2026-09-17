@@ -152,8 +152,8 @@ check("a ready cluster shows no banner", "Before this cluster can start" not in 
 plan = build_plan(st, in_use_ports=[])
 h = render_cluster(st, plan)
 # The checkboxes are gone. They could not say what order the cluster runs its maps
-# in - the first is the update master and ports are handed out down the list - so they
-# posted whatever order the catalogue happened to be in.
+# in - the first downloads the server files and ports are handed out down the list -
+# so they posted whatever order the catalogue happened to be in.
 _me = render_maps_editor(st)
 check("every known map can be added", all(('value="%s"' % m) in _me for m in
       ("island", "center", "scorched", "genesis")), _me[:400])
@@ -165,11 +165,11 @@ check("the chosen maps are a list, in order",
       _in_order(_me, "<th class=num>#</th>", "<th>Map</th>", ">The Island<"), _me[:700])
 check("with arrows to change that order",
       "name=up value=" in _me and "name=down value=" in _me, _window(_me, "name=up", 200))
-check("and the first one is named as the update master",
-      ">update master</span>" in _me, _window(_me, "update master", 200))
+check("and the first one is named as the one that downloads first",
+      ">downloads first</span>" in _me, _window(_me, "downloads first", 200))
 check("the consequence of the order is stated, not left in a help page",
       "Ports are assigned down" in _me and "downloads the server files once" in _me,
-      _window(_me, "update master", 600))
+      _window(_me, "downloads first", 600))
 check("presets are still offered", all(p in _me for p in
       ("Full cluster", "Starter", "The classics")), _window(_me, "presets", 300))
 # A preset replaces the list - island,center,aberration plus "Single map" leaves

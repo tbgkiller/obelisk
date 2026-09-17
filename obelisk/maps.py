@@ -378,8 +378,8 @@ def remove_entry(store, key):
 
 # ---- the list a cluster runs, as a list
 #
-# Order is not presentation here. The first entry is the update master - it downloads
-# the thirty-odd gigabytes of server files once while the others wait - and ports are
+# Order is not presentation here. The first entry downloads first - it fetches the
+# thirty-odd gigabytes of server files once while the others wait - and ports are
 # handed out walking the list, so moving an entry moves the port people type. That is
 # why the editor has arrows rather than a set of checkboxes whose order is whatever the
 # catalogue happens to be in.

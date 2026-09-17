@@ -307,11 +307,13 @@ SETTINGS = [
     # ---------------------------------------------------------------- Cluster
     dict(key="maps", label="Maps to run", group="Cluster",
          type="maps", default="island", target="obelisk:maps", apply="recreate",
-         help="Which maps this cluster runs, in order. The first one is the update "
-              "master: it downloads the ~30 GB of server files once and the others "
-              "wait for it, instead of every map fetching the same thing at once. "
-              "Ports are assigned in this order, so reordering a live cluster moves "
-              "everyone's ports - add to the end instead."),
+         help="Which maps this cluster runs, in order. The first one downloads "
+              "first: it downloads the ~30 GB of server files once and the others wait "
+              "for the download, instead of every map fetching the same thing at once. "
+              "That job is over once the files are on disk - it is not authority over "
+              "updates; the thing that tries a new build before your cluster does is "
+              "the Staging server. Ports are assigned in this order, so reordering a "
+              "live cluster moves everyone's ports - add to the end instead."),
 
     dict(key="game_port_base", label="First game port", group="Cluster",
          type="port", default=7777, target="obelisk:game_port_base", apply="recreate",

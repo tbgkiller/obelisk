@@ -85,7 +85,7 @@ check("its cluster id is its own, so it cannot join the real one",
       'CLUSTER_ID: "tbgcluster-staging"' in text)
 check("it carries the cluster's full mod list - that is the whole point",
       'MOD_IDS: "929110,940003,929420"' in text)
-check("it is its own update master, so nothing is waiting for another instance",
+check("it downloads for itself, so nothing is waiting for another instance",
       'UPDATE_COORDINATION_ROLE: "MASTER"' in text and 'UPDATE_SERVER: "TRUE"' in text)
 check("its name says it is not a game server",
       "STAGING - not a game server" in text)

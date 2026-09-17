@@ -2585,11 +2585,11 @@ def render_maps_editor(store, running=False, refusal="", refusal_at="maps",
     """The maps this cluster runs, in the order it runs them.
 
     Four parts of one editor. The list, because order is a fact about this cluster that
-    nothing else could show: the first map is the update master and ports are handed out
-    walking down it. The catalogue, to add from, appending to the end - the one edit that
-    leaves every existing port alone. Presets, which are a bulk tick of the boxes and
-    nothing more. And the maps this cluster defined for itself, which is the one part
-    that writes to the catalogue rather than reading from it.
+    nothing else could show: the first map downloads the server files while the others
+    wait, and ports are handed out down it. The catalogue, to add from, appending to the
+    end - the one edit that leaves every existing port alone. Presets, which are a bulk
+    tick of the boxes and nothing more. And the maps this cluster defined for itself,
+    which is the one part that writes to the catalogue rather than reading from it.
 
     A set of checkboxes cannot say any of that. It was sorted by whatever order the
     catalogue happens to be in, and the value it posted was that order.
@@ -2633,7 +2633,7 @@ def render_maps_editor(store, running=False, refusal="", refusal_at="maps",
             % (i + 1,
                '<a class=maplink href="/admin/cluster/map/%s">%s</a>'
                % (_e(key), _e(name)) if key in cat else _e(name),
-               ' <span class="tag chg">update master</span>' if first else "",
+               ' <span class="tag chg">downloads first</span>' if first else "",
                '<button class=ghost type=submit name=up value="%s"%s%s>\u2191</button>'
                % (_e(key), " disabled" if first else "", stuck),
                '<button class=ghost type=submit name=down value="%s"%s%s>\u2193</button>'
@@ -2676,8 +2676,8 @@ def render_maps_editor(store, running=False, refusal="", refusal_at="maps",
             '<form method=post action="/admin/maps">'
             '<table><tr><th class=num>#</th><th>Map</th>'
             '<th class=num>Order</th></tr>%s</table>'
-            '<div class=help style="margin-top:10px">The first map is the update '
-            'master: it downloads the server files once and the others wait for it '
+            '<div class=help style="margin-top:10px">The first map downloads first: '
+            'it downloads the server files once and the others wait for the download '
             'rather than all fetching the same thing at once. Ports are assigned down '
             'this list, so adding to the end leaves everyone else where they are and '
             'reordering does not.</div>'

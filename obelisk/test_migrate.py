@@ -151,13 +151,13 @@ check("per-map memory is adopted too",
 check("and it reports what it changed", "cluster_id" in changed and "mod_ids" in changed)
 
 
-# ---- the update master, while the migration is still running
+# ---- which map downloads first, while the migration is still running
 #
-# The settled cluster's master is its first map, and that is the island - the one thing
-# that deliberately moves last. So for the whole of a rolling migration there is no
-# master, and a follower that finds a new build published waits for one that will not
-# arrive. It looks exactly like a slow start, which is how it cost a map twenty minutes
-# of silence before anyone learned it was never going to come up.
+# In a settled cluster that is whichever map the operator put at the top of the list.
+# The map a migration moves last deliberately moves last, so it may not have moved when
+# the others start, and a map that finds a new build published then waits for a download
+# that will not arrive. It looks exactly like a slow start, which is how it cost a map
+# twenty minutes of silence before anyone learned it was never going to come up.
 order = migrate.migration_order(["island", "center", "scorched", "astraeos"])
 check("the master during a migration is the first map that moved",
       migrate.master_instance(order) == "center", order)

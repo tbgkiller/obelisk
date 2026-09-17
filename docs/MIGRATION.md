@@ -15,7 +15,7 @@ to be if anything goes wrong.
 
 So pre-staging is a separate, explicit action: **"Prepare server files"**, runnable any
 time in advance, as many times as you like. It fetches or updates `ServerFiles` in the
-destination Ark folder using the same throwaway-container mechanism as the update master -
+destination Ark folder using the same throwaway-container mechanism the first map downloads with -
 a `--rm` container from the server image with `UPDATE_SERVER=TRUE`, mounting only the
 files being staged, while nothing is running from them.
 
@@ -73,7 +73,7 @@ interrupting a cutover half way is how you end up with neither map running.
 
 ## Order of work
 
-1. Pre-stage action, sharing the updater mechanism with the update master.
+1. Pre-stage action, sharing the updater mechanism with the map that downloads first.
 2. Headroom check wired to the RAM budget, with the message above.
 3. Per-map cutover loop with verification gates.
 4. Progress display per map, reusing the phase reader.

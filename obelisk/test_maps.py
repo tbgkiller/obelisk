@@ -1,13 +1,13 @@
 """The catalogue, and a map this cluster added behaving like one Obelisk ships.
 
 Obelisk shipped a closed list of ten maps, and four subsystems were written as though
-that list were the world: ports and the update master come out of it, saves are found
+that list were the world: ports and the download order come out of it, saves are found
 under the level name in it, the restore guard types the name in it, and the settings
 gate refuses anything that is not in it. Opening it is a data-model change, so this
 file proves the opened one end to end without a browser: a map the operator added gets
-ports and an instance, can be the update master, saves and restores under its own level
-name, is in the archive and the integrity gate, and passes validation - and a stored
-entry still cannot redefine one of Obelisk's own.
+ports and an instance, can be the map that downloads first, saves and restores under
+its own level name, is in the archive and the integrity gate, and passes validation -
+and a stored entry still cannot redefine one of Obelisk's own.
 
 Run: python -m obelisk.test_maps
 """
@@ -320,11 +320,11 @@ check("and RCON is addressed to it by name and port",
 
 st.patch({"maps": "svart,island"})
 first = build_plan(st, in_use_ports=set(), host_ram_gb=64)["maps"][0]
-check("a map this cluster added can be the update master",
-      first["map"] == "svart" and first["role"] == "update master", first)
+check("a map this cluster added can be the one that downloads first",
+      first["map"] == "svart" and first["role"] == "downloads first", first)
 check("which is the position and nothing else - the files it downloads are the same",
       build_plan(st, in_use_ports=set(), host_ram_gb=64)["maps"][1]["role"]
-      == "follower", build_plan(st, in_use_ports=set())["maps"][1])
+      == "waits for the download", build_plan(st, in_use_ports=set())["maps"][1])
 st.patch({"maps": "island,svart"})
 
 st.data["maps"]["svart"] = {"mem_limit": "12g"}

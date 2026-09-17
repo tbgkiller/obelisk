@@ -151,7 +151,7 @@ doc2 = yaml.safe_load(generate_compose(st, project="testcluster"))
 check("the mod list reaches every map",
       all(doc2["services"][m]["environment"]["MOD_IDS"] == "929110,940003"
           for m in ("island", "ragnarok")))
-check("the first map is the update master",
+check("the first map gets POK's MASTER role",
       doc2["services"]["island"]["environment"]["UPDATE_COORDINATION_ROLE"] == "MASTER")
 check("the others follow",
       doc2["services"]["ragnarok"]["environment"]["UPDATE_COORDINATION_ROLE"] == "FOLLOWER")
@@ -165,7 +165,7 @@ check("the others follow",
 st3, _d3 = fresh(maps="island,ragnarok,scorched")
 
 cold = yaml.safe_load(generate_compose(st3, project="testcluster", wait_for_master=True))
-check("with no game files yet, the followers wait for the master",
+check("with no game files yet, the others wait for the first map",
       all("depends_on" in cold["services"][m] for m in ("ragnarok", "scorched")),
       [cold["services"][m].get("depends_on") for m in ("ragnarok", "scorched")])
 check("and they wait for it to be *healthy*, not merely started",
@@ -181,7 +181,7 @@ check("once the game files are installed, nothing waits on anything",
       {k: v.get("depends_on") for k, v in warm["services"].items()})
 check("every map is still there - parallel start drops the ordering, not a map",
       set(warm["services"]) == {"island", "ragnarok", "scorched"}, list(warm["services"]))
-check("the update master/follower roles survive the change",
+check("POK's update-coordination roles survive the change",
       (warm["services"]["island"]["environment"]["UPDATE_COORDINATION_ROLE"] == "MASTER"
        and warm["services"]["scorched"]["environment"]["UPDATE_COORDINATION_ROLE"]
        == "FOLLOWER"),

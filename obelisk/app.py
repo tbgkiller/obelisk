@@ -942,8 +942,8 @@ def build_app(store, docker=None):
 
         One action per post, like the mod list: the editor is a list with arrows rather
         than a set of checkboxes, because the order is a fact about the cluster - the
-        first map is the update master and ports are handed out down the list - and a
-        checkbox set posts whatever order the catalogue happens to be in.
+        first map downloads the server files and ports are handed out down the list -
+        and a checkbox set posts whatever order the catalogue happens to be in.
 
         The whole ordered string is rebuilt and written through the same staging path
         every other setting uses. Removing a map does not touch what that map was
@@ -989,8 +989,8 @@ def build_app(store, docker=None):
             if preset:
                 raise refuse_maps(ui.PRESET_RUNNING)
             # Removing the last one is free: nothing comes after it to move down, and
-            # the first map - the update master - is not it unless it is the only one,
-            # which the rule above has already refused.
+            # the first map - the one that downloads first - is not it unless it is
+            # the only one, which the rule above has already refused.
             if going_now and here and going_now != here[-1]:
                 name = ((mapsmod.entry(store, going_now) or {}).get("name")
                         or going_now)

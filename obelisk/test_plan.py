@@ -25,8 +25,9 @@ p = build_plan(store(), in_use_ports=[])
 check("ports count up from the base", [r["game_port"] for r in p["maps"]] == [7777, 7778, 7779],
       [r["game_port"] for r in p["maps"]])
 check("rcon has its own range", [r["rcon_port"] for r in p["maps"]] == [27020, 27021, 27022])
-check("first map is the update master", p["maps"][0]["role"] == "update master")
-check("the rest follow", all(r["role"] == "follower" for r in p["maps"][1:]))
+check("first map downloads first", p["maps"][0]["role"] == "downloads first")
+check("the rest wait for the download",
+      all(r["role"] == "waits for the download" for r in p["maps"][1:]))
 
 p = build_plan(store(), in_use_ports=[7778, 7779, 27021])
 check("skips ports already bound on the host",
@@ -91,7 +92,7 @@ check("an unset admin password blocks the plan",
 
 # ---- the review text a person actually reads
 txt = describe(build_plan(store(maps="island,astraeos"), in_use_ports=[], host_ram_gb=128))
-for must in ("The Island", "Astraeos", "update master", "7777", "27020", "32g", "Obelisk on port 8088"):
+for must in ("The Island", "Astraeos", "downloads first", "7777", "27020", "32g", "Obelisk on port 8088"):
     check("review shows %r" % must, must in txt, txt)
 
 # ---- presets carry a shape, never a setup

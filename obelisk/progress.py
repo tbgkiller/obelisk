@@ -61,15 +61,15 @@ _FAILURES = [
      "The server stopped itself rather than start with a half-finished install."),
     (re.compile(r"install/update helper exited with status [1-9]"),
      "The install step failed, so the server refused to start."),
-    # A follower will not touch the shared game files; it waits for the map that owns
-    # that job. If the master is not running - which is every map but one during a
-    # rolling migration, because the master migrates last - the wait never ends. It is
-    # not a slow start, and reporting it as one costs twenty minutes before anyone finds
-    # out the server was never going to come up.
+    # A map that waits for the download will not touch the shared game files; it waits
+    # for the map that owns that job. If that map is not running - and during a rolling
+    # migration it may not have moved yet - the wait never ends. It is not a slow start,
+    # and reporting it as one costs twenty minutes before anyone finds out the server
+    # was never going to come up.
     (re.compile(r"FOLLOWER waiting for configured master"),
-     "A new server build is out, and this map is waiting for the update master to "
-     "fetch it. The master is not running, so the wait will not end. Start the master "
-     "first, or pre-stage the new build before this map starts."),
+     "A new server build is out, and this map is waiting for the map that downloads "
+     "first to fetch it. That map is not running, so the wait will not end. Start the "
+     "map that downloads first, or pre-stage the new build before this map starts."),
 ]
 
 _MARKERS = [
@@ -157,7 +157,7 @@ def describe(service):
         return "ok", "Online"
     # A recognised failure is a failure whether or not the container is still running.
     # Every pattern above describes a process that is up and stuck - an unwritable data
-    # folder, a full disk, a follower waiting on a master that will never start - and
+    # folder, a full disk, a map waiting on a download that will never start - and
     # requiring the container to have exited first meant all of them were reported as
     # "Starting up", which is the exact lie this module exists to prevent.
     if failure:

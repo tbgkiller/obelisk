@@ -1251,9 +1251,9 @@ def other_ports_in_use(store):
 def stop_one(store, map_key):
     """Stop a single map, leaving the rest of the cluster serving. (ok, message).
 
-    `--no-deps` matters: the first map is the update master and every other service
-    declares it as a dependency, so without it compose would happily start the island
-    in order to stop something else.
+    `--no-deps` matters: the first map downloads the server files and every other
+    service declares it as a dependency, so without it compose would happily start that
+    first map in order to stop something else.
     """
     ok, why = dockerctl.available()
     if not ok:
