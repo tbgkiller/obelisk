@@ -1685,5 +1685,39 @@ check("with no other map to start, it says so plainly",
       "No other map was fit to start" in _msg_t, _msg_t)
 
 
+# ---- a stop that refuses is a batch that has not begun
+#
+# cluster.stop() can now refuse: a map whose container is up and whose RCON never opened
+# is a server still booting, and signalling one of those is what put three maps in a
+# restart loop. That refusal is only worth anything if the caller honours it, so this
+# pins the half that was already here - apply_batch treats a false from stop_all as the
+# end of the batch, before the swap and before anything is started.
+drain()
+_st_ns = real_store()
+_pend.stage(_st_ns, {"max_players": 250})
+updates.remember(_st_ns, primed=ready)
+_c_ns = Cluster(stop_ok=False)
+_calls_ns, _rename_ns = moved_nothing()
+_started_ns = []
+_ok_ns, _msg_ns, _d_ns = updates.apply_batch(
+    _st_ns, ARK, warn=_c_ns.warn, save=_c_ns.save, stop_all=_c_ns.stop,
+    start_all=_c_ns.start, verify=_c_ns.verify,
+    check_worlds=lambda: (_ for _ in ()).throw(
+        AssertionError("the world gate must not be reached after a refused stop")),
+    start_some=lambda keys: (_started_ns.append(list(keys)), [])[1],
+    players=lambda: (0, {}, []), rename=_rename_ns, exists=tree_exists(),
+    now=lambda: 4242)
+check("a stop that refuses fails the batch", not _ok_ns, _msg_ns)
+check("and the reason travels with it", "stop" in _msg_ns.lower(), _msg_ns)
+check("nothing was swapped - the staged build is still staged", _calls_ns == [],
+      _calls_ns)
+check("and nothing was started, so the cluster is exactly as the refusal left it",
+      "start" not in _c_ns.log and _started_ns == [], (_c_ns.log, _started_ns))
+check("the settings were not committed either",
+      _pend.count(_st_ns) == 1, _pend.count(_st_ns))
+_ev_ns = [i["event"] for i in drain()]
+check("and the refusal reaches the admin channel as a failure",
+      "ark.update_failed" in _ev_ns, _ev_ns)
+
 print("\nFAILURES: %s" % fails if fails else "\nall updates tests passed")
 sys.exit(1 if fails else 0)

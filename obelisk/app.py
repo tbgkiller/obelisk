@@ -809,7 +809,12 @@ def build_app(store, docker=None):
             ok_s, msg_s = stagingctl.down(store)
             if not ok_s:
                 log.warning("the staging server did not stop cleanly: %s", msg_s)
-            return clusterctl.stop(store)
+            # require_ready: an apply must never signal a map that is still
+            # booting. A server mid-boot cannot take the image's safe stop - it needs
+            # the RCON it has not opened yet - so it hangs, is killed and is revived,
+            # and the apply promotes a build over a cluster that is looping. Refusing
+            # costs a window; that cost two hours.
+            return clusterctl.stop(store, require_ready=True)
 
         def verify_all():
             """The six gates, per map, after waiting for each to actually be serving."""
@@ -3141,7 +3146,10 @@ def _scheduled_apply(store, force=False):
 
     def stop_all():
         stg.down(store)
-        return clusterctl.stop(store)
+        # The unattended apply gets the same refusal as the button, for the same reason
+        # it gets the same world gate: an apply nobody is watching is the one that most
+        # needs to refuse rather than stop into a server that is still starting.
+        return clusterctl.stop(store, require_ready=True)
 
     def verify_all():
         return verify_every_map(store)

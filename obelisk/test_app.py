@@ -1736,6 +1736,12 @@ _STOP_EMITS = [
     "being stopped the ordinary way instead - worth checking them once the cluster is "
     "back up. Stopping the servers now.",
     "1 of 1 world saved and closed. Stopping the servers now - nothing is left writing.",
+    # A map whose container is up and whose RCON never opened. An operator's Stop still
+    # stops - `down` removes the containers, so nothing is left to revive - and this is
+    # the stage that says which map never became operational.
+    "Valguero is running but never answered RCON, so it had not finished booting and "
+    "has no world to close. Stop was asked for, so it is being removed with the rest - "
+    "worth watching it come up when the cluster is back. Stopping the servers now.",
     "Cluster stopped. Saves and settings are untouched; Launch brings it back.",
 ]
 _lost = [t for t in _STOP_EMITS if ui.phase_index(t, ui.STOP_PHASES) < 0]
@@ -1750,7 +1756,7 @@ check("and on exactly one marker, so the bar cannot jump", _ambiguous == [],
       _ambiguous)
 check("the stages come in the order the stop takes them",
       [ui.phase_index(t, ui.STOP_PHASES) for t in _STOP_EMITS]
-      == [1, 1, 1, 1, 2, 2, 2, 3],
+      == [1, 1, 1, 1, 2, 2, 2, 2, 3],
       [ui.phase_index(t, ui.STOP_PHASES) for t in _STOP_EMITS])
 
 # ...and those strings are the real ones. Pinned against cluster.py's own source, so a
@@ -1760,9 +1766,23 @@ _clsrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),
 _stopsrc = _clsrc.split("def stop(store")[1].split("def restart(")[0]
 for _frag in ("asked to save and close", "saved its world and closed",
               "could not be asked to close", "Stopping the servers now",
-              "Cluster stopped"):
+              "Cluster stopped", "had not finished booting"):
     check("the stop still says %r, which the stepper matches on" % _frag,
           _frag in _stopsrc, _frag)
+
+# An apply must ask for a cluster that is ready, not merely one that answered. A map
+# whose container is up and whose RCON never opened is a server still booting, and
+# `docker compose down` into one of those is what put three maps in a restart loop -
+# so every apply path asks stop() to refuse, and the operator's own Stop button does
+# not, because pressing Stop is asking for a stop.
+_appsrc = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
+                  encoding="utf-8").read()
+_stop_alls = [b.split("\n\n")[0] for b in _appsrc.split("def stop_all():")[1:]]
+check("there are apply paths to check", len(_stop_alls) == 2, len(_stop_alls))
+check("every apply asks stop() to refuse a cluster that is still starting up",
+      all("require_ready=True" in b for b in _stop_alls), _stop_alls)
+check("and the Stop button does not - an operator pressing it has asked for a stop",
+      "clusterctl.stop(store, say=_stop_say)" in _appsrc)
 
 # 2. the wording, through the helper the rest of the product uses
 check("one player reads as one player",
