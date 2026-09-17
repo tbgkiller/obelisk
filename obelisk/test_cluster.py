@@ -2249,6 +2249,17 @@ _w_gone = _look({})
 check("a readable folder with no world in it is an absence, not a silence",
       _w_gone is not None and _w_gone["present"] is False, _w_gone)
 
+# Which directory decides. A map's own folder being absent is the ordinary state of a
+# map that has never launched, so asking about that one would report "I could not look"
+# for every fresh cluster. The ark root is the one whose absence means the volume is
+# not mounted.
+_asked = []
+_w_root = _look({}, listdir=lambda p: _asked.append(p) or ["TheIsland_WP"])
+check("the readable question is asked of the ARK data directory, not the map's folder",
+      _asked and _asked[0].replace(chr(92), "/").endswith("shared/SavedArks"), _asked)
+check("so a map that has never launched reads as no world yet, not as an unknown",
+      _w_root is not None and _w_root["present"] is False, _w_root)
+
 
 def _cannot_list(path):
     raise OSError(13, "Permission denied")

@@ -1034,9 +1034,15 @@ def world_on_disk(store, key, ark_root=None, stat=None, exists=None, listdir=Non
     except Exception as e:                           # noqa: BLE001 - never a blank page
         log.info("could not work out where %s's world lives: %s", key, e)
         return None
-    ok, why = readable_dir(os.path.dirname(path), listdir=listdir)
+    # The ark root, not this map's own folder, and the whole answer turns on it. A map
+    # folder that is not there is the ordinary state of a map that has never launched;
+    # a SavedArks that will not list is a volume that is not mounted, and "no world" is
+    # not something anybody established about it.
+    root = layout.ark_paths(ark_root or layout.ark_root_of(store))["saved_arks"]
+    ok, why = readable_dir(root, listdir=listdir)
     if not ok:
-        log.info("could not read where %s's world lives: %s", key, why)
+        log.info("could not read the ARK data directory, so %s's world is unknown: %s",
+                 key, why)
         return None
 
     hot = sorted(s for s in restore.SIDECARS if exists(path + s))
