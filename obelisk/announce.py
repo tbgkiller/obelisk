@@ -243,6 +243,7 @@ ICONS = {
     "unban_failed": "❌",
     "cap_allow_failed": "❌",
     "cap_revoke_failed": "❌",
+    "rcon_failed": "❌",
     "offsite_failed": "❌", "push_failed": "❌",
     # world.damaged is the periodic sweep's; ark.world_damaged is the apply gate's.
     "damaged": "❌",
@@ -278,6 +279,11 @@ ICONS = {
     # stops or deletes anything - the cluster runs exactly what it ran before.
     "added": "•", "forgotten": "•",
     "reconfigured": "•",
+    # A console command that reached the server. Quiet rather than a tick: the
+    # send is the whole fact, and what the server did with the line is not
+    # something the send knows. A green tick beside "delivered, not confirmed"
+    # would be the console’s own rule broken in the channel.
+    "rcon_sent": "•",
 }
 
 

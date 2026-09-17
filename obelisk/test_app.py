@@ -7474,6 +7474,14 @@ check("even when the server itself echoed it back",
 check("the console and the relay agree on what ARK's receipt looks like",
       _appmod.consolelib.NO_RESPONSE in _bot_s1.IGNORE, _bot_s1.IGNORE)
 
+# -- and the console's own two events resolve an icon rather than a bullet default
+check("a console send is quiet in the channel, not a green tick",
+      _appmod.announce.ICONS.get("rcon_sent") == "•",
+      _appmod.announce.ICONS.get("rcon_sent"))
+check("and a send that never left is a failure there too",
+      _appmod.announce.ICONS.get("rcon_failed") == "❌",
+      _appmod.announce.ICONS.get("rcon_failed"))
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 
