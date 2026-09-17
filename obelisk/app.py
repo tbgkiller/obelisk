@@ -29,6 +29,7 @@ from . import updates as updatesctl
 from . import arkupdate
 from . import bans as bansctl
 from . import cap as capctl
+from . import console as consolelib
 from . import pending as pendingctl
 from . import savepoints as pointsctl
 from . import maps as mapsmod
@@ -1747,16 +1748,26 @@ def build_app(store, docker=None):
             log.info("could not list restore points for %s: %s", key, e)
             return []
 
-    async def map_page(request):
-        """One map: its ports, its RAM and why, its address, and its saves.
+    def _world_look(key):
+        """This map's world file as the disk has it, or None when it cannot answer.
 
-        Addressed by the map's own key the whole way down - the plan row, the world
-        folder, the settings overrides and the restore guards are all keyed that way
-        already, so this page invents no identity and reverses none.
+        Read-only, one stat, and never an error: a page that will not draw because a
+        volume is unmounted is a page nobody can use to find out that a volume is
+        unmounted.
         """
-        if not authed(request):
-            raise web.HTTPFound("/setup")
-        key = str(request.match_info.get("key") or "")
+        try:
+            return clusterctl.world_on_disk(store, key)
+        except Exception as e:                       # noqa: BLE001 - advice only
+            log.info("could not look at %s's world file: %s", key, e)
+            return None
+
+    async def _map_body(request, key, result=None, ask=None):
+        """The per-map page's markup, for the GET and for the console's own POST.
+
+        The POST that renders a confirmation has to draw the same page the question was
+        asked on - one builder, so the two cannot drift into two slightly different
+        pages with the same address.
+        """
         if not mapsmod.known(store, key):
             raise web.HTTPFound("/admin/cluster#run")
         name = mapsmod.entry(store, key)["name"]
@@ -1792,9 +1803,15 @@ def build_app(store, docker=None):
         token = str((getattr(request, "query", None) or {}).get("said") or "")
         said = _said.pop(token, None) if token else None
         if said and said.get("where") == "map":
-            notice = ('<div class=note>%s</div>' % ui._e(said["message"])
-                      if said.get("message") else
-                      ui.warn_block(said.get("problem") or said.get("refusal") or ""))
+            # A console answer travels in the same parked result every other action on
+            # this page uses, so a refresh redraws the page instead of re-sending the
+            # command. It is shown in the console's own box rather than as a banner at
+            # the top: it is the answer to the thing the operator is looking at.
+            result = result or said.get("console")
+            if said.get("message") or said.get("problem") or said.get("refusal"):
+                notice = ('<div class=note>%s</div>' % ui._e(said["message"])
+                          if said.get("message") else
+                          ui.warn_block(said.get("problem") or said.get("refusal")))
         try:
             launched = bool(clusterctl.status(store).get("compose_exists"))
         except Exception:                            # noqa: BLE001 - never a blank page
@@ -1803,8 +1820,102 @@ def build_app(store, docker=None):
                                     host_known=host != "<this-host>",
                                     points=_points_for(key) if row else [],
                                     job=rjob, state=state, overrides=overrides,
-                                    notice=notice, launched=launched),
+                                    notice=notice, launched=launched,
+                                    world=_world_look(key) if row else None,
+                                    result=result, ask=ask),
                       name, "/admin/cluster")
+
+    async def map_page(request):
+        """One map: its ports, its RAM and why, its address, its saves and its console.
+
+        Addressed by the map's own key the whole way down - the plan row, the world
+        folder, the settings overrides and the restore guards are all keyed that way
+        already, so this page invents no identity and reverses none.
+        """
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        key = str(request.match_info.get("key") or "")
+        return await _map_body(request, key)
+
+    # ---- one RCON command, to the one map this page is about
+    #
+    # The operator needs to drive a stop by hand - ListPlayers, SaveWorld, look at the
+    # disk, DoExit - and watch what each step actually answers. Everything on this
+    # cluster is meant to be doable from these two UIs with no shell, and until now the
+    # only RCON commands Obelisk could send were the five fixed ones behind the player
+    # buttons.
+    #
+    # Three properties hold this together, and none of them is a nicety:
+    #
+    #   it reaches RCON or it reaches nothing.  There is no fallback here that signals
+    #   a container, stops one, or runs anything inside it. A server that will not
+    #   answer RCON is a server this cannot touch - which is what makes it structurally
+    #   incapable of the SIGTERM that damaged three worlds on 2026-09-11.
+    #
+    #   it goes to one map.  The one in the URL. No picker, no "all", no loop.
+    #
+    #   it never says more than it knows.  console.py decides what an answer is worth
+    #   and this route does not second-guess it: a command that arrived is reported as
+    #   having arrived, and nothing here turns that into "done".
+    RCON_TIMEOUT = 20.0
+
+    async def map_rcon(request):
+        if not authed(request):
+            raise web.HTTPFound("/setup")
+        key = str(request.match_info.get("key") or "")
+        if not mapsmod.known(store, key):
+            raise web.HTTPFound("/admin/cluster#run")
+        form = await request.post()
+        # A curated button carries its command; the text box is what is left. Both are
+        # in one form, so a button click wins over whatever was typed beside it rather
+        # than sending two things or an accidental hybrid.
+        command = " ".join(str(form.get("command") or "").split()) or " ".join(
+            str(form.get("text") or "").split())
+        confirmed = bool(form.get("confirm"))
+        name = mapsmod.entry(store, key)["name"]
+
+        def said(**kw):
+            raise web.HTTPFound("/admin/cluster/map/%s?said=%s#console"
+                                % (key, _say_next(where="map", **kw)))
+
+        if not command:
+            said(refusal="Type a command first - nothing was sent to %s." % name)
+        if consolelib.gated(command) and not confirmed:
+            # Not sent, and not parked in a redirect either: the question is asked on
+            # the page the operator is standing on, with the form it replaces gone.
+            return await _map_body(request, key, ask=command)
+
+        # The map in the URL, and only ever that one. rcon_targets is keyed by the
+        # plan's label, which is the same name the page above is titled with.
+        target = None
+        for lbl, host, port in clusterctl.rcon_targets(store):
+            if lbl == name:
+                target = (host, port)
+        if target is None:
+            said(refusal="%s is not a map this cluster runs - nothing was sent."
+                         % name)
+
+        from . import bot
+        password = str(store.get("admin_password") or "")
+        try:
+            body = await bot.rcon_with(target[0], target[1], password, command,
+                                       timeout=RCON_TIMEOUT)
+            result = consolelib.result(command, body=body, password=password)
+        except Exception as e:                       # noqa: BLE001 - reported as itself
+            result = consolelib.result(command, error=e, timeout=RCON_TIMEOUT,
+                                       password=password)
+
+        # Said out loud, like every other command this manager sends: an admin who did
+        # not type it should be able to see that somebody did. The verdict goes with it
+        # - "delivered, not confirmed" is as true in the channel as it is on the page -
+        # and the command itself is scrubbed of the password by console.result before
+        # either of them sees it.
+        reached = result["kind"] in (consolelib.ANSWERED, consolelib.DELIVERED)
+        announce.say("map.rcon_sent" if reached else "map.rcon_failed",
+                     "%s on %s from the web UI: %s"
+                     % (result["command"], name, result["headline"]),
+                     level="info" if reached else "warning", map=name)
+        said(console=result)
 
     async def cluster_launch(request):
         if not authed(request):
@@ -2583,6 +2694,7 @@ def build_app(store, docker=None):
     app.router.add_post("/admin/player/cap", player_cap)
     app.router.add_get("/admin/cluster/status", cluster_status)
     app.router.add_get("/admin/cluster/map/{key}", map_page)
+    app.router.add_post("/admin/cluster/map/{key}/rcon", map_rcon)
     app.router.add_get("/admin/data", data_page)
     app.router.add_get("/admin/backups", backups_page)
     app.router.add_post("/admin/backup", backup_now)

@@ -5125,8 +5125,14 @@ check("and no fields belonging to any other map",
 check("posting to the writer that already owned them",
       'action="/admin/save"' in _from(_mp_body, "<fieldset id=overrides>"),
       _window(_from(_mp_body, "<fieldset id=overrides>"), "form", 200))
-check("and the route still adds no write path of its own",
-      "add_post(\"/admin/cluster/map" not in _s1src, "a new write path appeared")
+# The overrides still have no writer of their own. The one POST that lives under this
+# page's address is the console, which writes nothing: it sends a line to an RCON port
+# and stores nothing anywhere.
+_mp_posts = [ln.strip() for ln in _s1src.splitlines()
+             if 'add_post("/admin/cluster/map' in ln]
+check("and the overrides still have no writer of their own under this address",
+      _mp_posts == ['app.router.add_post("/admin/cluster/map/{key}/rcon", map_rcon)'],
+      _mp_posts)
 check("the link to the old collapsed block is gone",
       "/admin#g-per-map" not in _mp_body, _window(_mp_body, "g-per-map", 200))
 
@@ -5137,10 +5143,16 @@ check("it goes back to the list of real ones",
 check("a real map that is not in this plan says so",
       _mp_unplanned_st == 200 and "not in this cluster" in _mp_unplanned_body,
       _window(_mp_unplanned_body, "not in", 200))
-_mapsrc = _after(_s1src, "async def map_page").split(chr(10) + "    async def ")[0]
-check("the route is keyed on the map key, and checks it against the catalogue",
-      _in_order(_mapsrc, "match_info", "mapsmod.known(store, key)", "build_plan"),
-      _mapsrc[:600])
+# The page's markup is built by _map_body, which the console's POST draws its
+# confirmation on as well - one builder, so the question and the page it is asked on
+# cannot drift apart. The key still comes from the URL and is still checked against the
+# catalogue before anything is read; those two steps now sit either side of the split.
+_mapsrc = _after(_s1src, "async def _map_body").split(chr(10) + "    async def ")[0]
+_mappagesrc = _after(_s1src, "async def map_page").split(chr(10) + "    async def ")[0]
+check("the route takes its key from the URL and hands it to the one builder",
+      _in_order(_mappagesrc, "match_info", "_map_body(request,"), _mappagesrc)
+check("the builder checks that key against the catalogue before it reads anything",
+      _in_order(_mapsrc, "mapsmod.known(store, key)", "build_plan"), _mapsrc[:600])
 check("it finds its plan row by key rather than by name",
       'r.get("map") == key' in _mapsrc, _window(_mapsrc, "plan", 400))
 check("and nothing in it turns a name back into a key",
@@ -7242,6 +7254,225 @@ check("neither still claims this page can set it per map",
       "a help string still describes the old page")
 check("and the page carries a route to where per-map values live",
       'href="/admin/cluster#maps"' in _set5, _window(_set5, "Per-map overrides", 400))
+
+# ---- the console: one command, to the one map the page is about
+#
+# The operator needs to drive a stop by hand - ListPlayers, SaveWorld, look at the
+# disk, DoExit - and watch what each step actually answers, on a cluster where the
+# house rule is that everything is doable from these two UIs with no shell.
+#
+# What is pinned here is what the console is NOT allowed to do: send to a second map,
+# send a destructive command without being asked, call a receipt a result, or put the
+# admin password on a page.
+_CONSOLE_PW = "console-fixture-admin-password"
+_lstore.patch({"maps": "island,ragnarok", "admin_password": _CONSOLE_PW})
+_lstore.save()
+_CONSOLE_TARGETS = {lbl: (h, p)
+                    for lbl, h, p in _appmod.clusterctl.rcon_targets(_lstore)}
+_rcon_calls = []
+
+
+async def _console_post(data, answer=None, boom=None, follow=True, signed_in=True,
+                        path="/admin/cluster/map/island/rcon"):
+    _rcon_calls[:] = []
+
+    async def _fake_rcon(host, port, password, command, timeout=6.0):
+        _rcon_calls.append({"host": host, "port": port, "password": password,
+                            "command": command, "timeout": timeout})
+        if boom is not None:
+            raise boom
+        return answer
+
+    _bot_s1.rcon_with = _fake_rcon
+    _bot_s1.LIVE = _kick_relay()
+    _appmod.clusterctl.status = lambda store: dict(
+        _lstatus, services=[dict(x) for x in _lstatus["services"]])
+    client = TestClient(TestServer(build_app(_lstore, docker=DOCKER_UP)))
+    await client.start_server()
+    if signed_in:
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_lstore.get("admin_token"))})
+    r = await client.post(path, data=data, allow_redirects=False)
+    body = await r.text() if r.status == 200 else ""
+    where = r.headers.get("Location", "")
+    if follow and r.status == 302 and where.startswith("/admin/cluster/map"):
+        body = await (await client.get(where)).text()
+    await client.close()
+    return r.status, where, body
+
+
+_t41 = _aio2.get_event_loop_policy().new_event_loop()
+try:
+    _drain2()
+    _c_out_st, _c_out_where, _ = _t41.run_until_complete(
+        _console_post({"command": "ListPlayers"}, signed_in=False, follow=False))
+    _c_out_calls = list(_rcon_calls)
+
+    _c_safe_st, _c_safe_where, _c_safe_body = _t41.run_until_complete(
+        _console_post({"command": "ListPlayers"}, answer="0. Bob, 76561198"))
+    _c_safe_calls = list(_rcon_calls)
+    _c_safe_ev = _drain2()
+
+    _c_typed_st, _, _c_typed_body = _t41.run_until_complete(
+        _console_post({"text": "saveworld"},
+                      answer="Server received, But no response!!"))
+    _c_typed_calls = list(_rcon_calls)
+    _drain2()
+
+    # First submit of a gated command sends nothing and asks.
+    _c_ask_st, _c_ask_where, _c_ask_body = _t41.run_until_complete(
+        _console_post({"text": "DoExit"}, answer="x"))
+    _c_ask_calls = list(_rcon_calls)
+    _c_ask_ev = _drain2()
+
+    _c_go_st, _, _c_go_body = _t41.run_until_complete(
+        _console_post({"command": "DoExit", "confirm": "1"},
+                      answer="Server received, But no response!!"))
+    _c_go_calls = list(_rcon_calls)
+    _drain2()
+
+    # A gated word that is only an argument is not a gated command.
+    _c_chat_st, _, _c_chat_body = _t41.run_until_complete(
+        _console_post({"text": "ServerChat DestroyAll is banned on this cluster"},
+                      answer="Server received, But no response!!"))
+    _c_chat_calls = list(_rcon_calls)
+    _drain2()
+
+    _c_lower_st, _, _ = _t41.run_until_complete(
+        _console_post({"text": "destroywilddinos"}, answer="x"))
+    _c_lower_calls = list(_rcon_calls)
+    _drain2()
+
+    _c_none_st, _, _c_none_body = _t41.run_until_complete(
+        _console_post({"text": "   "}, answer="x"))
+    _c_none_calls = list(_rcon_calls)
+    _drain2()
+
+    # The three failures that are not the same failure, plus an empty answer.
+    _c_ref_st, _, _c_ref_body = _t41.run_until_complete(
+        _console_post({"command": "ListPlayers"},
+                      boom=ConnectionRefusedError("[Errno 111] Connect call failed")))
+    _c_ref_ev = _drain2()
+    _c_slow_st, _, _c_slow_body = _t41.run_until_complete(
+        _console_post({"command": "SaveWorld"}, boom=_aio2.TimeoutError()))
+    _drain2()
+    _c_mt_st, _, _c_mt_body = _t41.run_until_complete(
+        _console_post({"command": "ListPlayerPos"}, answer=""))
+    _drain2()
+
+    # Every path, with a password that would be unmistakable on the page.
+    _c_leak_bodies = {}
+    for _what, _kw in (
+            ("an answer that quotes it", {"answer": "auth ok pw=%s" % _CONSOLE_PW}),
+            ("an error that quotes it",
+             {"boom": OSError("connect failed rcon://user:%s@island" % _CONSOLE_PW)}),
+            ("a rejected password", {"boom": PermissionError("RCON auth failed")}),
+            ("a refusal", {"boom": ConnectionRefusedError("refused")}),
+            ("a plain answer", {"answer": "0. Bob"})):
+        _c_leak_bodies[_what] = _t41.run_until_complete(
+            _console_post({"command": "ListPlayers"}, **_kw))[2]
+        _drain2()
+    _c_leak_bodies["the command itself"] = _t41.run_until_complete(
+        _console_post({"text": "ServerChat %s" % _CONSOLE_PW}, answer="ok"))[2]
+    _drain2()
+finally:
+    _t41.close()
+
+# -- auth, like every other /admin route
+check("the console route turns an unauthenticated post away",
+      _c_out_st == 302 and _c_out_where == "/setup", [_c_out_st, _c_out_where])
+check("and sends nothing on the way out", _c_out_calls == [], _c_out_calls)
+
+# -- a safe command goes once, to one map, with the password from the store
+check("a curated command is sent exactly once", len(_c_safe_calls) == 1, _c_safe_calls)
+check("to the RCON target of the map in the URL and no other",
+      (_c_safe_calls[0]["host"], _c_safe_calls[0]["port"])
+      == _CONSOLE_TARGETS["The Island"], [_c_safe_calls, _CONSOLE_TARGETS])
+check("never to the other map in the cluster",
+      (_c_safe_calls[0]["host"], _c_safe_calls[0]["port"])
+      != _CONSOLE_TARGETS["Ragnarok"], _c_safe_calls)
+check("as the command that was asked for, unchanged",
+      _c_safe_calls[0]["command"] == "ListPlayers", _c_safe_calls)
+check("with the admin password out of the store, not an empty string",
+      _c_safe_calls[0]["password"] == _CONSOLE_PW, "the password did not reach RCON")
+check("and bounded, so a hung server cannot hang the request",
+      0 < _c_safe_calls[0]["timeout"] <= 30, _c_safe_calls)
+check("the answer comes back on this map's page",
+      "0. Bob, 76561198" in _c_safe_body and "The server answered." in _c_safe_body,
+      _window(_c_safe_body, "id=console", 900))
+check("and the send is said out loud, like every other command this manager sends",
+      any(e["event"] == "map.rcon_sent" for e in _c_safe_ev), _c_safe_ev)
+
+# -- the answer that means the least
+check("a typed command is sent as typed", _c_typed_calls[0]["command"] == "saveworld",
+      _c_typed_calls)
+check("ARK's receipt is shown as delivered, not confirmed",
+      "Delivered, not confirmed." in _c_typed_body,
+      _window(_c_typed_body, "id=console", 900))
+check("and is not presented as the save having happened",
+      not any(w in _window(_c_typed_body, "id=console", 1400).lower()
+              for w in ("saved.", "success", "world was written")),
+      _window(_c_typed_body, "id=console", 1400))
+
+# -- a gated command is asked about before it is sent
+check("DoExit does not send on the first submit", _c_ask_calls == [], _c_ask_calls)
+check("it draws the question on the page rather than redirecting away",
+      _c_ask_st == 200 and _c_ask_where == "", [_c_ask_st, _c_ask_where])
+check("the question names the command and the map",
+      "Send <code>DoExit</code> to The Island?" in _c_ask_body,
+      _window(_c_ask_body, "Send <code>", 300))
+check("and says plainly that it stops that map",
+      "stop The Island" in _c_ask_body, _window(_c_ask_body, "Send <code>", 400))
+check("nothing is announced for a command that was not sent",
+      not any(e["event"].startswith("map.rcon") for e in _c_ask_ev), _c_ask_ev)
+check("the confirmed submit sends it, once",
+      [c["command"] for c in _c_go_calls] == ["DoExit"], _c_go_calls)
+check("to the one map that was asked about",
+      (_c_go_calls[0]["host"], _c_go_calls[0]["port"])
+      == _CONSOLE_TARGETS["The Island"], _c_go_calls)
+
+# -- classification is the verb, not a word that appears somewhere in the line
+check("an announcement that mentions DestroyAll is sent as typed",
+      [c["command"] for c in _c_chat_calls]
+      == ["ServerChat DestroyAll is banned on this cluster"], _c_chat_calls)
+check("and is not turned into a question",
+      "Send <code>" not in _c_chat_body, _window(_c_chat_body, "id=console", 600))
+check("while a gated verb in lower case is still gated",
+      _c_lower_calls == [] and _c_lower_st == 200, _c_lower_calls)
+check("an empty box sends nothing at all", _c_none_calls == [], _c_none_calls)
+check("and says so rather than pretending", "Type a command first" in _c_none_body,
+      _window(_c_none_body, "warn", 300))
+
+# -- three failures, three different pages
+check("a refused connection says nothing was sent",
+      "the connection was refused" in _c_ref_body and "not proof" in _c_ref_body,
+      _window(_c_ref_body, "id=console", 900))
+check("a timeout says it ran out of time and may still be running",
+      "No answer in time." in _c_slow_body and "still be running" in _c_slow_body,
+      _window(_c_slow_body, "id=console", 900))
+check("an empty answer is neither of those, and not the receipt either",
+      "answered with nothing at all" in _c_mt_body
+      and "Delivered, not confirmed." not in _c_mt_body,
+      _window(_c_mt_body, "id=console", 900))
+check("the three do not render as one another",
+      len({_window(b, " rcon\">", 300)
+           for b in (_c_ref_body, _c_slow_body, _c_mt_body)}) == 3,
+      "two outcomes rendered alike")
+check("a failure is said out loud as a failure",
+      any(e["event"] == "map.rcon_failed" for e in _c_ref_ev), _c_ref_ev)
+
+# -- the password is not on the page, on any path
+for _what, _body in sorted(_c_leak_bodies.items()):
+    check("the admin password is not on the page after %s" % _what,
+          _CONSOLE_PW not in _body, _what)
+check("even when the server itself echoed it back",
+      "auth ok pw=" in _c_leak_bodies["an answer that quotes it"]
+      and _CONSOLE_PW not in _c_leak_bodies["an answer that quotes it"],
+      _window(_c_leak_bodies["an answer that quotes it"], "<pre>", 200))
+
+# -- and the two spellings of ARK's receipt stay one spelling
+check("the console and the relay agree on what ARK's receipt looks like",
+      _appmod.consolelib.NO_RESPONSE in _bot_s1.IGNORE, _bot_s1.IGNORE)
 
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
