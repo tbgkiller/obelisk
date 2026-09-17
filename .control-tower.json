@@ -1,0 +1,42 @@
+{
+  "project": "Obelisk",
+  "landing": {
+    "base": "main",
+    "junk_allow": []
+  },
+  "tests": {
+    "cwd": ".",
+    "fail_signal": "FAILURES: \\[",
+    "commands": {
+      "maps": "python -m obelisk.test_maps",
+      "ui": "python -m obelisk.test_ui",
+      "mods": "python -m obelisk.test_mods"
+    }
+  },
+  "guards": [
+    {
+      "id": "catalogue-read-path-shape",
+      "file": "obelisk/maps.py",
+      "guard": "        why = shape_problem(key, e.get(\"map_id\"))",
+      "disable": "        why = \"\"  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "maps",
+      "why": "stored text is not trusted more than typed text - catalogue() re-runs the charset rules on every stored entry, so a hand-edited settings.json cannot put a traversal in a save path or two spellings of one container name past a check that only ever ran on the form"
+    },
+    {
+      "id": "mod-id-is-a-number",
+      "file": "obelisk/mods.py",
+      "guard": "    if not mod_id.isdigit():",
+      "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "mods",
+      "why": "a mod id that is not a number can never match anything the server downloads - it is the one shape rule the mod list has, and Phase 3's map mod_id hint mirrors it so the cross-check compares like with like"
+    },
+    {
+      "id": "world-note-silent-when-disk-unreadable",
+      "file": "obelisk/ui.py",
+      "guard": "        note = \"\" if seen is None else (",
+      "disable": "        note = \"\" if False else (",
+      "expected_test": "ui",
+      "why": "the on-disk look is advice, never a gate, and a filesystem that will not answer gets no note at all rather than a guessed one - claiming 'no saved world' about a disk nobody could read is the honesty rule this project keeps"
+    }
+  ]
+}
