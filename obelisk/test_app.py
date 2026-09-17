@@ -1739,9 +1739,9 @@ _STOP_EMITS = [
     # A map whose container is up and whose RCON never opened. An operator's Stop still
     # stops - `down` removes the containers, so nothing is left to revive - and this is
     # the stage that says which map never became operational.
-    "Valguero is running but never answered RCON, so it had not finished booting and "
-    "has no world to close. Stop was asked for, so it is being removed with the rest - "
-    "worth watching it come up when the cluster is back. Stopping the servers now.",
+    "Valguero never answered RCON and is not stopped, so it had not finished booting "
+    "and has no world to close. Stop was asked for, so it is being removed with the "
+    "rest - worth watching it come up when the cluster is back. Stopping the servers now.",
     "Cluster stopped. Saves and settings are untouched; Launch brings it back.",
 ]
 _lost = [t for t in _STOP_EMITS if ui.phase_index(t, ui.STOP_PHASES) < 0]

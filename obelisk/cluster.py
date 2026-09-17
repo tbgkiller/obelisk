@@ -325,8 +325,8 @@ def _ask_to_exit(one, rcon, details):
             # closed - and signalling it is what put three maps in a boot loop. It is
             # not exited, it is not finished, and it will be asked again next turn.
             one["state"], one["exited"] = NOT_READY, False
-            one["why"] = ("its container is running but it is not answering RCON yet "
-                          "(%s) - it has not finished starting" % e)
+            one["why"] = ("it is not answering RCON yet (%s) and its container has "
+                          "not stopped - it has not finished starting" % e)
         else:
             # Refused, and Docker answered that nothing is running under that name.
             # Both halves are facts, and together they mean there is nothing to shut
@@ -449,8 +449,8 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
         if one["exited"]:
             continue
         if one["state"] == NOT_READY:
-            one["why"] = ("its container is running but it never answered RCON in %ds - "
-                          "it has not finished starting" % budget)
+            one["why"] = ("it never answered RCON in %ds and its container has not "
+                          "stopped - it has not finished starting" % budget)
             log.warning("%s was never ready to be asked to close: %s", label, one["why"])
         else:
             one["state"] = LATE
@@ -580,24 +580,39 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
     # stop needs the RCON it has not opened yet, hangs past its grace period, is killed,
     # and is revived to boot again.
     if not_ready and require_ready:
+        # What the hold may honestly claim depends on what has already happened, and on
+        # the incident's own shape - some maps closed, one was still booting - several
+        # maps are already saved, closed and stopped by the time this decides. Saying
+        # "nothing has been stopped" there is both untrue and a trap: those maps stay
+        # down until somebody presses Launch, and this is the only thing that could tell
+        # them so.
+        shut_early = sorted(l for l, c in closed.items() if c.get("exited"))
+        if shut_early:
+            moved = ("%s had already saved and closed before this, so %s down now and "
+                     "will stay down until Launch - the rest of the cluster is still "
+                     "up. Nothing was removed and no build was swapped."
+                     % (_and(shut_early), "they are" if len(shut_early) > 1 else "it is"))
+        else:
+            moved = ("Nothing has been stopped, nothing has been removed and nothing "
+                     "has been changed.")
         say("cluster.not_ready",
-            "%s %s running but never answered RCON, so %s had not finished booting - "
-            "and a server mid-boot cannot be stopped safely, because the image's own "
-            "safe stop needs the RCON it has not opened yet. Nothing has been stopped, "
-            "nothing has been removed and nothing has been changed; this can run again "
-            "once %s answering."
-            % (_and(not_ready), "are" if many else "is",
-               "they" if many else "it", "they are" if many else "it is"),
+            "%s never answered RCON and %s not stopped, so %s had not finished booting "
+            "- and a server mid-boot cannot be stopped safely, because the image's own "
+            "safe stop needs the RCON it has not opened yet. %s This can run again once "
+            "%s answering."
+            % (_and(not_ready), "are" if many else "is", "they" if many else "it",
+               moved, "they are" if many else "it is"),
             level="warning",
+            # The closed maps carry their own reason rather than a flattened label, so
+            # the line that says a container is stopped is the line about that map.
             detail="\n".join(
-                "%-14s %s" % (l, "Saved and closed" if closed[l].get("exited")
+                "%-14s %s" % (l, (closed[l].get("why") or "") if closed[l].get("exited")
                               else "NOT STOPPED - %s" % (closed[l].get("why") or ""))
                 for l in sorted(closed)))
         return False, ("%s had not finished booting and never answered RCON, so the "
-                       "cluster was not stopped. Nothing was signalled, nothing was "
-                       "removed and no build was swapped - this can be applied on the "
-                       "next window, once every map is answering."
-                       % _and(not_ready))
+                       "cluster was not stopped. %s This can be applied on the next "
+                       "window, once every map is answering."
+                       % (_and(not_ready), moved))
 
     if closed:
         shut = [l for l, c in closed.items() if c.get("exited")]
@@ -624,10 +639,10 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
         # nothing is left for a restart policy to bring back. Said out loud all the same,
         # because a map that never finished starting is the one to watch next time.
         say("cluster.not_ready",
-            "%s %s running but never answered RCON, so %s had not finished booting and "
-            "%s no world to close. Stop was asked for, so %s being removed with the "
-            "rest - worth watching %s come up when the cluster is back. Stopping the "
-            "servers now."
+            "%s never answered RCON and %s not stopped, so %s had not finished "
+            "booting and %s no world to close. Stop was asked for, so %s being removed "
+            "with the rest - worth watching %s come up when the cluster is back. "
+            "Stopping the servers now."
             % (_and(not_ready), "are" if many else "is", "they" if many else "it",
                "have" if many else "has", "they are" if many else "it is",
                "them" if many else "it"),

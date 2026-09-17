@@ -591,9 +591,9 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
     step("stopping the cluster and the staging server")
     ok, detail = stop_all()
     if not ok:
-        announce.say("ark.update_failed", "Could not stop the cluster: %s" % detail,
+        announce.say("ark.update_failed", "The cluster was not stopped: %s" % detail,
                      level="error")
-        return False, "could not stop the cluster: %s" % detail, {}
+        return False, "the cluster was not stopped: %s" % detail, {}
 
     # ---- the last question before anything moves: are the worlds still readable?
     #

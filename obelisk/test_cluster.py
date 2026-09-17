@@ -566,8 +566,9 @@ check("a map that never answers is still not-ready when the budget runs out",
       all(o["state"] == clusterctl.NOT_READY for o in out_n.values()), out_n)
 check("and every one of them is named in the result, not quietly dropped",
       sorted(out_n) == ["Ragnarok", "The Island"], sorted(out_n))
-check("with a reason that says what is actually true of it",
-      all("never answered RCON" in o["why"] and "running" in o["why"]
+check("with a reason that says only what was actually established about it",
+      all(o["why"] == ("it never answered RCON in 30s and its container has not "
+                       "stopped - it has not finished starting")
           for o in out_n.values()), out_n)
 
 # 2. refused, and nothing is running under that name: it really has gone.
@@ -733,9 +734,14 @@ check("nothing was signalled at all, in fact", calls == [], calls)
 check("and the channel is told why, as a warning",
       any(e["event"] == "cluster.not_ready" and e["level"] == "warning"
           for e in said_r), [(e["event"], e["level"]) for e in said_r])
-check("saying nothing has been stopped, rather than implying it has",
-      any("Nothing has been stopped" in e["text"] for e in said_r),
-      [e["text"] for e in said_r])
+check("and when nothing has been stopped, it says exactly that",
+      any("Nothing has been stopped, nothing has been removed and nothing has been "
+          "changed." in e["text"] for e in said_r), [e["text"] for e in said_r])
+check("with each held map's own reason in the detail",
+      any(e["event"] == "cluster.not_ready"
+          and "NOT STOPPED - it never answered RCON in 30s and its container has not "
+              "stopped - it has not finished starting" in e["detail"] for e in said_r),
+      [e["detail"] for e in said_r])
 
 # The operator's Stop. Same cluster, same state, opposite answer - and it says so.
 said_o = []
@@ -786,8 +792,13 @@ ok_w, msg_w = clusterctl.stop(
     say=lambda *a, **k: None, require_ready=True)
 check("a map that answers again after being called closed holds the stop",
       not ok_w, msg_w)
-check("and it is the one that answered that is named",
-      "The Island" in msg_w and "Ragnarok" not in msg_w, msg_w)
+check("and it is the one that answered again that is named as holding the stop",
+      msg_w.startswith("The Island had not finished booting and never answered RCON, "
+                       "so the cluster was not stopped."), msg_w)
+check("while the map that really did close is named as one that is down until Launch",
+      "Ragnarok had already saved and closed before this, so it is down now and will "
+      "stay down until Launch - the rest of the cluster is still up. Nothing was "
+      "removed and no build was swapped." in msg_w, msg_w)
 check("nothing was signalled on the strength of the silence that turned out to be a lie",
       calls == [], calls)
 
