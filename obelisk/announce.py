@@ -259,6 +259,10 @@ ICONS = {
     # be wrong with that world - it is the looking that failed.
     "unchecked": "⚠",
     "stop_refused": "⚠",
+    # A map whose container is up and whose RCON never opened: still starting,
+    # not closed. Amber because nothing is broken - it is the stop that has to
+    # wait, and an apply refuses rather than signal a server mid-boot.
+    "not_ready": "⚠",
     # In progress
     "start": "▶", "prime_start": "▶", "apply_start": "▶",
     "point_start": "▶",

@@ -185,6 +185,38 @@ STOP_SLOT = "cluster.stop"
 ABSENT_POLLS = 6
 
 
+# ------------------------------------------------- four states, and only two mean "gone"
+#
+# On 2026-09-16 an apply stopped three maps that had not finished booting. RCON refusing
+# a connection had been read as "the server has exited", and a refusal has two opposite
+# meanings: the world is closed, or the server has not opened its RCON port yet - and
+# ARK on this cluster can take more than ten minutes to open it. So `docker compose
+# down` put SIGTERM into a booting server; the image's verified two-stage shutdown needs
+# RCON to save the world and prove it, could not get it, hung past its stop_grace_period,
+# was killed, was revived by the restart policy, and started another ten-minute boot.
+# Three maps went round that loop.
+#
+# Silence cannot tell those two apart. Docker can, because a server that has exited
+# leaves a container that is no longer running and a server that is still booting leaves
+# one that is. So every map a stop touches ends in exactly one of four states:
+#
+#   CLOSED        DoExit taken, RCON went quiet, and Obelisk stopped that container
+#   ALREADY_GONE  DoExit undeliverable, and its container is not running
+#   NOT_READY     DoExit undeliverable, and its container IS running - it is alive
+#   LATE          DoExit taken, still answering when the budget ran out
+#
+# `exited` is True for CLOSED and ALREADY_GONE and for nothing else. NOT_READY reading
+# as exited is the whole of the incident, so it is the one line that must never move.
+CLOSED = "closed"
+ALREADY_GONE = "already_gone"
+NOT_READY = "not_ready"
+LATE = "late"
+
+# Not a fifth state: the in-flight marker for a map that has taken DoExit and is being
+# waited on. Everything still wearing it when the budget runs out becomes LATE.
+CLOSING = "closing"
+
+
 def _and(names):
     """"Ragnarok", or "Ragnarok and Valguero", or "A, B and C" - for a sentence a
     person reads rather than a list they parse."""
@@ -206,40 +238,157 @@ def _are(count, noun="player"):
     return "%d %s%s" % (count, noun, " is" if count == 1 else "s are")
 
 
+def _rcon_for(store):
+    """The real RCON caller, as a function, so more than one thing can use it.
+
+    The final re-verify needs to ask the same question over the same connection the
+    exit did. Two spellings of "talk to this server" would be two things to keep in
+    step, and the one that drifted would be the one nobody was watching.
+    """
+    from . import bot
+    password = str(store.get("admin_password") or "")
+
+    def rcon(host, port, cmd):
+        return run_coroutine(bot.rcon_with(host, port, password, cmd, timeout=30))
+
+    return rcon
+
+
+def _exit_names(store):
+    """{label: (container name, compose service)} for every map this cluster defines.
+
+    The container name is what Docker is asked about and the service is what compose is
+    told to stop, and a stop needs both: one to decide whether a silent map is gone or
+    still booting, the other to close the door behind a map that has gone.
+    """
+    proj = project(store)
+    out = {}
+    try:
+        rows = build_plan(store)["maps"]
+    except Exception as e:                          # noqa: BLE001 - reported, not fatal
+        log.warning("could not work out this cluster's container names: %s", e)
+        return out
+    for r in rows:
+        out[r["name"]] = (naming.container_name(proj, r["instance"]), r["instance"])
+    return out
+
+
+def _container_running(name, details):
+    """Is there a container of this name that Docker says is running?
+
+    This is the discriminator the four states turn on, and it is asked per map per turn
+    rather than once for the batch, because the answer changes while a stop is
+    happening - a map that was booting a minute ago may be serving now, and that is
+    exactly what the retry is watching for.
+
+    Asked the way wait_healthy already asks it. "Could not ask" is read as not running,
+    which is what Docker itself says about a container that does not exist: a name it
+    cannot inspect is a name that is not up.
+    """
+    if not name:
+        return False
+    try:
+        got = details([name]) or {}
+    except Exception as e:                          # noqa: BLE001 - reported, not fatal
+        log.warning("could not ask Docker about %s: %s", name, e)
+        return False
+    return (got.get(name) or {}).get("state") == "running"
+
+
+def _ask_to_exit(one, rcon, details):
+    """Send one DoExit and classify what came back. True if it was taken.
+
+    A NOT_READY map comes back through here on the next turn, which is the whole retry:
+    the same send, the same classification, no second wait and no second budget.
+    """
+    host, port = one["at"]
+    try:
+        rcon(host, port, "DoExit")
+    except Exception as e:                          # noqa: BLE001 - reported, not raised
+        if _container_running(one["name"], details):
+            # Refused by a container that is up. This is a server that has not opened
+            # RCON yet, not one that has closed - and signalling it is what put three
+            # maps in a boot loop. It is not exited, it is not finished, and it will be
+            # asked again on the next turn.
+            one["state"], one["exited"] = NOT_READY, False
+            one["why"] = ("its container is running but it is not answering RCON yet "
+                          "(%s) - it has not finished starting" % e)
+        else:
+            # Refused, and nothing is running under that name. Nothing to shut down.
+            one["state"], one["exited"] = ALREADY_GONE, True
+            one["why"] = ("did not answer DoExit (%s) and its container is not running"
+                          % e)
+        return False
+    one["state"], one["exited"] = CLOSING, False
+    one["why"] = "asked to exit"
+    return True
+
+
+def _close_the_door(one, label, stop_container):
+    """Stop this map's container the moment its own world is closed.
+
+    Per map, here, rather than left to the batch `docker compose down` that can be up
+    to EXIT_BUDGET later. That gap is a window in which a restart policy can bring a
+    server back up behind a stop that believes it is finished - and stopping a
+    container whose game is already gone is exactly the branch the image documents as
+    safe ("Server is not running, no need to save world before stopping container").
+
+    Best effort, because the world is already written either way: the danger this
+    closes is revival, and the batch `down` still follows.
+    """
+    if not one.get("key"):
+        log.warning("%s closed its world but Obelisk could not tell which service to "
+                    "stop - the stop that follows will get it", label)
+        one["why"] += ", though Obelisk could not tell which container to stop"
+        return False
+    try:
+        ok, why = stop_container(one["key"])
+    except Exception as e:                          # noqa: BLE001 - reported, not fatal
+        ok, why = False, str(e)
+    if not ok:
+        log.warning("%s closed its world but its container did not stop: %s", label, why)
+        one["why"] += ", though its container did not stop (%s)" % why
+        return False
+    one["why"] += ", and its container is stopped"
+    return True
+
+
 def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
-                interval=EXIT_INTERVAL, running=None, on_exited=None):
-    """Ask every running map to save and close itself. {label: {"exited", "why"}}.
+                interval=EXIT_INTERVAL, running=None, on_exited=None, details=None,
+                stop_container=None):
+    """Ask every running map to save and close itself. {label: {exited, why, state}}.
 
     Sent, then waited for, because the point is the waiting: `DoExit` returns as soon as
     the command is accepted, which is the same lie SaveWorld tells. What says the world
     is closed is the server no longer answering at all.
 
+    `state` is one of CLOSED, ALREADY_GONE, NOT_READY or LATE, and `exited` is True for
+    the first two only. A map that will not answer is not automatically a map that has
+    gone: if its container is still running it is alive - almost always still booting -
+    and calling that "exited" is what let a stop signal three servers mid-boot.
+
     Best-effort per map on purpose. A map that will not exit is not a reason to refuse
-    the stop - it is a reason to say so and let the ordinary shutdown handle it, which is
-    no worse than what happened before this existed.
+    the stop here - it is a reason to say so and let the caller decide, which is what
+    `require_ready` on stop() does with it.
     """
-    from . import bot
     now = now or time.time
     wait = wait or time.sleep
+    details = details or (lambda names: dockerctl.container_details(names))
+    stop_container = stop_container or (lambda key: stop_one(store, key))
     targets = running(store) if running else running_instances(store)
     if not targets:
         return {}
 
-    password = str(store.get("admin_password") or "")
     if rcon is None:
-        def rcon(host, port, cmd):
-            return run_coroutine(bot.rcon_with(host, port, password, cmd, timeout=30))
+        rcon = _rcon_for(store)
 
+    named = _exit_names(store)
     seen = {}
     for label, host, port in targets:
-        try:
-            rcon(host, port, "DoExit")
-            seen[label] = {"exited": False, "why": "asked to exit", "at": (host, port)}
-        except Exception as e:
-            # It did not take the command. Nothing has been disturbed - the ordinary
-            # stop still follows - so this is reported, not raised.
-            seen[label] = {"exited": True, "why": "did not answer DoExit (%s)" % e,
-                           "at": None}
+        cname, key = named.get(label, (host, None))
+        seen[label] = {"at": (host, port), "name": cname, "key": key,
+                       "state": None, "exited": False, "why": ""}
+        _ask_to_exit(seen[label], rcon, details)
 
     started = now()
     # Counted, so the reporter can say "3 of 10" rather than just naming maps into the
@@ -251,12 +400,22 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
         for label, one in seen.items():
             if one["exited"]:
                 continue
+            if one["state"] == NOT_READY:
+                # The readiness retry, folded into the wait that already exists. A map
+                # that has not opened RCON is asked again each turn inside the same
+                # budget; a wait of its own, per map, one after another, would cost the
+                # cluster far more than the bug it was fixing.
+                _ask_to_exit(one, rcon, details)
+                continue
             host, port = one["at"]
             try:
                 rcon(host, port, "ListPlayers")
             except Exception:
-                # Silence is the signal. The world is written and the process is gone.
-                one["exited"], one["why"] = True, "closed its world and exited"
+                # Silence *after* a DoExit that was taken. That is the world written and
+                # the process gone - so the container is stopped here and now.
+                one["state"], one["exited"] = CLOSED, True
+                one["why"] = "closed its world and exited"
+                _close_the_door(one, label, stop_container)
                 shut += 1
                 if on_exited:
                     try:
@@ -270,18 +429,60 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
         wait(interval)
 
     for label, one in seen.items():
-        if not one["exited"]:
+        if one["exited"]:
+            continue
+        if one["state"] == NOT_READY:
+            one["why"] = ("its container is running but it never answered RCON in %ds - "
+                          "it has not finished starting" % budget)
+            log.warning("%s was never ready to be asked to close: %s", label, one["why"])
+        else:
+            one["state"] = LATE
             one["why"] = "still answering %ds after DoExit" % budget
             log.warning("%s did not close its world: %s", label, one["why"])
-    return {l: {"exited": o["exited"], "why": o["why"]} for l, o in seen.items()}
+    return {l: {"exited": o["exited"], "why": o["why"], "state": o["state"]}
+            for l, o in seen.items()}
 
 
-def stop(store, close_worlds=True, say=None, **kw):
+def still_answering(store, rcon=None, running=None):
+    """Which maps answer RCON right now. Sorted labels, never raises.
+
+    The last look before anything is signalled. Everything a stop concludes about a
+    closed world is drawn from silence, and silence is also what a server that has not
+    opened its RCON port yet sounds like - so a map that is talking again was never
+    closed, whatever the wait decided about it a minute earlier.
+    """
+    rcon = rcon or _rcon_for(store)
+    try:
+        targets = running(store) if running else running_instances(store)
+    except Exception as e:                          # noqa: BLE001 - reported, not fatal
+        log.warning("could not re-check which maps are answering: %s", e)
+        return []
+    awake = []
+    for label, host, port in targets:
+        try:
+            rcon(host, port, "ListPlayers")
+        except Exception:
+            continue
+        awake.append(label)
+    return sorted(awake)
+
+
+
+def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
     """Stop the cluster's containers. Saves and the data root are untouched.
 
     Every map is asked to close its own world first. `close_worlds=False` skips that for
     a caller that has already done it, or that is stopping a cluster whose worlds are
     not worth waiting on.
+
+    `require_ready` is the difference between the two callers, and it is a judgement
+    about consent rather than about safety alone. An apply is unattended and wants a
+    cluster it can promote a build over, so a map that is still booting - NOT_READY -
+    makes it refuse and `docker compose down` is never reached: nothing is signalled,
+    nothing is removed, and the window comes round again. An operator pressing Stop has
+    asked for a stop, so it proceeds, because `down` removes the containers and a
+    removed container is not one a restart policy can revive - but the message names
+    every map that never became operational, because that is a thing worth knowing.
 
     `say` is the announcer, defaulting to the real one. A stop is minutes long and was
     silent for all of them, which is not a thing a person can tell apart from nothing
@@ -332,7 +533,55 @@ def stop(store, close_worlds=True, say=None, **kw):
                 "whatever each server wrote on its way out. Reason: %s" % e,
                 level="warning")
 
-    late = sorted(l for l, c in closed.items() if not c.get("exited"))
+    # One last probe of every map, before anything is signalled and before any of this
+    # is announced as done. Everything above concludes a world is closed from silence,
+    # and silence is also the sound of a server that has not opened its RCON port yet -
+    # so a map that is answering again was never closed, whatever the wait decided about
+    # it a minute ago. It is alive, which is NOT_READY, and this is the point at which
+    # that is still cheap to act on.
+    if closed:
+        try:
+            awake = still_answering(store, rcon=kw.get("rcon"), running=kw.get("running"))
+        except Exception as e:                      # noqa: BLE001 - never blocks a stop
+            log.warning("could not re-check the maps before stopping: %s", e)
+            awake = []
+        for label in awake:
+            if closed.get(label, {}).get("exited"):
+                log.warning("%s answered RCON again after being reported closed", label)
+                closed[label] = {
+                    "exited": False, "state": NOT_READY,
+                    "why": ("it answered RCON again after it was reported closed - it "
+                            "is alive, not stopped")}
+
+    late = sorted(l for l, c in closed.items() if c.get("state") == LATE)
+    not_ready = sorted(l for l, c in closed.items() if c.get("state") == NOT_READY)
+    many = len(not_ready) > 1
+
+    # The refusal, and it happens before the summary and long before `down`. A map whose
+    # container is up and whose RCON never opened is a server mid-boot: SIGTERM into one
+    # of those is the incident this whole section exists for, because the image's safe
+    # stop needs the RCON it has not opened yet, hangs past its grace period, is killed,
+    # and is revived to boot again.
+    if not_ready and require_ready:
+        say("cluster.not_ready",
+            "%s %s running but never answered RCON, so %s had not finished booting - "
+            "and a server mid-boot cannot be stopped safely, because the image's own "
+            "safe stop needs the RCON it has not opened yet. Nothing has been stopped, "
+            "nothing has been removed and nothing has been changed; this can run again "
+            "once %s answering."
+            % (_and(not_ready), "are" if many else "is",
+               "they" if many else "it", "they are" if many else "it is"),
+            level="warning",
+            detail="\n".join(
+                "%-14s %s" % (l, "Saved and closed" if closed[l].get("exited")
+                              else "NOT STOPPED - %s" % (closed[l].get("why") or ""))
+                for l in sorted(closed)))
+        return False, ("%s had not finished booting and never answered RCON, so the "
+                       "cluster was not stopped. Nothing was signalled, nothing was "
+                       "removed and no build was swapped - this can be applied on the "
+                       "next window, once every map is answering."
+                       % _and(not_ready))
+
     if closed:
         shut = [l for l, c in closed.items() if c.get("exited")]
         worlds = "world" if len(closed) == 1 else "worlds"
@@ -353,6 +602,22 @@ def stop(store, close_worlds=True, say=None, **kw):
                               else "DID NOT CLOSE - %s" % (closed[l].get("why") or ""))
                 for l in sorted(closed)))
 
+    if not_ready:
+        # Not a refusal here: Stop was asked for, and `down` removes the containers, so
+        # nothing is left for a restart policy to bring back. Said out loud all the same,
+        # because a map that never finished starting is the one to watch next time.
+        say("cluster.not_ready",
+            "%s %s running but never answered RCON, so %s had not finished booting and "
+            "%s no world to close. Stop was asked for, so %s being removed with the "
+            "rest - worth watching %s come up when the cluster is back. Stopping the "
+            "servers now."
+            % (_and(not_ready), "are" if many else "is", "they" if many else "it",
+               "have" if many else "has", "they are" if many else "it is",
+               "them" if many else "it"),
+            level="warning",
+            detail="\n".join("%-14s %s" % (l, closed[l].get("why") or "")
+                             for l in not_ready))
+
     rc, out = _compose(store, "down")
     if rc != 0:
         return False, "docker compose down failed:\n%s" % out[-1500:]
@@ -363,6 +628,11 @@ def stop(store, close_worlds=True, say=None, **kw):
                 "look when the cluster is back."
                 % (_and(late), "its" if len(late) == 1 else "their",
                    "it is" if len(late) == 1 else "they are"))
+    if not_ready:
+        note += (" %s never finished booting - %s running but never answered RCON - so "
+                 "%s removed without having a world to close."
+                 % (_and(not_ready), "they were" if many else "it was",
+                    "they were" if many else "it was"))
     return True, ("Cluster stopped. Saves and settings are untouched; Launch brings it "
                   "back.%s" % note)
 
