@@ -68,8 +68,9 @@ _FAILURES = [
     # was never going to come up.
     (re.compile(r"FOLLOWER waiting for configured master"),
      "A new server build is out, and this map is waiting for the map that downloads "
-     "first to fetch it. That map is not running, so the wait will not end. Start the "
-     "map that downloads first, or pre-stage the new build before this map starts."),
+     "first to fetch it (the server's own log calls that map the MASTER). That map is "
+     "not running, so the wait will not end. Start the map that downloads first, or "
+     "pre-stage the new build before this map starts."),
 ]
 
 _MARKERS = [

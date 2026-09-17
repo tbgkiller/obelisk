@@ -324,7 +324,7 @@ check("a map this cluster added can be the one that downloads first",
       first["map"] == "svart" and first["role"] == "downloads first", first)
 check("which is the position and nothing else - the files it downloads are the same",
       build_plan(st, in_use_ports=set(), host_ram_gb=64)["maps"][1]["role"]
-      == "waits for the download", build_plan(st, in_use_ports=set())["maps"][1])
+      == "waits its turn", build_plan(st, in_use_ports=set())["maps"][1])
 st.patch({"maps": "island,svart"})
 
 st.data["maps"]["svart"] = {"mem_limit": "12g"}

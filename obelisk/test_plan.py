@@ -26,8 +26,8 @@ check("ports count up from the base", [r["game_port"] for r in p["maps"]] == [77
       [r["game_port"] for r in p["maps"]])
 check("rcon has its own range", [r["rcon_port"] for r in p["maps"]] == [27020, 27021, 27022])
 check("first map downloads first", p["maps"][0]["role"] == "downloads first")
-check("the rest wait for the download",
-      all(r["role"] == "waits for the download" for r in p["maps"][1:]))
+check("the rest wait their turn",
+      all(r["role"] == "waits its turn" for r in p["maps"][1:]))
 
 p = build_plan(store(), in_use_ports=[7778, 7779, 27021])
 check("skips ports already bound on the host",

@@ -28,7 +28,7 @@ web UI after it is running.
 
 **Start with the server** - Bring the cluster back automatically when the array starts, the way a cluster you rely on should. Turn it off for a throwaway or test cluster you would rather start by hand. Only has an effect when Unraid's Compose Manager folder is mounted, which is what makes the cluster a stack.
 
-**Maps to run** - Which maps this cluster runs, in order. The first one downloads first: it downloads the ~30 GB of server files once and the others wait for the download, instead of every map fetching the same thing at once. That job is over once the files are on disk - it is not authority over updates; the thing that tries a new build before your cluster does is the Staging server. Ports are assigned in this order, so reordering a live cluster moves everyone's ports - add to the end instead.
+**Maps to run** - Which maps this cluster runs, in order. The first one downloads first: it downloads the ~30 GB of server files once and the others wait for the download, instead of every map fetching the same thing at once. The others only wait like that at first boot; after that they start together. But this map keeps the download job for every later update too, so the rest stall if it is not running when a new build lands. What it never does is decide whether to take a build - the thing that tries a new build before your cluster does is the Staging server. Ports are assigned in this order, so reordering a live cluster moves everyone's ports - add to the end instead.
 
 **First game port** - Each map takes one UDP port counting up from here. Ten maps starting at 7777 uses 7777-7786. Make sure the range is free and forwarded.
 
