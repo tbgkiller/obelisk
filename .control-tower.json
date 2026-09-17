@@ -37,6 +37,22 @@
       "disable": "        note = \"\" if False else (",
       "expected_test": "ui",
       "why": "the on-disk look is advice, never a gate, and a filesystem that will not answer gets no note at all rather than a guessed one - claiming 'no saved world' about a disk nobody could read is the honesty rule this project keeps"
+    },
+    {
+      "id": "mod-id-hint-is-a-number",
+      "file": "obelisk/maps.py",
+      "guard": "    if mod_id and not MOD_ID_OK.match(mod_id):",
+      "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "maps",
+      "why": "a mod id that is not 4 to 8 digits can never match a real entry in the mod list, so letting a typo through unrefused would make Phase 3's cross-check confidently wrong about every map that has one - this is checked at the same door the key, map id and name already are"
+    },
+    {
+      "id": "mod-note-silent-when-state-unjudgeable",
+      "file": "obelisk/ui.py",
+      "guard": "            if mod_seen is not None:",
+      "disable": "            if True:",
+      "expected_test": "ui",
+      "why": "mod_state answers None when there is nothing truthful to say - no mod_id, or a stored one too malformed to compare - and the render has to treat that the same way it treats an unreadable disk: no note at all, never a guessed one, even though the raw mod id is still shown"
     }
   ]
 }
