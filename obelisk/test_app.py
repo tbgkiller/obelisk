@@ -6599,7 +6599,8 @@ check("a page with no result to show keeps it folded",
 check("submitting three empty boxes says to fill them in", _empty43[0] == 302,
       _empty43[0])
 check("rather than answering with the key's charset rule",
-      any("fill in all three boxes" in a for a in _amber43(_empty43))
+      any("fill in the key, the map id and the name - the mod id is optional" in a
+          for a in _amber43(_empty43))
       and not any("lowercase letters and digits" in a for a in _amber43(_empty43)),
       _amber43(_empty43))
 check("and nothing was written", _empty43[3] == _empty43[4], _cat43(_empty43))

@@ -244,7 +244,8 @@ def check_entry(store, key, name, map_id, mod_id="", existing=None):
         # Three empty boxes is not a broken rule, it is a form that has not been filled
         # in - and answering it with the key charset rule reads as though something
         # about the key was wrong.
-        raise ValueError("fill in all three boxes - a key, the map id and a name")
+        raise ValueError("fill in the key, the map id and the name - the mod id is "
+                         "optional")
 
     # The rules about the two strings themselves, shared with the read path so a stored
     # entry answers to exactly what a typed one does.

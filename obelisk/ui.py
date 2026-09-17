@@ -2391,8 +2391,8 @@ WORLD_THERE = "a saved world is already on disk under this map id"
 # The same advisory shape as the pair above, for the other hint a catalogue entry can
 # carry: whether the mod it names is one this map actually loads. Grey either way -
 # see maps.mod_state for the three states and why the third (nothing said) exists.
-NO_MOD_YET = ("this mod is not in this cluster's mod list yet — the map will not "
-             "load until the mod id is added under Mods")
+NO_MOD_YET = ("this mod is not in this cluster's mod list yet — a mod map loads "
+              "from that list, which is under Mods on the Settings page")
 MOD_THERE = "this mod is already in this cluster's mod list"
 MAP_ID_ADVICE = ("The map id is the level name the server expects, and the folder its "
                  "world is saved in — <code>Ragnarok_WP</code>, "
