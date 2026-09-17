@@ -293,9 +293,9 @@ check("and the second form starts after the first one has ended",
 check("both inside the one fieldset the operator sees as one place",
       _in_order(_owned, "<fieldset id=maps>", 'action="/admin/maps"',
                 'action="/admin/maps/catalogue"', "</fieldset>"), _owned[:200])
-check("the define form asks for the three things a map is",
-      _in_order(_owned, "name=key", "name=map_id", "name=name"),
-      _window(_owned, "name=key", 400))
+check("the define form asks for the three things a map is, plus the optional mod hint",
+      _in_order(_owned, "name=key", "name=map_id", "name=name", "name=mod_id"),
+      _window(_owned, "name=key", 500))
 check("folded away by default, because most clusters never open it",
       "<details id=ownmaps " in _owned and "<details id=ownmaps open" not in _owned,
       _window(_owned, "<details id=ownmaps", 100))
@@ -356,6 +356,59 @@ check("the maps this cluster added are listed with what defines them",
                 ">Svartalfheim_WP<"), _window(_owned, "Maps this cluster", 500))
 check("including the mod they come from, when one was given",
       "mod 893657" in _owned, _window(_owned, "893657", 200))
+
+# ---- and that mod is cross-checked against this map's own effective mod list
+#
+# _own's svart carries mod_id 893657 but no cluster ever set mod_ids or passive_mods,
+# so right now the honest answer is "not there" - grey, not amber.
+check("a mod not in any list this map can see gets the grey not-there note",
+      "is not in this cluster" in _window(_owned, "893657", 400)
+      and "<div class=warn>" not in _window(_owned, "893657", 400),
+      _window(_owned, "893657", 400))
+
+_modcheck = store()
+_modcheck.data["map_catalogue"] = list(_own.data["map_catalogue"])
+_modcheck.patch({"mod_ids": "893657"})
+check("carrying it in the cluster-wide mod list flips the note to in-the-list",
+      "is already in this cluster"
+      in _window(render_maps_editor(_modcheck, saves={}), "893657", 400),
+      _window(render_maps_editor(_modcheck, saves={}), "893657", 400))
+
+_modcheck.patch({"mod_ids": ""})
+_modcheck.patch({"mod_ids": "893657"}, map_name="svart")
+check("this map's own per-map override carries the same note, cluster-wide or not",
+      "is already in this cluster"
+      in _window(render_maps_editor(_modcheck, saves={}), "893657", 400),
+      _window(render_maps_editor(_modcheck, saves={}), "893657", 400))
+
+_modcheck.patch({"mod_ids": ""}, map_name="svart")
+_modcheck.patch({"passive_mods": "893657"}, map_name="svart")
+check("a mod only ever loaded passively reads as known too - it is loaded either way",
+      "is already in this cluster"
+      in _window(render_maps_editor(_modcheck, saves={}), "893657", 400),
+      _window(render_maps_editor(_modcheck, saves={}), "893657", 400))
+
+_nohint = store()
+_nohint.data["map_catalogue"] = [{"key": "svart", "name": "Svartalfheim",
+                                  "map_id": "Svartalfheim_WP", "custom": True,
+                                  "official": False}]
+_nohint_html = render_maps_editor(_nohint, saves={})
+check("no mod id at all says nothing about the mod list",
+      "mod list" not in _window(_nohint_html, "Svartalfheim_WP", 400),
+      _window(_nohint_html, "Svartalfheim_WP", 400))
+
+_badhint = store()
+_badhint.data["map_catalogue"] = [{"key": "svart", "name": "Svartalfheim",
+                                   "map_id": "Svartalfheim_WP", "custom": True,
+                                   "official": False, "mod_id": "not-a-number"}]
+_badhint_html = render_maps_editor(_badhint, saves={})
+check("a malformed stored mod id says nothing about the mod list either",
+      "mod list" not in _window(_badhint_html, "Svartalfheim_WP", 400),
+      _window(_badhint_html, "Svartalfheim_WP", 400))
+check("but the map is still listed in the catalogue, not dropped for it",
+      ">svart<" in _badhint_html and ">Svartalfheim<" in _badhint_html,
+      _window(_badhint_html, "Maps this cluster", 500))
+
 check("and a way to forget one",
       'name=forget value="svart"' in _owned, _window(_owned, "name=forget", 200))
 check("which says it deletes nothing",

@@ -99,6 +99,19 @@ check("not inside the per-map settings, which is a different thing called maps",
 check("and not in the maps list either - adding a map is not choosing to run it",
       st.get("maps") == "island", st.get("maps"))
 
+# fresh() points OBELISK_ARK at its own folder - save and restore around it here too
+# (see the same guard further down), or the world-dir checks below would go looking
+# for "svart"'s saved world in this fixture's folder instead of the main one's.
+_ark_was0 = os.environ.get("OBELISK_ARK")
+_emptymod_st, _ = fresh()
+_emptymod = mapcat.add_entry(_emptymod_st, "svart", "Svartalfheim", "Svartalfheim_WP")
+check("no mod id given stores no mod_id key at all - Phase 2 behaviour, unchanged",
+      "mod_id" not in _emptymod, _emptymod)
+if _ark_was0 is None:
+    os.environ.pop("OBELISK_ARK", None)
+else:
+    os.environ["OBELISK_ARK"] = _ark_was0
+
 check("the catalogue is built-ins plus this cluster's own",
       set(mapcat.catalogue(st)) == set(mapcat.BY_KEY) | {"svart"},
       sorted(mapcat.catalogue(st)))
@@ -237,6 +250,27 @@ refuses("a name another map already has is refused, whatever the case",
 refuses("including one of Obelisk's own names",
         mapcat.check_entry, st, "goodkey", "the island", "Fine_WP")
 check("nothing was written by any of those refusals",
+      [e["key"] for e in st.data[mapcat.SECTION]] == ["svart"],
+      st.data[mapcat.SECTION])
+
+# ---- mod_id: optional, but a non-empty one is held to the mod list's own shape
+#
+# An unvalidated id could never match a list entry, so letting a typo through here
+# would make mod_state confidently wrong about every map that carries one - refusing it
+# at the same door as the other three fields is what keeps that cross-check honest.
+for bad, why in (("not-a-number", "letters"), ("12", "too short"),
+                 ("123456789", "too long")):
+    _badmod = refuses("a mod id that is %s is refused" % why,
+                      mapcat.check_entry, st, "goodkey", "Fine Name", "Fine_WP",
+                      mod_id=bad)
+    check("naming the rule, in the voice mods.add already uses",
+          "a mod id is a number" in _badmod, _badmod)
+check("an empty mod id is not a refusal - the hint is optional",
+      mapcat.check_entry(st, "goodkey", "Fine Name", "Fine_WP", mod_id="") == "goodkey")
+check("and neither is a well-formed one",
+      mapcat.check_entry(st, "goodkey", "Fine Name", "Fine_WP", mod_id="893657")
+      == "goodkey")
+check("none of those touched the store either",
       [e["key"] for e in st.data[mapcat.SECTION]] == ["svart"],
       st.data[mapcat.SECTION])
 
@@ -432,6 +466,60 @@ check("and so does everything that map was configured with",
       _dst.data["maps"].get("vann") == {"mem_limit": "9g"}, _dst.data["maps"])
 check("which is the same promise the maps editor already made about built-ins",
       _dst.get("maps") == "island", _dst.get("maps"))
+
+# ---- mod_id: an advisory cross-check against this map's own effective mod list
+#
+# The claim mod_state makes is "nothing in this cluster loads that mod", checked
+# against mod_ids AND passive_mods, both read per-map with store.get(..., map_name=)
+# rather than cluster-wide - both are per-map overridable (schema.PER_MAP_KEYS), and a
+# map's own override is the one that is actually true for it.
+_mst, _mark = fresh()
+_before3 = _copy.deepcopy(_mst.data)
+mapcat.add_entry(_mst, "svart", "Svartalfheim", "Svartalfheim_WP", mod_id="893657")
+_moved3 = [k for k in set(_before3) | set(_mst.data)
+          if _before3.get(k) != _mst.data.get(k)]
+check("defining a map with a mod id still only changes the catalogue",
+      _moved3 == [mapcat.SECTION], _moved3)
+
+check("no mod_id given is a state mod_state can't judge",
+      mapcat.mod_state(_mst, "island") is None, mapcat.mod_state(_mst, "island"))
+check("cluster-wide mod_ids not carrying it reads as not-in-the-list",
+      mapcat.mod_state(_mst, "svart") is False, mapcat.mod_state(_mst, "svart"))
+_mst.patch({"mod_ids": "893657"})
+check("carrying it in the cluster-wide list reads as in-the-list",
+      mapcat.mod_state(_mst, "svart") is True, mapcat.mod_state(_mst, "svart"))
+_mst.patch({"mod_ids": ""})
+check("taking it back out reverts to not-in-the-list",
+      mapcat.mod_state(_mst, "svart") is False, mapcat.mod_state(_mst, "svart"))
+_mst.patch({"mod_ids": "111111"}, map_name="svart")
+check("a per-map override carrying it wins, even though the cluster-wide list doesn't",
+      mapcat.mod_state(_mst, "svart") is False, mapcat.mod_state(_mst, "svart"))
+_mst.patch({"mod_ids": "893657"}, map_name="svart")
+check("this map's own override carrying it reads as in-the-list too",
+      mapcat.mod_state(_mst, "svart") is True, mapcat.mod_state(_mst, "svart"))
+_mst.patch({"mod_ids": ""}, map_name="svart")
+_mst.patch({"passive_mods": "893657"}, map_name="svart")
+check("a mod only ever loaded passively still counts as known",
+      mapcat.mod_state(_mst, "svart") is True, mapcat.mod_state(_mst, "svart"))
+_mst.patch({"passive_mods": ""}, map_name="svart")
+
+_mst.data[mapcat.SECTION].append({"key": "broken", "name": "Broken",
+                                  "map_id": "Broken_WP", "mod_id": "not-a-number"})
+check("a malformed stored mod id is not dropped from the catalogue",
+      mapcat.known(_mst, "broken"), sorted(mapcat.catalogue(_mst)))
+check("but there is nothing truthful mod_state can say about it",
+      mapcat.mod_state(_mst, "broken") is None, mapcat.mod_state(_mst, "broken"))
+
+# Advisory only: a map whose mod is missing from every list still runs, still plans,
+# still offers itself to be added. Nothing here is a gate.
+_mst.patch({"maps": "island,svart"})
+check("svart's mod is confirmed missing from every list right now",
+      mapcat.mod_state(_mst, "svart") is False, mapcat.mod_state(_mst, "svart"))
+_plan9 = build_plan(_mst, in_use_ports=set(), host_ram_gb=64)
+check("and the plan is still ok - a missing mod is advice, never a refusal",
+      _plan9["ok"], _plan9["problems"])
+check("svart is still an offered map, not dropped for lacking its mod",
+      "svart" in mapcat.catalogue(_mst), sorted(mapcat.catalogue(_mst)))
 
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)
