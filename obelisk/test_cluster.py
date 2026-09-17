@@ -2218,6 +2218,76 @@ check("it does not know the roster exists",
 check("and still returns a map that did not answer separately from an empty one",
       "silent.append" in _pl_src, _pl_src[-500:])
 
+# ---------------------------------------------------------------- one look, by hand
+#
+# The read-only half of the settle machinery, for an operator driving a stop by hand:
+# SaveWorld, then look, then DoExit. Same world path, same sidecar list, no loop - and
+# the same rule about a disk that will not answer, which is that it gets no note at all
+# rather than a guessed one.
+def _look(readings=None, sidecars=(), listdir=None, key="island"):
+    disk = Disk(readings or {}, sidecars=sidecars)
+
+    def stat(path):
+        # The real os.stat tells "nothing is there" apart from "I could not look", and
+        # the whole point of this function is that those two are not the same answer.
+        if path not in disk.readings:
+            raise FileNotFoundError(2, "No such file or directory")
+        return disk.stat(path)
+
+    return clusterctl.world_on_disk(st_q, key, stat=stat, exists=disk.exists,
+                                    listdir=listdir or (lambda p: ["TheIsland_WP.ark"]))
+
+
+_w_there = _look({ISLAND_ARK: [(76 * 1024 * 1024, 1700.0)]})
+check("a world that is there is reported present, with its size and its mtime",
+      _w_there["present"] and _w_there["mtime"] == 1700.0
+      and _w_there["size"] == 76 * 1024 * 1024, _w_there)
+check("and it is the live world of the map that was asked about",
+      _w_there["path"] == ISLAND_ARK, _w_there)
+
+_w_gone = _look({})
+check("a readable folder with no world in it is an absence, not a silence",
+      _w_gone is not None and _w_gone["present"] is False, _w_gone)
+
+
+def _cannot_list(path):
+    raise OSError(13, "Permission denied")
+
+
+check("a folder that will not list answers nothing at all, rather than 'no world'",
+      _look({ISLAND_ARK: [(120, 1700.0)]}, listdir=_cannot_list) is None,
+      "an unreadable disk was read as an absence")
+
+
+class _WontStat(Disk):
+    def stat(self, path):
+        raise OSError(13, "Permission denied")
+
+
+_w_unstatable = clusterctl.world_on_disk(
+    st_q, "island", stat=_WontStat({}).stat, exists=lambda p: False,
+    listdir=lambda p: ["TheIsland_WP.ark"])
+check("nor does a world file that lists and will not stat", _w_unstatable is None,
+      _w_unstatable)
+
+for _suffix in _restore.SIDECARS:
+    _w_hot = _look({ISLAND_ARK: [(120, 1700.0)]}, sidecars=[ISLAND_ARK + _suffix])
+    check("a %s file open beside the world is reported, not hidden" % _suffix,
+          _w_hot["hot"] == [_suffix], _w_hot)
+check("and a world with nothing open beside it says so",
+      _w_there["hot"] == [], _w_there)
+
+# It reuses the paths the stop path already proves saves with, rather than inventing a
+# second opinion about where a world lives or what counts as one being written.
+_wsrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),
+                encoding="utf-8").read().split("def world_on_disk")[1].split(
+                    chr(10) + "def ")[0]
+check("the one look reads the same world path the settle wait does",
+      "savepoints.live_world(store, key, ark_root)" in _wsrc, _wsrc[:400])
+check("and the same sidecar list", "restore.SIDECARS" in _wsrc, _wsrc)
+check("and never waits for anything",
+      "while " not in _wsrc and "for _turn" not in _wsrc, _wsrc)
+
 _appsrc_2a = io.open(os.path.join(os.path.dirname(__file__), "app.py"),
                      encoding="utf-8").read()
 for _what, _frag in sorted({

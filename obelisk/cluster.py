@@ -1004,6 +1004,55 @@ def readable_dir(path, listdir=None):
     return True, ""
 
 
+def world_on_disk(store, key, ark_root=None, stat=None, exists=None, listdir=None):
+    """One map's live world file as the disk has it right now, or None. One look.
+
+    The read-only half of the settle machinery above, for somebody watching by hand.
+    worlds_settled() polls this same pair of facts - the file's own size and mtime, and
+    whether a SQLite sidecar is open beside it - in a loop, because a stop has to *wait*
+    for them. An operator who has just sent SaveWorld does not need a loop; they need
+    the same two facts once, and a page they can reload. So this is that single poll,
+    built out of the same savepoints.live_world path and the same restore.SIDECARS, and
+    deliberately not a second opinion on what "settled" means: it reports what is there
+    and judges nothing.
+
+    None means the filesystem could not answer - an unmounted volume, a share whose
+    permissions have drifted, a map whose world path cannot be worked out - and the page
+    says nothing at all in that case rather than reporting an absence it did not
+    establish. The same rule the on-disk map-id note keeps, for the same reason: "no
+    saved world" about a disk nobody could read is a guess wearing a fact's clothes.
+
+    Otherwise {"path", "present", "size", "mtime", "hot"}, where `present` False is a
+    directory that read fine and has no world in it - a map that has never launched.
+    """
+    from . import restore, savepoints
+    stat = stat or os.stat
+    exists = exists or os.path.exists
+
+    try:
+        path = savepoints.live_world(store, key, ark_root)
+    except Exception as e:                           # noqa: BLE001 - never a blank page
+        log.info("could not work out where %s's world lives: %s", key, e)
+        return None
+    ok, why = readable_dir(os.path.dirname(path), listdir=listdir)
+    if not ok:
+        log.info("could not read where %s's world lives: %s", key, why)
+        return None
+
+    hot = sorted(s for s in restore.SIDECARS if exists(path + s))
+    try:
+        info = stat(path)
+    except FileNotFoundError:
+        return {"path": path, "present": False, "size": 0, "mtime": 0.0, "hot": hot}
+    except OSError as e:
+        # The directory listed and this entry would not stat: a broken link, or a
+        # permission that applies to the file alone. Not "there is no world here".
+        log.info("could not read %s's world file: %s", key, e)
+        return None
+    return {"path": path, "present": True, "size": info.st_size,
+            "mtime": info.st_mtime, "hot": hot}
+
+
 def worlds_intact(store, ark_root=None, verify=None, exists=None, keys=None,
                   deep=True, lexists=None, isdir=None, listdir=None):
     """Every selected map's world, checked on disk. {label: {ok, why, key}}.
