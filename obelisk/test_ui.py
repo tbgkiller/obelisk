@@ -2692,5 +2692,207 @@ check("the log is capped like the ban ledger", _cap.KEEP == 200, _cap.KEEP)
 check("and shares one id whitelist with the bans, rather than growing a second",
       _cap.valid_netid is _bans.valid_netid, "two whitelists")
 
+# ---- the console: what may be sent, and what an answer is worth
+#
+# Two rules, and the second one is the reason this exists. A command is classified by
+# its first word and by nothing else, so an announcement that mentions DestroyAll is an
+# announcement. And ARK's "Server received, But no response!!" means the line arrived
+# and nothing else, so it is shown as delivered-not-confirmed - never as a result.
+from . import console as _con
+from . import ui as _ui
+
+_CON_ROW = {"map": "island", "name": "The Island", "instance": "island",
+            "game_port": 7777, "rcon_port": 27020, "memory": "16g",
+            "memory_why": "base", "role": "primary"}
+
+
+def _mapc(**kw):
+    return render_map("The Island", "island", row=dict(_CON_ROW), **kw)
+
+
+# -- classification is on the first token, case-insensitively
+check("a save is safe whatever case it is typed in",
+      not any(_con.gated(c) for c in ("SaveWorld", "saveworld", "SAVEWORLD")),
+      "a save asked to be confirmed")
+check("and so is everything the page offers as a button",
+      not any(_con.gated(c) for c, _w in _con.CURATED), _con.CURATED)
+for _cmd in ("DestroyAll", "DestroyWildDinos", "DestroyStructures", "DestroyMyTarget",
+             "KillPlayer", "Shutdown", "DoExit", "Kick", "Ban",
+             "ClearPlayerInventory", "DestroyTribeDinos", "DestroyTribeStructures",
+             "DestroyTribeIdPlayers"):
+    check("%s is asked about before it is sent" % _cmd, _con.gated(_cmd), _cmd)
+    check("and so is %s in lower case" % _cmd, _con.gated(_cmd.lower()), _cmd.lower())
+check("with its arguments still attached",
+      _con.gated("KillPlayer 12345") and _con.gated("  doexit  "),
+      "arguments changed the classification")
+# The whole reason classification is a token test and not a substring test.
+check("a command that only mentions a gated word is not that command",
+      not _con.gated("ServerChat DestroyAll is banned on this cluster"),
+      "an announcement was read as a destruction")
+check("nor is one that carries it as an argument",
+      not _con.gated('ServerChatToPlayer "Bob" doexit means stop'),
+      "an argument was read as a verb")
+check("an unban is not a ban", not _con.gated("UnbanPlayer 7656119"), "unban gated")
+check("and nothing at all is not a command",
+      not _con.gated("") and not _con.gated("   "), "blank gated")
+check("the first token is the verb, lowercased",
+      _con.first_token("  DoExit now ") == "doexit", _con.first_token("  DoExit now "))
+
+# -- the confirmation says what it will do, not just what it is called
+_eff = _con.effect("DoExit", "The Island")
+check("a stop says it stops that map", "stop The Island" in _eff, _eff)
+check("and says the map stays down", "stays down" in _eff, _eff)
+check("a destroy nobody enumerated still says it destroys",
+      "cannot bring back" in _con.effect("DestroyTribeIdDinos 42", "The Island"),
+      _con.effect("DestroyTribeIdDinos 42", "The Island"))
+check("a ban names the map it is a ban from",
+      _con.effect("BanPlayer 765", "The Island").count("The Island") == 2,
+      _con.effect("BanPlayer 765", "The Island"))
+check("a safe command has nothing to confirm",
+      _con.effect("ListPlayers", "The Island") == "", "a safe command had an effect")
+
+# -- what came back, and what it is worth
+_v_del = _con.result("SaveWorld", body=_con.NO_RESPONSE, password="pw")
+check("ARK's received-but-no-response is delivered, not confirmed",
+      _v_del["kind"] == _con.DELIVERED
+      and _v_del["headline"] == "Delivered, not confirmed.", _v_del)
+check("it says the line arrived and says the rest is unknown",
+      "arrived" in _v_del["detail"] and "nothing at all about whether" in _v_del["detail"],
+      _v_del["detail"])
+check("and it is never dressed up as a result",
+      not any(w in (_v_del["headline"] + _v_del["detail"]).lower()
+              for w in ("success", "saved.", "worked", "done.")), _v_del)
+check("it is not the colour of a finished thing either",
+      _v_del["level"] == "warn", _v_del)
+
+_v_ans = _con.result("ListPlayers", body="0. Bob, 7656119\n", password="pw")
+check("a real answer is shown as the server said it",
+      _v_ans["kind"] == _con.ANSWERED and "Bob" in _v_ans["text"], _v_ans)
+_v_empty = _con.result("Nonsense", body="", password="pw")
+check("an empty answer is its own outcome, not the received one",
+      _v_empty["kind"] == _con.EMPTY and _v_empty["kind"] != _v_del["kind"], _v_empty)
+check("and it reads differently, rather than borrowing the other's words",
+      _v_empty["detail"] != _v_del["detail"]
+      and "does not know the command" in _v_empty["detail"], _v_empty)
+
+import asyncio as _aio_con, time as _time_con
+_v_time = _con.result("SaveWorld", error=_aio_con.TimeoutError(), timeout=20,
+                      password="pw")
+_v_ref = _con.result("SaveWorld", error=ConnectionRefusedError("refused"), password="pw")
+_v_den = _con.result("SaveWorld", error=PermissionError("RCON auth failed"),
+                     password="pw")
+_v_broke = _con.result("SaveWorld", error=ValueError("packet too short"), password="pw")
+check("a timeout says it ran out of time and may still be running",
+      _v_time["kind"] == _con.TIMEOUT and "within 20s" in _v_time["detail"]
+      and "still be running" in _v_time["detail"], _v_time)
+check("a refusal says nothing was sent, and is not proof the world closed",
+      _v_ref["kind"] == _con.REFUSED and "never left" in _v_ref["detail"]
+      and "not proof" in _v_ref["detail"], _v_ref)
+check("a rejected password is neither of those",
+      _v_den["kind"] == _con.DENIED and "would not accept" in _v_den["detail"], _v_den)
+check("and anything else is reported as itself",
+      _v_broke["kind"] == _con.BROKE and "packet too short" in _v_broke["detail"],
+      _v_broke)
+check("the seven outcomes each read as themselves",
+      len({v["headline"] for v in (_v_del, _v_ans, _v_empty, _v_time, _v_ref,
+                                   _v_den, _v_broke)}) == 7,
+      [v["headline"] for v in (_v_del, _v_ans, _v_empty, _v_time, _v_ref, _v_den,
+                               _v_broke)])
+
+# -- the password never reaches the page, on any path
+_PW = "correct-horse-battery"
+for _what, _res in (
+        ("a body that quotes it", _con.result("x", body="auth=%s ok" % _PW,
+                                              password=_PW)),
+        ("an error that quotes it",
+         _con.result("x", error=OSError("connect failed [pw=%s]" % _PW), password=_PW)),
+        ("the command itself", _con.result("Whatever %s" % _PW, body="fine",
+                                           password=_PW))):
+    check("the admin password is taken out of %s" % _what,
+          _PW not in (_res["text"] + _res["detail"] + _res["command"]), _res)
+    check("and the page built from it does not carry it either",
+          _PW not in _mapc(result=_res), _what)
+
+# -- the fieldset itself
+_con_pg = _mapc()
+_con_box = _from(_con_pg, "<fieldset id=console>")
+check("the map page carries a console", "<fieldset id=console>" in _con_pg,
+      _window(_con_pg, "id=console", 200))
+check("directly after the detail it belongs to",
+      _in_order(_con_pg, "<fieldset id=detail>", "<fieldset id=console>"),
+      "the console is not below the detail")
+check("posting to this map's own route",
+      'action="/admin/cluster/map/island/rcon"' in _con_box,
+      _window(_con_box, "<form", 200))
+check("and to no other map's",
+      "/admin/cluster/map/ragnarok" not in _con_box, _con_box)
+for _cmd, _why in _con.CURATED:
+    check("%s is offered as a button" % _cmd,
+          'name=command value="%s"' % _cmd in _con_box, _window(_con_box, "button", 400))
+check("with a box to type anything else into",
+      "name=text" in _con_box and "Send" in _con_box, _window(_con_box, "name=text", 300))
+check("all of it in one form, so a button and the box cannot post to two places",
+      _con_box.count("<form") == 1, _con_box)
+check("and the page says it reaches this map and nothing else",
+      "no other map" in _con_box, _window(_con_box, "<legend>Console", 500))
+check("it says what a received-but-no-response answer is worth before one arrives",
+      "it is not a result" in _con_box, _window(_con_box, "<legend>Console", 800))
+check("the two consuming reads are explained rather than offered",
+      "GetChat" in _con_box and 'value="GetChat"' not in _con_box, _con_box)
+
+# -- the answer, on the page
+_shown = _mapc(result=_v_del)
+check("a delivered answer is amber on the page, in its own words",
+      "Delivered, not confirmed." in _shown and "warn rcon" in _shown,
+      _window(_shown, "Delivered", 300))
+check("and it names the command and the map it went to",
+      _in_order(_window(_shown, "Delivered", 300), "SaveWorld", "The Island"),
+      _window(_shown, "Delivered", 300))
+check("a refusal is red, and not the same box",
+      "problem rcon" in _mapc(result=_v_ref), _window(_mapc(result=_v_ref), "rcon", 300))
+check("what the server said is shown as it said it",
+      "<pre>0. Bob, 7656119</pre>" in _mapc(result=_v_ans),
+      _window(_mapc(result=_v_ans), "<pre>", 200))
+check("and an outcome with nothing to quote quotes nothing",
+      "<pre>" not in _window(_mapc(result=_v_time), "No answer in time", 400),
+      _window(_mapc(result=_v_time), "No answer", 400))
+
+# -- the question a gated command has to pass
+_ask = _mapc(ask="DoExit")
+check("the confirmation names the command and the map",
+      "Send <code>DoExit</code> to The Island?" in _ask, _window(_ask, "Send <code>", 300))
+check("and says plainly that it will stop that map",
+      "stop The Island" in _ask, _window(_ask, "Send <code>", 400))
+check("it carries the command through to the confirmed post",
+      'name=command value="DoExit"' in _ask and "name=confirm" in _ask,
+      _window(_ask, "<form", 400))
+check("and the unconfirmed form is not left underneath it",
+      "name=text" not in _from(_ask, "<fieldset id=console>"),
+      _from(_ask, "<fieldset id=console>"))
+check("with a way out that does not send anything",
+      "Cancel" in _ask, _window(_ask, "Cancel", 200))
+
+# -- the save-landed indicator
+_world = {"path": "/srv/ark/TheIsland_WP.ark", "present": True,
+          "size": 79 * 1024 * 1024, "mtime": _time_con.time() - 90, "hot": []}
+_with_world = _mapc(world=_world)
+check("a world that is on disk is reported, with when it was last written",
+      "World file on disk" in _with_world and "1m ago" in _with_world,
+      _window(_with_world, "World file", 300))
+check("and how big it is, so a save that wrote nothing is visible",
+      "79.0 MB" in _with_world, _window(_with_world, "World file", 300))
+check("a world that is not there yet says so in grey",
+      _ui.NO_WORLD_YET in _mapc(world=dict(_world, present=False)),
+      _window(_mapc(world=dict(_world, present=False)), "id=console", 600))
+# The same rule the map-id note keeps: an absence nobody could look for is not an
+# absence, and a page that guesses one is a page that lies about a disk.
+check("a filesystem that cannot answer is not guessed at",
+      "World file on disk" not in _mapc(world=None)
+      and _ui.NO_WORLD_YET not in _from(_mapc(world=None), "<fieldset id=console>"),
+      _from(_mapc(world=None), "<fieldset id=console>"))
+check("a world still being written says so rather than looking finished",
+      "part-way through writing" in _mapc(world=dict(_world, hot=["-wal"])),
+      _window(_mapc(world=dict(_world, hot=["-wal"])), "World file", 500))
+
 print("\nFAILURES:", fails if fails else "none")
 sys.exit(1 if fails else 0)

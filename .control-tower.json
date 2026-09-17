@@ -56,6 +56,14 @@
       "why": "mod_state answers None when there is nothing truthful to say - no mod_id, or a stored one too malformed to compare - and the render has to treat that the same way it treats an unreadable disk: no note at all, never a guessed one, even though the raw mod id is still shown"
     },
     {
+      "id": "received-is-not-a-result",
+      "file": "obelisk/console.py",
+      "guard": "    if text.strip() == NO_RESPONSE:",
+      "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "ui",
+      "why": "ARK answers most commands that change something with \"Server received, But no response!!\", which means the line arrived and nothing else whatsoever. Without this branch that answer falls through to \"the server answered\" and is rendered as a result in the grey of a finished thing - so an operator who sent SaveWorld and got a receipt would read it as a save that landed, which is the exact belief that stopped a cluster into three worlds still being written"
+    },
+    {
       "id": "refused-rcon-is-not-an-exited-server",
       "file": "obelisk/cluster.py",
       "guard": "        if _might_be_running(one[\"name\"], details):",

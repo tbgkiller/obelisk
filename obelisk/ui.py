@@ -18,6 +18,7 @@ from .presets import PRESETS
 from . import mods as modlib
 from . import bans as bansctl
 from . import cap as capctl
+from . import console as consolelib
 
 CSS = """
 :root{color-scheme:dark}
@@ -175,6 +176,12 @@ td.points button{margin:0 6px 6px 0}
 .evbar div{height:100%;background:#5b9;transition:width .5s}
 .ev pre{background:#0f1620;border:1px solid #232b36;border-radius:6px;padding:8px 10px;
   margin:6px 0 0;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-word}
+/* What the server said, shown as it said it. Wrapped rather than scrolled sideways:
+   ListPlayers on a full map is long and a horizontal scrollbar hides the end of it. */
+.rcon pre{background:#0f1620;border:1px solid #232b36;border-radius:6px;padding:8px 10px;
+  margin:8px 0 0;overflow-x:auto;font-size:12px;white-space:pre-wrap;word-break:break-word}
+.rconrow{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:6px 0}
+.rconrow input[type=text]{flex:1;min-width:220px}
 .card{display:flex;gap:14px;align-items:flex-start;background:#12151a;border:1px solid #303845;border-radius:10px;padding:12px 14px;margin:10px 0}
 .staged{background:#16241b;color:#a9d8b5;border:1px solid #27452f;border-radius:8px;padding:10px 13px;margin:10px 0;font-size:13px}
 label.inline{display:inline-block;margin-left:10px;font-size:12px;color:#8b94a3}
@@ -2260,15 +2267,139 @@ def render_jump(launched=True):
     return render_jump_row(JUMPS if launched else JUMPS_FRESH)
 
 
+# ------------------------------------------------------------------ the console
+#
+# What this box is, said once, because it is also what it refuses to be. It sends one
+# line to one map's RCON port and there is no other path out of it: no signal to the
+# container, no fallback that stops anything, nothing that reaches a second map. A
+# server that will not answer RCON is a server this console cannot touch, and that is
+# the point of it rather than a limitation of it - the stop that damaged three worlds
+# went through a SIGTERM that no amount of confirming would have made safe.
+CONSOLE_IS = ("Sends one command to this map’s RCON port and nothing else — "
+              "no other map, and nothing that signals or stops the container. A map "
+              "that is down or has not opened RCON yet simply refuses, and that "
+              "refusal is what you will be shown.")
+
+CONSOLE_ANSWERS = ("What comes back is what the server said. ARK answers most commands "
+                   "that change something with “received, but no response”, "
+                   "which means the line arrived and nothing more — it is not a "
+                   "result, and this page will not dress it up as one.")
+
+WORLD_WRITING = ("a %s file is open beside it — this map is part-way through "
+                 "writing its world right now, and the save has not finished")
+
+
+def _console_world(world):
+    """The read-only look at this map's world file: is it there, and when was it last
+    written.
+
+    A stat, never a gate, and the one thing an operator needs between SaveWorld and
+    DoExit: a world whose mtime is older than the save they just sent has not started
+    writing, and a world with a hot SQLite sidecar beside it has not finished. Both of
+    those are the same two facts the stop path waits on, read once instead of in a loop.
+
+    `world` is None when the filesystem could not answer, and then this says nothing at
+    all - the same rule the map-id note keeps. An absence somebody could not look for is
+    not an absence.
+    """
+    if world is None:
+        return ""
+    if not world.get("present"):
+        return '<div class=help>%s</div>' % _e(NO_WORLD_YET)
+    from .backup import human_size
+    when = float(world.get("mtime") or 0)
+    said = ('<div class=help>World file on disk, last written <b>%s</b> '
+            '<span title="%s">(%s)</span> — %s. A save that has landed moves this '
+            'time; reload after a SaveWorld to watch it.</div>'
+            % (_e(_ago(max(0, time.time() - when))), _e(_when_title(when)),
+               _e(time.strftime("%d %b %H:%M:%S", time.localtime(when))),
+               _e(human_size(world.get("size") or 0))))
+    hot = world.get("hot") or []
+    if hot:
+        said += warn_block(WORLD_WRITING % ", ".join(sorted(hot)))
+    return said
+
+
+def _console_result(name, result):
+    """One send, as it came back. Four outcomes that are not allowed to look alike.
+
+    The colour and the headline are console.py's - they are claims about what happened
+    and they belong next to the rules that decide them, not in a template that could
+    quietly upgrade one. This puts them on the page and adds nothing to them.
+    """
+    if not result:
+        return ""
+    body = ('<pre>%s</pre>' % _e(result.get("text") or "")) if result.get("text") else ""
+    return ('<div class="%s rcon"><b>%s</b> <code>%s</code> → %s'
+            '<div style="margin-top:6px">%s</div>%s</div>'
+            % (_e(result.get("level") or "note"), _e(result.get("headline") or ""),
+               _e(result.get("command") or ""), _e(name),
+               _e(result.get("detail") or ""), body))
+
+
+def _console_ask(name, key, command):
+    """The confirmation a destructive or disruptive command has to pass first.
+
+    A page rather than a dialog, like the kick and the restore guards: the answer
+    survives a second tab and can be tested without a browser. It names the command and
+    the map and says what will happen in words, because a question that only repeats the
+    command back can only be answered by somebody who already knew.
+
+    The form it replaces is not drawn underneath it. Two routes to the same act, one of
+    them unconfirmed, is exactly what this step is for.
+    """
+    return ('<div class=warn><b>Send <code>%s</code> to %s?</b> This will %s. '
+            'Nothing has been sent yet.</div>'
+            '<form method=post action="/admin/cluster/map/%s/rcon">'
+            '<input type=hidden name=command value="%s">'
+            '<input type=hidden name=confirm value="1">'
+            '<button type=submit>Yes, send %s to %s</button> '
+            '<a class=help href="/admin/cluster/map/%s#console">Cancel</a></form>'
+            % (_e(command), _e(name), _e(consolelib.effect(command, name)),
+               _e(key), _e(command), _e(command), _e(name), _e(key)))
+
+
+def render_console(name, key, world=None, result=None, ask=""):
+    """One map's RCON console: the safe commands, a box to type in, and the answer.
+
+    One form, one route, one map - the map is the one in the URL and there is no picker,
+    because a console that can be pointed at the wrong server by a select box left on a
+    default is a console that will be.
+    """
+    buttons = "".join(
+        '<button class=ghost type=submit name=command value="%s" title="%s">%s</button>'
+        % (_e(cmd), _e(why), _e(cmd)) for cmd, why in consolelib.CURATED)
+    what = "".join('<div class=help><code>%s</code> — %s</div>' % (_e(c), _e(w))
+                   for c, w in consolelib.CURATED)
+    form = ('<form method=post action="/admin/cluster/map/%s/rcon">'
+            '<div class=rconrow>%s</div>%s'
+            '<div class=rconrow>'
+            '<input type=text name=text placeholder="ListPlayers" autocomplete=off '
+            'spellcheck=false>'
+            '<button type=submit name=send value="1">Send</button></div>'
+            '<div class=help>Anything that destroys, kicks, bans or stops is asked '
+            'about before it is sent. %s</div>'
+            '</form>' % (_e(key), buttons, what, _e(consolelib.CONSUMING_WHY)))
+    return ('<fieldset id=console><legend>Console</legend>'
+            '<div class=help>%s</div><div class=help>%s</div>%s%s%s'
+            '</fieldset>'
+            % (_e(CONSOLE_IS), _e(CONSOLE_ANSWERS), _console_world(world),
+               _console_result(name, result), ask or form))
+
+
 def render_map(name, key, row=None, address="", host_known=True, points=None,
                job=None, state=None, overrides="", notice="",
-               launched=True):
+               launched=True, world=None, result=None, ask=None):
     """One map, in detail, for the things that are only true of that map.
 
     The overview answers "is it up, who is on, is anything broken" for a cluster. Ports,
     RAM, why that RAM, the role, the address people type and the saves the game took are
     none of those things: they are a paragraph per map, and ten of them made two
     full-width tables that pushed the answers off the top of the page.
+
+    `world`, `result` and `ask` belong to the console below the detail and are passed
+    straight through: one look at this map's world file, one command's answer, and the
+    command that is waiting to be confirmed. All three are None on an ordinary GET.
 
     Detail only, on purpose. Whether this map is up and how many are on it is the
     overview's row to state, and stating it here too would be a second copy that can
@@ -2330,8 +2461,13 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
         where = ('<div class=help>This cluster has never been launched. '
                  '<a class=maplink href="%s">Maps</a> on the cluster page is where it '
                  'starts.</div>' % back_to)
+    # The console goes directly under the detail it belongs to: the RCON port is two
+    # rows up, and the map this sends to is the map whose page this is.
+    console = render_console(name, key, world=world, result=result,
+                             ask=_console_ask(name, key, ask) if ask else "")
     return ('<div class=jump><a href="%s">Back to the cluster</a></div>' % back_to
-            + (notice or "") + here + where + connect + saves + (overrides or ""))
+            + (notice or "") + here + where + console + connect + saves
+            + (overrides or ""))
 
 
 # Maps belong to the cluster, not to the settings form: this page is what the cluster
