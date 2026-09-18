@@ -325,10 +325,6 @@ class Cluster:
     def warn(self, minutes, build):
         self.log.append("warn:%d" % minutes)
 
-    def save(self):
-        self.log.append("save")
-        return True, "saved 10 map(s)"
-
     def stop(self):
         self.log.append("stop")
         return self.stop_ok, "stopped" if self.stop_ok else "docker said no"
@@ -348,15 +344,16 @@ updates.remember(s, primed=ready)
 c = Cluster()
 renamed, rename = moved_nothing()
 ok, msg, detail = updates.apply_update(
-    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a clean apply succeeds", ok, msg)
 # No warn step, and that is the point: this apply answers (0, {}, []) - an empty
 # cluster - so there is nobody to count down to. The order either side of it is
-# unchanged, which is what this has always been here to hold.
-check("in the right order: save, stop, start, verify",
-      c.log == ["save", "stop", "start", "verify"], c.log)
+# unchanged, which is what this has always been here to hold. The save that used to
+# open this list is removed by decision: each map writes its own on the way out.
+check("in the right order: stop, start, verify",
+      c.log == ["stop", "start", "verify"], c.log)
 check("the swap happened between stopping and starting", len(renamed) >= 3, renamed)
 check("the live tree ends up holding the staged build",
       ("/ark/ServerFiles.staging", "/ark/ServerFiles") in renamed, renamed)
@@ -374,11 +371,11 @@ updates.remember(s_w, primed=ready)
 c_w = Cluster()
 _renamed_w, rename_w = moved_nothing()
 updates.apply_update(
-    s_w, ARK, installed=OLD_BUILD, warn=c_w.warn, save=c_w.save, stop_all=c_w.stop, start_all=c_w.start,
+    s_w, ARK, installed=OLD_BUILD, warn=c_w.warn, stop_all=c_w.stop, start_all=c_w.start,
     verify=c_w.verify, players=lambda: (2, {"The Island": 2}, []), force=True,
     rename=rename_w, exists=tree_exists(), now=lambda: 1000)
 check("and with players on, warn still comes first - before the save, not just the stop",
-      c_w.log == ["warn:30", "save", "stop", "start", "verify"], c_w.log)
+      c_w.log == ["warn:30", "stop", "start", "verify"], c_w.log)
 drain()
 check("the staged update is cleared once applied", updates.primed(s) is None, s.data)
 check("and what was applied is remembered, so the window does not redo it",
@@ -390,7 +387,7 @@ updates.remember(s, primed=ready)
 c = Cluster()
 _, rename = moved_nothing()
 ok, msg, _ = updates.apply_update(
-    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (5, {"island": 5}, []), force=True,
     rename=rename, exists=tree_exists(), now=lambda: 1000)
 check("force applies over players online", ok, msg)
@@ -431,7 +428,7 @@ class _NoDownloads:
 
 with _NoDownloads() as guard:
     ok, msg, detail = updates.apply_update(
-        s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+        s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
         verify=c.verify, players=lambda: (0, {}, []), rename=rename,
         exists=tree_exists(), now=lambda: 1000)
 check("the scheduled apply succeeds on staged files", ok, msg)
@@ -478,7 +475,7 @@ updates.remember(st, primed=ready)
 c = Cluster()
 renamed, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
-    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a build and a setting apply together", ok, msg)
@@ -498,7 +495,7 @@ _pend.stage(st, {"max_players": 250})
 c = Cluster()
 calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
-    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a settings-only batch applies with nothing staged", ok, msg)
@@ -516,7 +513,7 @@ updates.remember(st, primed=ready)
 c = Cluster()
 calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
-    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a config change is not blocked by who owns updates", ok, msg)
@@ -550,7 +547,7 @@ def tree_rename(src, dst):
 
 c = Cluster(start_ok=False)
 ok, msg, detail = updates.apply_batch(
-    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=tree_rename,
     exists=lambda p: p in tree, now=lambda: 1000)
 check("a cluster that will not start fails the batch", not ok, msg)
@@ -572,7 +569,7 @@ st.data["pending"] = {"cluster": {"max_players": 99999}, "maps": {}, "clears": {
 c = Cluster()
 calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
-    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("an impossible queued value fails the batch", not ok, msg)
@@ -606,7 +603,7 @@ _pend.stage(st, {"max_players": 250})
 c = Cluster(gates=False)
 _, rename = moved_nothing()
 ok, msg, detail = updates.apply_batch(
-    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a batch whose gates fail is a failure", not ok, msg)
@@ -617,115 +614,52 @@ check("the announcement says the settings were put back",
       any("put back" in (i.get("text") or "") for i in drain()))
 
 
-# ---- the cluster is not stopped until every world has finished saving
+# ---- the upstream save is gone, and so is the refusal it drove
 #
-# save() returning means the servers *accepted* SaveWorld, not that they wrote anything.
-# On 2026-09-11 the stop landed in that gap: every world at or above 76 MB was damaged
-# (Astraeos 142 MB, TheCenter 96 MB, Valguero 81 MB, TheIsland 77 MB, Ragnarok 76 MB)
-# and every world at or below 41 MB survived - the small ones simply finished inside
-# however long ten sequential RCON round-trips happened to take.
+# Obelisk used to send SaveWorld to every map here, prove each write on disk with
+# worlds_settled, and refuse the whole batch over any world that had not finished. That
+# came out of 2026-09-11, where a stop landed inside that gap and damaged every world at
+# or above 76 MB.
 #
-# There is no delay here to lengthen, so these drive the real gate: cluster's own
-# settle check, over a scripted filesystem and a clock that only moves when something
-# waits on it. Nothing sleeps.
+# It is REMOVED, by owner decision, and not replaced by a quieter version of itself. The
+# reasoning that replaces it: each map now writes its own save when it is asked to exit,
+# which is what stop_all does per map, and the stop path reads the disk AFTERWARDS and
+# reports what it found instead of gating on it. The gate that stayed is worlds_intact -
+# asked after the stop, while every world is a static file - and it asks the better
+# question: not "did the write finish" but "is this world readable at all".
+#
+# So there is no `save=` parameter, no "saving every world" step, no unsettled refusal
+# and no "every world saved and verified" announcement. These pin their absence, because
+# the cheap mistake is putting one of them back under another name.
+import inspect as _inspect
+import io as _io
+import os as _os
+
+check("apply_batch takes no save at all",
+      "save" not in _inspect.signature(updates.apply_batch).parameters,
+      list(_inspect.signature(updates.apply_batch).parameters))
+
+_upsrc = _io.open(_os.path.join(_os.path.dirname(_os.path.abspath(__file__)),
+                                "updates.py"), encoding="utf-8").read()
+_batchsrc = _upsrc.split("def apply_batch")[1].split(chr(10) + "def ")[0]
+check("nothing in the apply sends SaveWorld",
+      chr(34) + "SaveWorld" + chr(34) not in _batchsrc, _batchsrc[:300])
+check("and it no longer refuses over an unsettled world",
+      "unsettled" not in _batchsrc, _batchsrc[:300])
+check("nor announces one - the ark.saved applause went with the gate",
+      "ark.saved" not in _batchsrc, _batchsrc[:300])
+check("while the gate that stayed is still there, and still after the stop",
+      0 < _batchsrc.index("stop_all()") < _batchsrc.index("check_worlds()"),
+      (_batchsrc.find("stop_all()"), _batchsrc.find("check_worlds()")))
+
+# save_and_settle and save_world are NOT deleted. They still back the operator opt-in
+# backup flush, the RCON console's button and the Discord command - all of which stay.
+# Only the automatic, Obelisk-decided send is gone.
 from . import cluster as _cl
-from . import restore as _restore
-from . import savepoints as _sp
 
-
-class _AllRunning:
-    """Every map in this cluster is up, as far as Docker is concerned."""
-
-    def container_details(self, names, timeout=30):
-        return {n: {"state": "running"} for n in names}
-
-
-class _Disk:
-    """stat/exists over scripted readings - one reading per poll, per path."""
-
-    def __init__(self, readings, sidecars=()):
-        self.readings, self.sidecars, self.polls = dict(readings), set(sidecars), {}
-
-    def stat(self, path):
-        rows = self.readings.get(path)
-        if rows is None:
-            raise OSError("no such file: %s" % path)
-        i = self.polls.get(path, 0)
-        self.polls[path] = i + 1
-        size, mtime = rows(i) if callable(rows) else rows[min(i, len(rows) - 1)]
-        return type("Stat", (), {"st_size": size, "st_mtime": mtime})()
-
-    def exists(self, path):
-        return path in self.sidecars
-
-
-class _Clock:
-    def __init__(self, t=1000.0):
-        self.t = t
-
-    def now(self):
-        return self.t
-
-    def wait(self, seconds):
-        self.t += seconds
-
-
-_real_dockerctl = _cl.dockerctl
-_cl.dockerctl = _AllRunning()
-
-_ISLAND = _sp.live_world(real_store(), "island", ARK)
-_ASTRAEOS = _sp.live_world(real_store(), "astraeos", ARK)
-# 142 MB is what Astraeos actually was on the night this happened.
-_QUIET = {_ISLAND: [(77000000, 1001.0)], _ASTRAEOS: [(142000000, 1001.0)]}
-_WRITING = {_ISLAND: [(77000000, 1001.0)],
-            _ASTRAEOS: lambda i: (40000000 + i * 8000000, 1001.0 + i)}
-
-
-def gated(st_, disk, force=False, budget=60):
-    """An apply whose save is the real save-and-prove, over `disk`."""
-    clk = _Clock()
-    c_ = Cluster()
-    _, rename_ = moved_nothing()
-    ok_, msg_, detail_ = updates.apply_batch(
-        st_, ARK, installed=OLD_BUILD, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
-        save=lambda: _cl.save_and_settle(
-            st_, ARK, rcon=lambda h, p, cmd: None, now=clk.now, stat=disk.stat,
-            exists=disk.exists, wait=clk.wait, budget=budget),
-        players=lambda: (0, {}, []), force=force, rename=rename_,
-        exists=tree_exists(), now=lambda: 4242)
-    return ok_, msg_, detail_, c_
-
-
-# 1. every world settles inside its budget - the apply goes ahead, once
-drain()
-st = real_store()
-updates.remember(st, primed=ready)
-ok, msg, _d, c = gated(st, _Disk(_QUIET))
-check("an apply whose worlds all finish saving succeeds", ok, msg)
-check("and the cluster is stopped exactly once", c.log.count("stop") == 1, c.log)
-check("in the usual order, with the proving folded into the save",
-      c.log == ["warn:0", "stop", "start", "verify"] or
-      c.log == ["stop", "start", "verify"], c.log)
-
-# The save that worked used to say nothing per map - only the refusal did, so the only
-# way to learn what had been proved was for it to fail. One sentence, and the whole list
-# in the detail: say() sends the text to the channel and keeps the detail for the feed.
-_saved = [i for i in drain() if i["event"] == "ark.saved"]
-check("a save that lands is announced, not only one that fails", len(_saved) == 1,
-      _saved)
-check("as a single line rather than one per map",
-      _saved and _saved[0]["text"].count("\n") == 0, _saved and _saved[0]["text"])
-check("the sentence says how many were proved",
-      _saved and "2 of 2" in _saved[0]["text"], _saved and _saved[0]["text"])
-check("and every map that answered is named in the detail",
-      _saved and all(m in _saved[0]["detail"] for m in ("The Island", "Astraeos")),
-      _saved and _saved[0]["detail"])
-check("each one said to be verified on disk, not merely acknowledged",
-      _saved and _saved[0]["detail"].count("Saved (verified on disk)") == 2,
-      _saved and _saved[0]["detail"])
-check("and it is one line per map",
-      _saved and len([l for l in _saved[0]["detail"].splitlines() if l.strip()]) == 2,
-      _saved and _saved[0]["detail"])
+check("cluster still offers a save for the paths that ask for one by hand",
+      callable(getattr(_cl, "save_world", None))
+      and callable(getattr(_cl, "save_and_settle", None)))
 
 
 # ---- warning the people who are actually there
@@ -748,23 +682,18 @@ def warned(players_answer, force=False, minutes=30, raises=False):
     drain()
     st_ = real_store(restart_notice_minutes=minutes)
     updates.remember(st_, primed=ready)
-    clk_ = _Clock()
     c_ = Cluster()
     _, rn_ = moved_nothing()
-    disk_ = _Disk(_QUIET)
     updates.apply_batch(
-        st_, ARK, installed=OLD_BUILD, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
-        save=lambda: _cl.save_and_settle(
-            st_, ARK, rcon=lambda h, p, cmd: None, now=clk_.now, stat=disk_.stat,
-            exists=disk_.exists, wait=clk_.wait, budget=60),
-        players=ask, force=force, rename=rn_,
+        st_, ARK, installed=OLD_BUILD, warn=c_.warn, stop_all=c_.stop,
+        start_all=c_.start, verify=c_.verify, players=ask, force=force, rename=rn_,
         exists=tree_exists(), now=lambda: 4242)
     return c_.log, drain()
 
 
 # 1. empty cluster - no warning, and it says why rather than going quiet
 log_e, ev_e = warned((0, {}, []))
-check("an empty cluster is not warned - it goes straight to saving",
+check("an empty cluster is not warned - it goes straight to the stop",
       not any(l.startswith("warn") for l in log_e), log_e)
 check("and the cluster is still stopped and started exactly once",
       log_e.count("stop") == 1 and log_e.count("start") == 1, log_e)
@@ -776,6 +705,11 @@ check("the skipped warning is announced, not silently dropped",
 _start_e = [i["text"] for i in ev_e if i["event"] == "ark.apply_start"]
 check("the opening line does not promise a warning that is not coming",
       _start_e and "being warned" not in _start_e[0], _start_e)
+# ...nor a save it does not send. It said "Worlds are saved first" for as long as there
+# was a save to do; there is not one now, and the channel must not claim otherwise.
+check("and it does not promise a save either - it says what actually happens",
+      _start_e and "saved" not in _start_e[0] and "asked to exit" in _start_e[0],
+      _start_e)
 
 # 2. players online, forced - the one case a warning is actually owed
 log_p, _ev_p = warned((3, {"The Island": 3}, []), force=True)
@@ -784,9 +718,6 @@ check("a forced apply with players online still warns them",
 _start_p = [i["text"] for i in _ev_p if i["event"] == "ark.apply_start"]
 check("and there the opening line does say players are being warned",
       _start_p and "being warned" in _start_p[0], _start_p)
-# The whole order, not just "warn is in there somewhere". (This helper's save is the
-# real save_and_settle, so it leaves no mark on the fake's log - the warn/save pairing
-# is pinned separately, beside the apply_update ordering test.)
 check("and the warning comes first, before anything is stopped",
       log_p == ["warn:30", "stop", "start", "verify"], log_p)
 
@@ -810,132 +741,26 @@ log_z, _ev_z = warned((3, {"The Island": 3}, []), force=True, minutes=0)
 check("a zero-minute warning is still no warning, players or not",
       not any(l.startswith("warn") for l in log_z), log_z)
 
-# 2. one world never settles - nothing is stopped, and the refusal names it
+
+# ---- a map that is down cannot block an update
+#
+# This tolerance predates the save gate and outlives it. It used to be about a map that
+# could not take SaveWorld; it is now about a map that is not there to be asked to exit
+# at all, which is what stop_all reports per map. Either way one map being off must
+# never mean no update ever applies again.
 drain()
 st = real_store()
 updates.remember(st, primed=ready)
-_before = dict(updates.state(st))
-ok, msg, detail, c = gated(st, _Disk(_WRITING))
-check("a world still writing refuses the apply", not ok, msg)
-check("and the cluster was never stopped", "stop" not in c.log, c.log)
-check("the refusal names the map that did not finish", "Astraeos" in msg, msg)
-check("and does not blame the ones that did", "The Island" not in msg, msg)
-check("which map it was is in the detail too",
-      detail.get("unsettled") == ["Astraeos"], detail)
-_said = drain()
-_refusal = [i for i in _said if i["event"] == "ark.update_failed"]
-check("the refusal reaches the admin channel as a failure", len(_refusal) == 1, _said)
-check("named there as well", _refusal and "Astraeos" in _refusal[0]["text"],
-      _refusal)
-check("and it says the cluster is still up and still serving",
-      _refusal and "still up and still serving" in _refusal[0]["text"], _refusal)
-
-# 6. a refused apply has not spent the disruption, so last_apply must not move
-check("a refused apply does not record an apply",
-      updates.state(st).get("last_apply") == _before.get("last_apply"),
-      updates.state(st))
-check("and the staged build is still staged for the next window",
-      updates.primed(st) is not None)
-
-# 3. the ct-0009 shape: quiet on disk, transaction still open
-for _suffix in _restore.SIDECARS:
-    drain()
-    st = real_store()
-    updates.remember(st, primed=ready)
-    ok, msg, _d, c = gated(st, _Disk(_QUIET, sidecars=[_ASTRAEOS + _suffix]))
-    check("a %s beside a quiet world still refuses the stop" % _suffix, not ok, msg)
-    check("and stops nothing", "stop" not in c.log, c.log)
-    check("naming the map with the open transaction", "Astraeos" in msg, msg)
-
-# 4. quiet, but from before the save was even asked for
-drain()
-st = real_store()
-updates.remember(st, primed=ready)
-ok, msg, _d, c = gated(st, _Disk({_ISLAND: [(77000000, 1001.0)],
-                                  _ASTRAEOS: [(142000000, 999.0)]}))
-check("a world older than its own SaveWorld has not started saving, so the apply waits",
-      not ok and "Astraeos" in msg, msg)
-check("and the cluster stays up", "stop" not in c.log, c.log)
-
-# 5. a map that is down does not block the apply - the old tolerance, unchanged
-drain()
-st = real_store()
-updates.remember(st, primed=ready)
-clk = _Clock()
 c = Cluster()
 _, rename = moved_nothing()
-disk = _Disk({_ISLAND: [(77000000, 1001.0)]})
-
-
-def _astraeos_is_down(host, port, cmd):
-    if port == 27021:
-        raise OSError("connection refused")
-
-
 ok, msg, _d = updates.apply_batch(
-    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start, verify=c.verify,
-    save=lambda: _cl.save_and_settle(
-        st, ARK, rcon=_astraeos_is_down, now=clk.now, stat=disk.stat,
-        exists=disk.exists, wait=clk.wait, budget=60),
-    players=lambda: (0, {}, []), rename=rename, exists=tree_exists(),
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename, exists=tree_exists(),
     now=lambda: 4242)
-check("a map that is down cannot save and must not block the update", ok, msg)
-check("the cluster was still stopped exactly once", c.log.count("stop") == 1, c.log)
+check("a cluster with a map down is still not blocked from updating", ok, msg)
+check("and it was stopped exactly once", c.log.count("stop") == 1, c.log)
 _ev = [i["event"] for i in drain()]
-check("and nothing was refused over the map that could not be asked",
-      "ark.update_failed" not in _ev, _ev)
-
-# ...and the case that reaches the old warning: nobody took the command at all. Still
-# not fatal, still said out loud, still stopped - exactly as before this gate existed.
-drain()
-st = real_store()
-updates.remember(st, primed=ready)
-clk = _Clock()
-c = Cluster()
-_, rename = moved_nothing()
-
-
-def _nobody_home(host, port, cmd):
-    raise OSError("connection refused")
-
-
-ok, msg, _d = updates.apply_batch(
-    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start, verify=c.verify,
-    save=lambda: _cl.save_and_settle(
-        st, ARK, rcon=_nobody_home, now=clk.now, stat=_Disk({}).stat,
-        exists=lambda p: False, wait=clk.wait, budget=60),
-    players=lambda: (0, {}, []), rename=rename, exists=tree_exists(),
-    now=lambda: 4242)
-check("a cluster where no map answered is still not blocked from updating", ok, msg)
-check("and it was stopped once", c.log.count("stop") == 1, c.log)
-_ev = [i["event"] for i in drain()]
-check("with the failed save said out loud rather than swallowed",
-      "ark.apply_note" in _ev and "ark.update_failed" not in _ev, _ev)
-
-# 8. force is about players, not about a half-written world
-drain()
-st = real_store()
-updates.remember(st, primed=ready)
-ok, msg, _d, c = gated(st, _Disk(_WRITING), force=True)
-check("force does not get past a world that has not finished saving", not ok, msg)
-check("and force stops nothing either", "stop" not in c.log, c.log)
-check("still naming the map", "Astraeos" in msg, msg)
-
-# The old two-value save contract still works, because backup's save has no worlds
-# to report and must not start being read as one that refused.
-drain()
-st = real_store()
-updates.remember(st, primed=ready)
-c = Cluster()
-_, rename = moved_nothing()
-ok, msg, _d = updates.apply_batch(
-    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
-    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 4242)
-check("a save that reports nothing per map is still allowed through", ok, msg)
-check("and the cluster is stopped once", c.log.count("stop") == 1, c.log)
-
-_cl.dockerctl = _real_dockerctl
+check("with nothing refused over it", "ark.update_failed" not in _ev, _ev)
 
 
 # ---- two triggers cannot both restart the cluster
@@ -1098,17 +923,13 @@ check("so the window does not fire for it either", not ok, why)
 # on, and a needless full restart IS an ARK apply, which is the stop path. So the
 # refusal now lives inside apply_batch, where a caller cannot arrive without it.
 class _Spy:
-    """Counts the four things a needless apply would do to a live cluster."""
+    """Counts the three things a needless apply would do to a live cluster."""
 
     def __init__(self):
         self.log = []
 
     def warn(self, minutes, build):
         self.log.append("warn")
-
-    def save(self):
-        self.log.append("save")
-        return True, "saved 10 map(s)"
 
     def stop(self):
         self.log.append("stop")
@@ -1136,7 +957,7 @@ def _apply(st_, spy, ark=ARK, **kw):
     _r, _rename = moved_nothing()
     kw.setdefault("installed", "25117056")
     return updates.apply_batch(
-        st_, ark, warn=spy.warn, save=spy.save, stop_all=spy.stop, start_all=spy.start,
+        st_, ark, warn=spy.warn, stop_all=spy.stop, start_all=spy.start,
         verify=spy.verify, players=lambda: (0, {}, []), rename=_rename,
         exists=tree_exists(), now=lambda: 1000, **kw), _r
 
@@ -1147,7 +968,7 @@ spy = _Spy()
 check("pressing Apply on a rehearsal of the running build refuses", not ok, msg)
 check("and names the build it refused over", "25117056" in msg, msg)
 check("and says it is the one already running", "already running" in msg, msg)
-check("the cluster was never stopped, saved, warned or started - not one of the four",
+check("the cluster was never stopped, warned or started - not one of the three",
       spy.log == [], spy.log)
 check("nothing was renamed either", renamed == [], renamed)
 check("and the detail is empty, the way every pre-flight refusal is", detail == {},
@@ -1163,7 +984,7 @@ spy = _Spy()
 (ok, msg, _d), renamed = _apply(st, spy, force=True)
 check("force does not buy a restart that changes nothing", not ok, msg)
 check("force refuses in the same words", "already running" in msg, msg)
-check("and force stopped, saved, warned and started nothing either", spy.log == [],
+check("and force stopped, warned and started nothing either", spy.log == [],
       spy.log)
 
 # Over-tightening this would be its own outage. These still apply.
@@ -1173,7 +994,7 @@ spy = _Spy()
 (ok, msg, _d), renamed = _apply(st, spy)
 check("a genuinely newer staged build still applies", ok, msg)
 check("with the whole restart it has always done",
-      spy.log == ["save", "stop", "start", "verify"], spy.log)
+      spy.log == ["stop", "start", "verify"], spy.log)
 check("and the files swapped",
       ("/ark/ServerFiles.staging", "/ark/ServerFiles") in renamed, renamed)
 
@@ -1442,7 +1263,7 @@ st = real_store(update_apply_in_window=True)
 _pend.stage(st, {"max_players": 250})
 c = Cluster(gates=False)
 _, rename = moved_nothing()
-updates.apply_batch(st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop,
+updates.apply_batch(st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop,
                     start_all=c.start, verify=c.verify,
                     players=lambda: (0, {}, []), rename=rename,
                     exists=tree_exists(), now=lambda: _five_am - 3600)
@@ -1480,7 +1301,7 @@ def flaky_rename(src, dst):
 
 
 ok, msg, detail = updates.apply_update(
-    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=flaky_rename,
     exists=lambda p: p in tree, now=lambda: 1000)
 check("a swap that fails part way fails the apply", not ok, msg)
@@ -1500,7 +1321,7 @@ updates.remember(s, primed=ready)
 c = Cluster(stop_ok=False)
 calls, rename = moved_nothing()
 ok, msg, _ = updates.apply_update(
-    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a cluster that would not stop is never swapped under", not ok and calls == [],
@@ -1513,7 +1334,7 @@ updates.remember(s, primed=ready)
 c = Cluster(gates=False)
 _, rename = moved_nothing()
 ok, msg, detail = updates.apply_update(
-    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a map that fails verification fails the apply", not ok, msg)
@@ -1542,7 +1363,7 @@ def verify_with_reasons():
 
 
 ok, msg, detail = updates.apply_update(
-    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=verify_with_reasons, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 _fail = [i for i in drain() if i["event"] == "ark.update_failed"]
@@ -1563,7 +1384,7 @@ updates.remember(s, primed=ready)
 c = Cluster(gates=False)
 _, rename = moved_nothing()
 ok, msg, detail = updates.apply_update(
-    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 _fail2 = [i for i in drain() if i["event"] == "ark.update_failed"]
@@ -1590,7 +1411,7 @@ for _shape, _label in ((False, "a bare False"),
     c = Cluster()
     _, rename = moved_nothing()
     ok, msg, _d = updates.apply_update(
-        s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+        s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
         verify=(lambda shape=_shape: shape), players=lambda: (0, {}, []),
         rename=rename, exists=tree_exists(), now=lambda: 1000)
     _ev = [i for i in drain() if i["event"] == "ark.update_failed"]
@@ -1606,7 +1427,7 @@ updates.remember(s, primed=ready)
 c = Cluster()
 _, rename = moved_nothing()
 ok, msg, _d = updates.apply_update(
-    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=None, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("an apply with no verify step at all still applies", ok, msg)
@@ -1767,25 +1588,21 @@ check("priming when the current build is unknown refuses - it will not stage 'la
 
 # ---- the integrity gate: after the stop, before anything moves
 #
-# The save gate proves a world finished being written. It cannot prove the bytes are any
-# good, and on 2026-09-12 they were not - the server image's own shutdown save damaged
-# the three largest worlds and this promoted a build over the top of them. Refusing here
-# costs a postponement; not refusing cost two hours and a restore.
+# This is the gate that STAYED when the upstream save went. A world that finished
+# being written is not a world that is any good, and on 2026-09-12 it was not - the
+# server image's own shutdown save damaged the three largest worlds and this promoted a
+# build over the top of them. It is asked after the stop, while every world is a static
+# file. Refusing here costs a postponement; not refusing cost two hours and a restore.
 def with_gate(health, force=False, primed_=None):
     """An apply whose world check answers `health`. Returns everything it did."""
     drain()
     st_ = real_store()
     updates.remember(st_, primed=primed_ or ready)
-    clk_ = _Clock()
     c_ = Cluster()
     renamed_, rename_ = moved_nothing()
     started_ = []
-    disk_ = _Disk(_QUIET)
     ok_, msg_, detail_ = updates.apply_batch(
         st_, ARK, installed=OLD_BUILD, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
-        save=lambda: _cl.save_and_settle(
-            st_, ARK, rcon=lambda h, p, cmd: None, now=clk_.now, stat=disk_.stat,
-            exists=disk_.exists, wait=clk_.wait, budget=60),
         check_worlds=lambda: health,
         start_some=lambda keys: (started_.extend(keys) or list(keys)),
         players=lambda: (0, {}, []), force=force, rename=rename_,
@@ -1965,15 +1782,10 @@ check("and it says both things, each about the right map",
 drain()
 st_z = real_store()
 updates.remember(st_z, primed=ready)
-clk_z = _Clock()
 c_z = Cluster()
 _ren_z, rename_z = moved_nothing()
-disk_z = _Disk(_QUIET)
 updates.apply_batch(
     st_z, ARK, installed=OLD_BUILD, warn=c_z.warn, stop_all=c_z.stop, start_all=c_z.start, verify=c_z.verify,
-    save=lambda: _cl.save_and_settle(
-        st_z, ARK, rcon=lambda h, p, cmd: None, now=clk_z.now, stat=disk_z.stat,
-        exists=disk_z.exists, wait=clk_z.wait, budget=60),
     check_worlds=lambda: ONE_BAD,
     start_some=lambda keys: [],            # every start fails
     players=lambda: (0, {}, []), rename=rename_z, exists=tree_exists(),
@@ -2016,7 +1828,7 @@ _c_ns = Cluster(stop_ok=False)
 _calls_ns, _rename_ns = moved_nothing()
 _started_ns = []
 _ok_ns, _msg_ns, _d_ns = updates.apply_batch(
-    _st_ns, ARK, installed=OLD_BUILD, warn=_c_ns.warn, save=_c_ns.save, stop_all=_c_ns.stop,
+    _st_ns, ARK, installed=OLD_BUILD, warn=_c_ns.warn, stop_all=_c_ns.stop,
     start_all=_c_ns.start, verify=_c_ns.verify,
     check_worlds=lambda: (_ for _ in ()).throw(
         AssertionError("the world gate must not be reached after a refused stop")),

@@ -770,12 +770,6 @@ def build_app(store, docker=None):
         ujob["step"] = text
         announce.say("ark.phase", text)
 
-    def _note_step(text):
-        """The page only. Ten maps settling is ten useful lines on a progress bar and
-        ten pings in a chat channel, and the channel already gets one sentence with the
-        whole list in its detail when the save completes."""
-        ujob["step"] = text
-
     async def _prime_task():
         try:
             async with cluster_busy:
@@ -856,17 +850,11 @@ def build_app(store, docker=None):
 
         return updatesctl.apply_batch(
             store, _ark_root(), warn=warn,
-            # save_and_settle rather than save_world: the apply is about to stop the
-            # cluster, so it needs the saves proved on disk rather than merely accepted.
-            # The phrase "saving every world" has to survive into every one of these:
-            # the stepper finds the phase by looking for it in the step text, so a tick
-            # that drops it lands on no phase at all and the bar reads as if the apply
-            # went backwards.
-            save=lambda: clusterctl.save_and_settle(
-                store, _ark_root(),
-                on_settled=lambda label, done, total: _note_step(
-                    "saving every world - %s saved (%d/%d)" % (label, done, total))),
-            stop_all=stop_all, start_all=lambda: clusterctl.launch(store),
+            stop_all=stop_all,
+            # The ONLY thing that brings a map up. There is no restart policy on the
+            # ARK containers any more, so nothing else will - which is why every
+            # non-refusing branch of apply_batch has to reach start_all or start_some.
+            start_all=lambda: clusterctl.launch(store),
             verify=verify_all,
             # Asked after the stop and before the swap, while every world is a static
             # file. start_some is what keeps a refusal from costing the whole cluster:
@@ -3334,9 +3322,8 @@ def _scheduled_apply(store, force=False):
         check_worlds=lambda: clusterctl.worlds_intact(
             store, layout.ark_root_of(store)),
         start_some=start_some,
-        # Proved on disk, not merely accepted - a stop is what follows this.
-        save=lambda: clusterctl.save_and_settle(store, layout.ark_root_of(store)),
         stop_all=stop_all,
+        # The only thing that brings a map up, here too.
         start_all=lambda: clusterctl.launch(store), verify=verify_all,
         players=lambda: clusterctl.players_online(store),
         on_step=lambda text: log.info("update: %s", text))

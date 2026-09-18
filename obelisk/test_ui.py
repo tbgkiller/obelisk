@@ -1076,26 +1076,24 @@ _unmatched = [t for t in _emitted if ui.phase_index(t, ui.PRIME_PHASES) < 0]
 check("every phase the prime flow emits lands on a step of the stepper",
       not _unmatched, _unmatched)
 
-_apply_emitted = ["warning players (30 minutes)", "saving every world",
+_apply_emitted = ["warning players (30 minutes)",
                   "stopping the cluster and the staging server",
                   "swapping the staged files in", "starting the cluster",
                   "checking every map is really serving", "done"]
 _unmatched = [t for t in _apply_emitted if ui.phase_index(t, ui.APPLY_PHASES) < 0]
 check("and every phase the apply flow emits does too", not _unmatched, _unmatched)
 
-# The per-map save ticks are the same step text with a map on the end, precisely so the
-# stepper keeps finding the phase. A tick that dropped the marker would score -1, which
-# renders as no phase lit at all - a bar that appears to go backwards halfway through an
-# update is worse than one that only ever said "saving every world".
-_ticks = ["saving every world - The Island saved (1/10)",
-          "saving every world - Lost Colony saved (7/10)",
-          "saving every world - Genesis saved (10/10)"]
-_saving = ui.phase_index("saving every world", ui.APPLY_PHASES)
-check("a per-map save tick still lands on the Saving phase",
-      all(ui.phase_index(t, ui.APPLY_PHASES) == _saving for t in _ticks),
-      [(t, ui.phase_index(t, ui.APPLY_PHASES)) for t in _ticks])
-check("and it does not drift onto the phase after it",
-      _saving < ui.phase_index("stopping the cluster", ui.APPLY_PHASES))
+# There was a Saving phase here, matched on "saving every world", with per-map ticks
+# carrying the same marker. The apply does not send a save any more - each map writes
+# its own when it is asked to exit - so the phrase is emitted by nothing, and a phase
+# nothing emits leaves the bar waiting on a stage that never arrives. Pinned the other
+# way round now: the words are gone, and nothing still matches on them.
+check("the removed save phase is gone from the stepper",
+      not any("saving" in m.lower() for _l, ms in ui.APPLY_PHASES for m in ms),
+      [(_l, ms) for _l, ms in ui.APPLY_PHASES])
+check("and the apply still opens on a phase, so the bar is never blank at the start",
+      ui.phase_index("warning players (30 minutes)", ui.APPLY_PHASES) == 0,
+      ui.phase_index("warning players (30 minutes)", ui.APPLY_PHASES))
 
 # ---- the held-down warning, where the buttons that would undo it live
 #
@@ -1158,9 +1156,6 @@ check("and keeps its singular nouns",
 _APPLY_STEPS = [
     ("warning players (30 minutes)", "Warning players"),
     ("nobody is on, so the 30-minute warning is skipped", "Warning players"),
-    ("saving every world", "Saving"),
-    ("saving every world - The Island saved (3/10)", "Saving"),
-    ("refused: The Island did not finish saving", "Saving"),
     ("stopping the cluster and the staging server", "Stopping"),
     ("checking every world is readable", "Checking worlds"),
     ("starting the 1 map that is fine", "Checking worlds"),
@@ -1183,8 +1178,9 @@ _wrong = [(s, _names[ui.phase_index(s, ui.APPLY_PHASES)], w)
 check("and every one lands on the phase it belongs to", not _wrong, _wrong)
 
 check("the phases this block names all exist",
-      all(p in _names for p in ("Starting", "Putting it back", "Saving",
+      all(p in _names for p in ("Starting", "Putting it back",
                                 "Swapping files", "Applying settings")), _names)
+check("and Saving is not one of them any more", "Saving" not in _names, _names)
 _starting = _names.index("Starting") if "Starting" in _names else -1
 _back = _names.index("Putting it back") if "Putting it back" in _names else -1
 check("undoing is its own phase, not the one that means success",
@@ -1192,9 +1188,6 @@ check("undoing is its own phase, not the one that means success",
                      ui.APPLY_PHASES) == _back, _back)
 check("and it reads as later than Starting, so the bar cannot show it as progress",
       _back > _starting, (_back, _starting))
-check("a save refusal belongs to Saving, not to a phase three steps later",
-      ui.phase_index("refused: X did not finish saving", ui.APPLY_PHASES)
-      == (_names.index("Saving") if "Saving" in _names else -2))
 check("committing settings has a phase of its own",
       "Applying settings" in _names, _names)
 check("which sits between swapping and starting, where it runs",

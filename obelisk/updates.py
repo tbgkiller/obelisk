@@ -13,8 +13,8 @@ has already been proved to boot.
   prime   - the staging server downloads the build and fetches the mods, on its own
             files, while the cluster keeps serving
   verify  - the staging server's own log says every mod loaded, off the right build
-  apply   - warn, save, stop, swap the trees, start, and put every map through the six
-            gates before calling it done
+  apply   - warn, stop (each map exits itself), swap the trees, start, and put every
+            map through the six gates before calling it done
 
 **Two update systems must never both be running.** POK applies updates itself when
 UPDATE_SERVER is TRUE, so a cluster where Obelisk also applies them has two schedulers
@@ -418,7 +418,7 @@ def _staging_answers(store, probe=None):
 
 # ---------------------------------------------------------------- apply
 
-def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=None,
+def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
                 verify=None, players=None, on_step=None, force=False,
                 check_worlds=None, start_some=None,
                 rename=None, exists=None, now=None, installed=None):
@@ -434,8 +434,13 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
     failure after either leaves the previous build *and* the previous configuration,
     which is the only state a cluster can safely be restarted into.
 
-    The last refusal is the save gate: if `save` can report per-map results, a map that
-    has not finished writing its world stops the batch before the cluster is touched.
+    There is no save in front of the stop, by decision. Obelisk used to send SaveWorld
+    to every map here and refuse the whole batch over any world that had not finished
+    writing. That is removed - the command, the proof and the refusal it drove. Each map
+    writes its own save when it is asked to exit, which stop_all does per map, and the
+    stop path reads the disk afterwards and reports what it found rather than gating on
+    it. `worlds_intact` below is still the gate, and it asks the better question: not
+    "did the save finish" but "is this world readable at all".
     """
     from . import pending
 
@@ -528,9 +533,10 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
     announce.say("ark.apply_start",
                  "Applying %s in one restart. %s" %
                  (" and ".join(what),
-                  "Players are being warned, worlds saved, then the cluster comes back."
+                  "Players are being warned, then every map is asked to exit and "
+                  "the cluster comes back."
                   if counting_down else
-                  "Worlds are saved first, then the cluster comes back."),
+                  "Every map is asked to exit, then the cluster comes back."),
                  build=build if swap_files else "",
                  detail=pending.summary(store) if waiting else "")
 
@@ -546,61 +552,13 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                      "a countdown to an empty cluster. Skipping it and starting the "
                      "update now - this is deliberate, not a missed step." % minutes)
 
-    if save:
-        step("saving every world")
-        # (ok, detail) is the old contract and still works; a save that can also prove
-        # its work returns a third item, {label: {"settled", "why"}}, for every map that
-        # accepted SaveWorld. cluster.save_and_settle is the one that does.
-        result = save()
-        ok, detail = result[0], result[1]
-        worlds = (result[2] if len(result) > 2 else None) or {}
-        if not ok:
-            # Not fatal by itself - a map that is down cannot save and should not block
-            # the update - but it is said out loud rather than swallowed.
-            announce.say("ark.apply_note", "SaveWorld: %s" % detail, level="warning")
-
-        # Accepting SaveWorld is not finishing it. The RCON call returns as soon as the
-        # server takes the command, and a large world is still writing tens of seconds
-        # later; stopping into that is what left five worlds damaged on 2026-09-11.
-        #
-        # So this refuses, before anything moves, exactly the way the stop_all() failure
-        # below does. The two outcomes are not symmetric: a deferred update costs a
-        # postponement, and the window comes round again with `last_apply` untouched, so
-        # nothing thinks the disruption was spent. Stopping into an open transaction
-        # costs hot journals on live worlds and an owner-only recovery. force does not
-        # skip it either - force is a judgement about players being online, not about a
-        # half-written world, and a half-written world does not care who was in it.
-        unsettled = sorted(l for l, w in worlds.items() if not w.get("settled"))
-        if unsettled:
-            waiting = "; ".join("%s (%s)" % (l, worlds[l].get("why") or "still writing")
-                                for l in unsettled)
-            announce.say("ark.update_failed",
-                         "Not stopping the cluster: %s did not finish saving in time. "
-                         "The cluster is still up and still serving - nothing was "
-                         "stopped, nothing was swapped, and the update is still waiting "
-                         "for the next window. Waiting on: %s"
-                         % (", ".join(unsettled), waiting), level="error",
-                         build=build if swap_files else "",
-                         detail=_lines("%-14s %s" % (l, w.get("why") or "")
-                                       for l, w in sorted(worlds.items())))
-            step("refused: %s did not finish saving" % ", ".join(unsettled))
-            return False, ("did not stop the cluster: %s did not finish saving"
-                           % ", ".join(unsettled)), {"unsettled": unsettled}
-
-        # The refusal above has always said which map and why, per map. Getting it
-        # right said nothing at all - the save that worked was one aggregate line, so
-        # the only way to find out what was proved was for it to fail. One sentence to
-        # the channel, the full list in the feed: say() sends the text to Discord and
-        # keeps `detail` for the UI, which is exactly this shape of message.
-        if worlds:
-            announce.say("ark.saved",
-                         "Every world saved and verified on disk before the cluster "
-                         "stopped: %d of %d." % (len(worlds) - len(unsettled),
-                                                 len(worlds)),
-                         build=build if swap_files else "",
-                         detail=_lines("%-14s Saved (verified on disk)" % l
-                                       for l in sorted(worlds)))
-
+    # There was a save gate here: SaveWorld to every map, worlds_settled to prove each
+    # write on disk, and a refusal of the whole batch over any map that had not
+    # finished. It is gone by decision, along with the "every world saved and verified"
+    # announcement that followed it. What replaces it is not a weaker version of the
+    # same thing - it is stop_all, which asks each map to exit and lets the server write
+    # its own save on the way out, and then reports what the disk showed afterwards
+    # rather than refusing on it. The gate that stayed is worlds_intact, below.
     step("stopping the cluster and the staging server")
     ok, detail = stop_all()
     if not ok:
@@ -610,11 +568,12 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
 
     # ---- the last question before anything moves: are the worlds still readable?
     #
-    # Everything above proves the save finished. Nothing above proves it is any good,
-    # and on 2026-09-12 it was not - the server image's own shutdown save damaged three
-    # worlds, this promoted a new build over them, and ten servers were started onto the
-    # result. Refusing here costs a postponement. Not refusing cost two hours and a
-    # restore.
+    # Nothing above proves a world is any good, and on 2026-09-12 they were not - the
+    # server image's own shutdown save damaged three worlds, this promoted a new build
+    # over them, and ten servers were started onto the result. This is the gate that
+    # stayed, and it is the better question: not whether a write finished, but whether
+    # the world is readable at all. Refusing here costs a postponement. Not refusing
+    # cost two hours and a restore.
     if check_worlds:
         step("checking every world is readable")
         health = check_worlds() or {}

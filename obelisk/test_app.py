@@ -2455,7 +2455,9 @@ _untouched = {
     "the restore gate": "def verify_restored(store, key, note=None):",
     "the stop guard": "ui.render_stop_warning(counts, silent)",
     "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
-    "the save-before-stop": "save=lambda: clusterctl.save_and_settle(",
+    # Was "the save-before-stop", which is removed by decision. launch() is now the
+    # only thing that brings a map up, so that is what this pins instead.
+    "the start-after-apply": "start_all=lambda: clusterctl.launch(store)",
 }
 for _what, _frag in sorted(_untouched.items()):
     check("%s is untouched" % _what, _frag in _s1src, _frag)
@@ -2936,7 +2938,11 @@ for _what, _frag in sorted({
         "the restore gate": "def verify_restored(store, key, note=None):",
         "the stop guard": "ui.render_stop_warning(counts, silent)",
         "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
-        "the save-before-stop": "save=lambda: clusterctl.save_and_settle(",
+        # Was "the save-before-stop". That save is removed, by decision: each map
+        # writes its own on the way out when it is asked to exit. What has to stay
+        # pinned in its place is the other end of the same path - with no restart
+        # policy on the containers, launch() is the ONLY thing that brings a map back.
+        "the start-after-apply": "start_all=lambda: clusterctl.launch(store)",
 }.items()):
     check("%s is untouched by the display" % _what, _frag in _appsrc_2b, _frag)
 
@@ -3115,7 +3121,11 @@ for _what, _frag in sorted({
         "the restore gate": "def verify_restored(store, key, note=None):",
         "the stop guard": "ui.render_stop_warning(counts, silent)",
         "the integrity gate": "check_worlds=lambda: clusterctl.worlds_intact(",
-        "the save-before-stop": "save=lambda: clusterctl.save_and_settle(",
+        # Was "the save-before-stop". That save is removed, by decision: each map
+        # writes its own on the way out when it is asked to exit. What has to stay
+        # pinned in its place is the other end of the same path - with no restart
+        # policy on the containers, launch() is the ONLY thing that brings a map back.
+        "the start-after-apply": "start_all=lambda: clusterctl.launch(store)",
         "the roster read": "def _roster_now():",
 }.items()):
     check("%s is untouched" % _what, _frag in _appsrc_2c, _frag)

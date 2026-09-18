@@ -849,9 +849,10 @@ APPLY_PHASES = [
     # The skip line is here too: an empty cluster is not warned, and a step that matches
     # nothing scores -1 and greys the whole bar.
     ("Warning players", ("warning players", "warning is skipped")),
-    # A save refusal belongs to the save, not to whatever comes after it. It used to be
-    # caught by a bare "refused:" marker further down and reported three phases late.
-    ("Saving", ("saving every world", "did not finish saving")),
+    # There was a "Saving" phase here, matched on "saving every world". The apply does
+    # not send a save any more - each map writes its own on the way out when it is asked
+    # to exit - so nothing emits that phrase, and a phase nothing ever emits leaves the
+    # bar sitting on a stage that never arrives.
     ("Stopping", ("stopping the cluster",)),
     # Its own phase because it is minutes long and can end the apply - and the piecemeal
     # restart that follows a refusal belongs to it rather than to Starting.
