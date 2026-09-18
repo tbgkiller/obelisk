@@ -1722,9 +1722,9 @@ check("an archive that does hold one of your maps still offers the button",
 #    from the thing it describes sits on -1 and reads as "nothing is happening", which
 #    is the fault it exists to fix. APPLY_PHASES learned this the hard way.
 _STOP_EMITS = [
-    "Stopping the cluster. Each map is being asked to save and close its own world "
-    "first, which takes a few minutes on a big map - nothing is shut down until its "
-    "world is written.",
+    "Stopping the cluster. Each map is being asked to exit, which writes its own save "
+    "on the way out and takes a few minutes on a big map - nothing is signalled until "
+    "Obelisk has seen that map's server process gone and its container stopped.",
     "Ragnarok saved its world and closed (3 of 10).",
     "The Island saved its world and closed (10 of 10).",
     "The maps could not be asked to close their worlds, so every one of them is being "
@@ -1764,7 +1764,7 @@ check("the stages come in the order the stop takes them",
 _clsrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),
                  encoding="utf-8").read()
 _stopsrc = _clsrc.split("def stop(store")[1].split("def restart(")[0]
-for _frag in ("asked to save and close", "saved its world and closed",
+for _frag in ("asked to exit", "saved its world and closed",
               "could not be asked to close", "Stopping the servers now",
               "Cluster stopped", "had not finished booting"):
     check("the stop still says %r, which the stepper matches on" % _frag,
@@ -1832,9 +1832,10 @@ def _slow_stop(store, **kw):
     say = kw.get("say") or (lambda *a, **k: None)
     _stop_calls.append("stop")
     say("cluster.closing",
-        "Stopping the cluster. Each map is being asked to save and close its own "
-        "world first, which takes a few minutes on a big map - nothing is shut down "
-        "until its world is written.", slot=_appmod.clusterctl.STOP_SLOT)
+        "Stopping the cluster. Each map is being asked to exit, which writes its own "
+        "save on the way out and takes a few minutes on a big map - nothing is "
+        "signalled until Obelisk has seen that map's server process gone and its "
+        "container stopped.", slot=_appmod.clusterctl.STOP_SLOT)
     _time_dead.sleep(0.4)
     say("cluster.closed",
         "2 of 2 worlds saved and closed. Stopping the servers now - nothing is left "
@@ -2171,9 +2172,10 @@ async def _poll_mid_stop():
     def _slow(store, **kw):
         say = kw.get("say") or (lambda *a, **k: None)
         say("cluster.closing",
-            "Stopping the cluster. Each map is being asked to save and close its own "
-            "world first, which takes a few minutes on a big map - nothing is shut "
-            "down until its world is written.",
+            "Stopping the cluster. Each map is being asked to exit, which writes its "
+            "own save on the way out and takes a few minutes on a big map - nothing "
+            "is signalled until Obelisk has seen that map's server process gone and "
+            "its container stopped.",
             slot=_appmod.clusterctl.STOP_SLOT)
         _time_dead.sleep(0.5)
         return True, _STOPPED_MSG

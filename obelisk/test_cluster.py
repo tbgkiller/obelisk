@@ -337,21 +337,118 @@ check("stop says saves are safe", "untouched" in msg, msg)
 # down: DoExit closes each world on the server's own schedule, and a server that is
 # already gone makes the dangerous second save a no-op ("Server is not running, no need
 # to save world before stopping container").
+#
+# What a close IS, since 2026-09-18: the server process gone AND the container in a
+# not-running state, both read rather than inferred. RCON going quiet is neither. Driven
+# by hand at The Center, a minute after DoExit, RCON was silent and Docker still said
+# Online - so the old discriminator would have called that map closed while its server
+# was still finishing its save-on-exit.
 TARGETS_X = [("The Island", "asa-testcluster-island", 27020),
              ("Ragnarok", "asa-testcluster-ragnarok", 27021)]
-sent_x, alive_x = [], {"island": True, "ragnarok": True}
+
+# `docker top` on a real running map. Three lines carry the exe and only one is it.
+_SERVER_LINE = ('ArkAscendedServer.exe TheIsland_WP?listen?SessionName="TBG 01 | '
+                'The Island" -server -log')
+_PROTON_LINE = 'python3 /opt/GE-Proton10-34/proton run ArkAscendedServer.exe TheIsland_WP'
+_STEAM_LINE = 'c:\\windows\\system32\\steam.exe ArkAscendedServer.exe TheIsland_WP'
+# What is always in there whether or not the server is: tini, POK's scripts, the health
+# service. The supervisor staying up is why the container reads Online in the gap.
+_SUPERVISOR = ["/tini -- /home/pok/scripts/init.sh", "/bin/bash /home/pok/scripts/init.sh",
+               "python3 /home/pok/scripts/health_server.py"]
 
 
-def rcon_x(host, port, cmd):
-    """Stands in for ten servers: DoExit closes one, and a closed one stops answering."""
-    key = "island" if "island" in host else "ragnarok"
-    sent_x.append((key, cmd))
-    if cmd == "DoExit":
-        alive_x[key] = False
-        return "Exiting..."
-    if not alive_x[key]:
-        raise OSError("connection refused")
-    return "No Players Connected"
+class _Fleet:
+    """`docker top` and `docker inspect` for this cluster, in step with one stop.
+
+    Per map, counted in looks at that map's process list:
+
+        server   the look at which the server process is no longer in the listing.
+                 None means the listing never reads at all - a Docker that would not
+                 answer, which establishes nothing.
+        exits    the look at which the container reports `exited`. This is POK's own
+                 deliberate exit - it reads the missing server as a self-restart and
+                 takes the container down - and with no restart policy in the compose
+                 file, that exit is the end of it. None means it never goes down.
+        revives  a look at which the server process comes BACK after having gone.
+    """
+
+    def __init__(self, maps):
+        self.maps = {k: dict(v) for k, v in maps.items()}
+        self.turn = {k: 0 for k in self.maps}
+        self.stopped, self.events = [], []
+
+    @staticmethod
+    def _key(name):
+        return str(name).rsplit("-", 1)[-1]
+
+    def procs(self, name):
+        key = self._key(name)
+        m = self.maps.get(key)
+        if m is None:
+            return []
+        n = self.turn[key]
+        self.turn[key] = n + 1
+        self.events.append("top:%s" % key)
+        if m.get("server") is None:
+            return None                      # a listing nobody could read
+        here = n < m["server"]
+        if m.get("revives") is not None and n >= m["revives"]:
+            here = True
+        return _SUPERVISOR + ([_SERVER_LINE, _PROTON_LINE, _STEAM_LINE] if here
+                              else [_PROTON_LINE, _STEAM_LINE])
+
+    def details(self, names):
+        out = {}
+        for n in names:
+            key = self._key(n)
+            m = self.maps.get(key)
+            if m is None:
+                continue                     # nothing running under that name at all
+            down = m.get("exits") is not None and self.turn[key] >= m["exits"]
+            out[n] = {"state": "exited" if down else "running", "health": "starting",
+                      "restarts": 0, "uptime_seconds": 30}
+        return out
+
+    def stop(self, key):
+        self.stopped.append(key)
+        self.events.append("stop:%s" % key)
+        return True, "stopped"
+
+
+def _settled(sent):
+    """Every world proved written after its own DoExit - the ordinary case.
+
+    Handed in as a seam so the tests that are about the CLOSE are not also about the
+    disk. The disk reading has its own tests further down.
+    """
+    return {l: {"settled": True, "why": "saved"} for l in sent}
+
+
+def rcon_exits(log=None):
+    """Ten servers that take DoExit and then stop answering.
+
+    Stopping answering is NOT what says they closed any more - the process listing and
+    the container state are - but it is still what a server that has exited does, and
+    the last look before `down` reads it.
+    """
+    gone = set()
+
+    def rcon(host, port, cmd):
+        key = _Fleet._key(host)
+        if log is not None:
+            log.append((key, cmd))
+        if cmd == "DoExit":
+            gone.add(key)
+            return "Exiting..."
+        if key in gone:
+            raise OSError("connection refused")
+        return "No Players Connected"
+
+    return rcon
+
+
+sent_x = []
+rcon_x = rcon_exits(sent_x)
 
 
 class ClockX:
@@ -360,38 +457,125 @@ class ClockX:
     def wait(self, s): self.t += s
 
 
+# The clean close: the server goes on the second look, POK takes the container down on
+# the third, and nothing is signalled at any point.
+fleet_x = _Fleet({"island": {"server": 1, "exits": 2},
+                  "ragnarok": {"server": 1, "exits": 2}})
 clk_x = ClockX()
-out_x = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_x, now=clk_x.now, wait=clk_x.wait)
+out_x = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_x,
+                               now=clk_x.now, wait=clk_x.wait, procs=fleet_x.procs,
+                               details=fleet_x.details, stop_container=fleet_x.stop,
+                               settle=_settled)
 check("every running map is asked to close its own world",
       sorted(c[0] for c in sent_x if c[1] == "DoExit") == ["island", "ragnarok"], sent_x)
 check("and DoExit is what it is asked - not a kill, not a signal",
-      all(c[1] in ("DoExit", "ListPlayers") for c in sent_x), sent_x)
-check("a map that stops answering is a map that closed its world",
-      all(o["exited"] for o in out_x.values()), out_x)
-check("which is what the stop waits for, rather than the command returning",
-      all("exited" in o["why"] or "closed" in o["why"] for o in out_x.values()), out_x)
+      all(c[1] == "DoExit" for c in sent_x), sent_x)
+# The line the whole rebuild turns on. The save that used to go in front of this is
+# gone: the server writes its own on the way out, eleven seconds after DoExit when it
+# was measured, and RCON's "World Saved" was the request being taken and not the write.
+check("NO SaveWorld is sent before the DoExit, or at all",
+      not any(c[1] == "SaveWorld" for c in sent_x), sent_x)
+check("a map whose process is gone and whose container is down has closed",
+      all(o["exited"] and o["state"] == clusterctl.CLOSED for o in out_x.values()),
+      out_x)
+check("and the reason names both halves of the evidence",
+      all("process is gone" in o["why"] and "not running" in o["why"]
+          for o in out_x.values()), out_x)
+check("nothing was stopped by Obelisk - the container went down on its own",
+      fleet_x.stopped == [], fleet_x.stopped)
 
-# A server that keeps answering has NOT closed. It must not be reported as though it had.
-alive_y = {"island": True, "ragnarok": True}
+# THE DISPROVEN DISCRIMINATOR, pinned as disproven. RCON silent, container still Online,
+# server process still in the listing: this is the one-minute gap measured by hand, and
+# the old rule called it CLOSED. It is not closed and nothing may be signalled into it -
+# the server is still writing the save it makes on its way out.
+fleet_s = _Fleet({"island": {"server": 99, "exits": None},
+                  "ragnarok": {"server": 99, "exits": None}})
 
 
-def rcon_y(host, port, cmd):
-    key = "island" if "island" in host else "ragnarok"
-    if cmd == "DoExit" and key == "island":
-        alive_y[key] = False
+def rcon_silent(host, port, cmd):
+    if cmd == "DoExit":
         return "Exiting..."
-    if not alive_y[key]:
-        raise OSError("connection refused")
-    return "No Players Connected"        # ragnarok ignores DoExit and keeps serving
+    raise OSError("connection refused")          # quiet, and it means nothing
 
 
+out_s = clusterctl.exit_worlds(
+    st, running=lambda s: TARGETS_X, rcon=rcon_silent, now=ClockX().now,
+    wait=lambda sec: None, budget=30, procs=fleet_s.procs, details=fleet_s.details,
+    stop_container=fleet_s.stop, settle=_settled)
+check("RCON going quiet after DoExit is NOT a closed world",
+      not any(o["exited"] for o in out_s.values()), out_s)
+check("it is late, because the budget ran out without the pair being observed",
+      all(o["state"] == clusterctl.LATE for o in out_s.values()), out_s)
+
+# ...and that is the one case the bounded fallback exists for: a server positively still
+# in the listing when the grace period is spent. `compose stop` lands on the image's own
+# SIGTERM handler and its 210s verified two-stage shutdown, not on a kill.
+check("a server still running when the budget is spent gets the bounded fallback",
+      sorted(fleet_s.stopped) == ["island", "ragnarok"], fleet_s.stopped)
+check("and it says that is what happened, rather than claiming a clean close",
+      all("still running" in o["why"] and "container was stopped" in o["why"]
+          for o in out_s.values()), out_s)
+
+# The gap itself: the process is gone but the container has not gone down. Half the
+# evidence is not the evidence. Nothing is claimed and nothing is signalled - the wait
+# is for POK's own exit, which is what takes the container down now.
+fleet_h = _Fleet({"island": {"server": 0, "exits": None},
+                  "ragnarok": {"server": 0, "exits": None}})
+out_h = clusterctl.exit_worlds(
+    st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
+    wait=lambda sec: None, budget=30, procs=fleet_h.procs, details=fleet_h.details,
+    stop_container=fleet_h.stop, settle=_settled)
+check("a process gone with the container still up is not a closed map",
+      not any(o["exited"] for o in out_h.values()), out_h)
+check("and the reason says which half is missing",
+      all("container never confirmed" in o["why"] for o in out_h.values()), out_h)
+check("nothing is stopped on half the evidence either", fleet_h.stopped == [],
+      fleet_h.stopped)
+
+# FAIL CLOSED: a process listing nobody could read is not a server that has exited, and
+# it is not a server that is still running either. It establishes nothing, so the
+# fallback must not fire on it - that would be a Docker hiccup stopping a container
+# whose world is live.
+fleet_u = _Fleet({"island": {"server": None, "exits": None},
+                  "ragnarok": {"server": None, "exits": None}})
+out_up = clusterctl.exit_worlds(
+    st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
+    wait=lambda sec: None, budget=30, procs=fleet_u.procs, details=fleet_u.details,
+    stop_container=fleet_u.stop, settle=_settled)
+check("an unreadable process listing never reaches the fallback stop",
+      fleet_u.stopped == [], fleet_u.stopped)
+check("nor is it ever called closed", not any(o["exited"] for o in out_up.values()),
+      out_up)
+check("and it says that nothing could be established, not that something was",
+      all("nothing could be read" in o["why"] for o in out_up.values()), out_up)
+
+# A server that comes BACK after having been gone is a server that is booting, and that
+# is the incident. Never signalled, and it holds an apply rather than letting one run.
+fleet_r = _Fleet({"island": {"server": 1, "exits": None, "revives": 3},
+                  "ragnarok": {"server": 1, "exits": 2}})
+out_rv = clusterctl.exit_worlds(
+    st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
+    wait=lambda sec: None, budget=60, procs=fleet_r.procs, details=fleet_r.details,
+    stop_container=fleet_r.stop, settle=_settled)
+check("a map whose server came back is never called closed",
+      not out_rv["The Island"]["exited"], out_rv)
+check("it is not-ready - booting, which is the state that holds an apply",
+      out_rv["The Island"]["state"] == clusterctl.NOT_READY, out_rv)
+check("and nothing was signalled at it", "island" not in fleet_r.stopped,
+      fleet_r.stopped)
+check("while the map beside it still closed normally",
+      out_rv["Ragnarok"]["exited"], out_rv)
+
+# The wait is bounded. One stuck map cannot hold the stop for ever.
 clk_y = ClockX()
-out_y = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_y, now=clk_y.now, wait=clk_y.wait,
-                               budget=60)
+fleet_y = _Fleet({"island": {"server": 1, "exits": 2},
+                  "ragnarok": {"server": 99, "exits": None}})
+out_y = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_exits(),
+                               now=clk_y.now, wait=clk_y.wait, budget=60,
+                               procs=fleet_y.procs, details=fleet_y.details,
+                               stop_container=fleet_y.stop, settle=_settled)
 check("a map that never closes is not called closed",
       out_y["The Island"]["exited"] and not out_y["Ragnarok"]["exited"], out_y)
-check("and it says so rather than silently passing",
-      "still answering" in out_y["Ragnarok"]["why"], out_y)
 check("the wait is bounded - one stuck map cannot hold the stop forever",
       clk_y.t <= 60 + 5, clk_y.t)
 
@@ -402,12 +586,17 @@ def rcon_dead(host, port, cmd):
     raise OSError("no route to host")
 
 
-out_d = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_dead, now=ClockX().now,
-                               wait=lambda s: None)
+out_d = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_dead,
+                               now=ClockX().now, wait=lambda s: None,
+                               details=lambda names: {}, procs=lambda n: [],
+                               stop_container=lambda k: (True, "stopped"),
+                               settle=_settled)
 check("a map that cannot be reached does not block the stop",
       all(o["exited"] for o in out_d.values()), out_d)
 check("but the reason is recorded as unreachable, not as a clean close",
       all("did not answer" in o["why"] for o in out_d.values()), out_d)
+check("and a map that was never asked to exit has no clean/unclean verdict at all",
+      all(o["clean"] is None for o in out_d.values()), out_d)
 
 # And the ordering the whole fix rests on: every world closed BEFORE compose down runs.
 order_x = []
@@ -421,21 +610,23 @@ def spy_compose(path, proj, args, timeout=900):
 
 
 clusterctl.dockerctl.compose = spy_compose
-alive_z = {"island": True, "ragnarok": True}
+fleet_z = _Fleet({"island": {"server": 1, "exits": 2},
+                  "ragnarok": {"server": 1, "exits": 2}})
+
+
+_rcon_z = rcon_exits()
 
 
 def rcon_z(host, port, cmd):
-    key = "island" if "island" in host else "ragnarok"
     if cmd == "DoExit":
-        alive_z[key] = False
-        order_x.append("exit:%s" % key)
-        return "Exiting..."
-    if not alive_z[key]:
-        raise OSError("connection refused")
-    return "No Players Connected"
+        order_x.append("exit:%s" % _Fleet._key(host))
+    return _rcon_z(host, port, cmd)
 
 
-ok_z, msg_z = clusterctl.stop(st, running=lambda s: TARGETS_X, rcon=rcon_z, now=ClockX().now, wait=lambda s: None)
+ok_z, msg_z = clusterctl.stop(st, running=lambda s: TARGETS_X, rcon=rcon_z,
+                              now=ClockX().now, wait=lambda s: None,
+                              procs=fleet_z.procs, details=fleet_z.details,
+                              stop_container=fleet_z.stop, settle=_settled)
 check("stop closes every world before it signals anything",
       order_x and order_x[-1] == "down"
       and {"exit:island", "exit:ragnarok"} <= set(order_x[:-1]), order_x)
@@ -447,17 +638,6 @@ check("and the stop still succeeds", ok_z, msg_z)
 # Stop, watched nothing happen, and reasonably concluded nothing was. Silence and
 # failure have to look different.
 said = []
-alive_s = {"island": True, "ragnarok": True}
-
-
-def rcon_s(host, port, cmd):
-    key = "island" if "island" in host else "ragnarok"
-    if cmd == "DoExit":
-        alive_s[key] = False
-        return "Exiting..."
-    if not alive_s[key]:
-        raise OSError("connection refused")
-    return "No Players Connected"
 
 
 def say_s(event, text, level="info", detail=None, **fields):
@@ -465,11 +645,17 @@ def say_s(event, text, level="info", detail=None, **fields):
 
 
 clusterctl.dockerctl = FakeDocker()
-ok_s, msg_s = clusterctl.stop(st, running=lambda s: TARGETS_X, rcon=rcon_s,
-                              now=ClockX().now, wait=lambda s: None, say=say_s)
+fleet_a = _Fleet({"island": {"server": 1, "exits": 2},
+                  "ragnarok": {"server": 1, "exits": 2}})
+ok_s, msg_s = clusterctl.stop(st, running=lambda s: TARGETS_X, rcon=rcon_x,
+                              now=ClockX().now, wait=lambda s: None, say=say_s,
+                              procs=fleet_a.procs, details=fleet_a.details,
+                              stop_container=fleet_a.stop, settle=_settled)
 events_s = [e["event"] for e in said]
 check("a stop announces before it starts closing anything",
       events_s and events_s[0] == "cluster.closing", events_s)
+check("and the opening line does not promise a save it no longer sends",
+      said and "asked to save" not in said[0]["text"], said[0]["text"])
 check("every world that closes is announced as it closes",
       len([e for e in said if e["event"] == "cluster.world_closed"]) == 2, events_s)
 check("and each one names the map and the count, not just a number",
@@ -488,23 +674,14 @@ check("and the stop itself still works", ok_s, msg_s)
 # A map that will not close is the case the owner most needs told about, so it is a
 # warning and it is named - not folded into a cheerful summary.
 said_l = []
-alive_l = {"island": True, "ragnarok": True}
-
-
-def rcon_l(host, port, cmd):
-    key = "island" if "island" in host else "ragnarok"
-    if cmd == "DoExit" and key == "island":
-        alive_l[key] = False
-        return "Exiting..."
-    if not alive_l[key]:
-        raise OSError("connection refused")
-    return "No Players Connected"          # ragnarok never closes
-
-
 clusterctl.dockerctl = FakeDocker()
+fleet_late = _Fleet({"island": {"server": 1, "exits": 2},
+                     "ragnarok": {"server": 99, "exits": None}})
 ok_l, msg_l = clusterctl.stop(
-    st, running=lambda s: TARGETS_X, rcon=rcon_l, now=ClockX().now,
-    wait=lambda s: None, say=lambda e, t, level="info", detail=None, **f:
+    st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
+    wait=lambda s: None, procs=fleet_late.procs, details=fleet_late.details,
+    stop_container=fleet_late.stop, settle=_settled,
+    say=lambda e, t, level="info", detail=None, **f:
         said_l.append({"event": e, "text": t, "level": level, "detail": detail or ""}),
     budget=30)
 check("a map that would not close is reported as a warning, not as success",
@@ -517,11 +694,111 @@ check("and the returned message still names it for the operator",
 
 # Announcing is reporting, and reporting must never be what stops a cluster stopping.
 clusterctl.dockerctl = FakeDocker()
+fleet_bb = _Fleet({"island": {"server": 1, "exits": 2},
+                   "ragnarok": {"server": 1, "exits": 2}})
 ok_b, msg_b = clusterctl.stop(
-    st, running=lambda s: TARGETS_X, rcon=rcon_s, now=ClockX().now,
-    wait=lambda s: None,
+    st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
+    wait=lambda s: None, procs=fleet_bb.procs, details=fleet_bb.details,
+    stop_container=fleet_bb.stop, settle=_settled,
     say=lambda *a, **k: (_ for _ in ()).throw(RuntimeError("discord is down")))
 check("a stop still completes when announcing it raises", ok_b, msg_b)
+
+# ---- the post-DoExit disk reading: it observes, and it issues NOTHING
+#
+# Same wait the apply used to prove a SaveWorld with. What changed is what it is given:
+# the DoExit instant, not the SaveWorld instant. So the question it answers is "did this
+# world advance after the server was told to exit, and are its -journal / -wal sidecars
+# closed" - which is the one thing that can be said about a shutdown save nobody sent.
+#
+# It is a report. It refuses nothing, it holds nothing, and it sends no RCON command.
+_disk_rcon = []
+_rcon_watched = rcon_exits()
+
+
+def rcon_watched(host, port, cmd):
+    _disk_rcon.append(cmd)
+    return _rcon_watched(host, port, cmd)
+
+
+_settle_seen = {}
+
+
+def _settle_spy(sent):
+    _settle_seen.update(sent)
+    return {l: {"settled": False, "why": "a -journal file is still open beside its world"}
+            for l in sent}
+
+
+fleet_disk = _Fleet({"island": {"server": 1, "exits": 2},
+                     "ragnarok": {"server": 1, "exits": 2}})
+clk_disk = ClockX()
+clk_disk.t = 5000.0
+out_disk = clusterctl.exit_worlds(
+    st, running=lambda s: TARGETS_X, rcon=rcon_watched, now=clk_disk.now,
+    wait=lambda sec: None, procs=fleet_disk.procs, details=fleet_disk.details,
+    stop_container=fleet_disk.stop, settle=_settle_spy)
+check("the disk check is given the DoExit instant, per map",
+      sorted(_settle_seen) == ["Ragnarok", "The Island"]
+      and all(v == 5000.0 for v in _settle_seen.values()), _settle_seen)
+check("it issues no RCON command of its own - DoExit and nothing else was ever sent",
+      set(_disk_rcon) == {"DoExit"}, _disk_rcon)
+check("a world it cannot prove clean does NOT stop the map being closed",
+      all(o["exited"] and o["state"] == clusterctl.CLOSED for o in out_disk.values()),
+      out_disk)
+check("it is reported as unproved instead", all(o["clean"] is False
+                                                for o in out_disk.values()), out_disk)
+check("and it says plainly what that means - the world may be an autosave old",
+      all("clean shutdown could not be proved" in o["why"]
+          and "last autosave" in o["why"] for o in out_disk.values()), out_disk)
+check("with the real autosave period, read from the setting that decides it",
+      all("15 minutes" in o["why"] for o in out_disk.values()), out_disk)
+
+# A world that IS proved says so, and carries no warning.
+fleet_ok = _Fleet({"island": {"server": 1, "exits": 2},
+                   "ragnarok": {"server": 1, "exits": 2}})
+out_ok = clusterctl.exit_worlds(
+    st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
+    wait=lambda sec: None, procs=fleet_ok.procs, details=fleet_ok.details,
+    stop_container=fleet_ok.stop, settle=_settled)
+check("a world proved written after its exit is reported clean",
+      all(o["clean"] is True for o in out_ok.values()), out_ok)
+check("and nothing apologetic is added to its reason",
+      not any("could not be proved" in o["why"] for o in out_ok.values()), out_ok)
+
+# A disk check that blows up is a report that failed, not a stop that failed.
+fleet_boom = _Fleet({"island": {"server": 1, "exits": 2},
+                     "ragnarok": {"server": 1, "exits": 2}})
+out_boom = clusterctl.exit_worlds(
+    st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
+    wait=lambda sec: None, procs=fleet_boom.procs, details=fleet_boom.details,
+    stop_container=fleet_boom.stop,
+    settle=lambda sent: (_ for _ in ()).throw(OSError("the share is not mounted")))
+check("a disk check that raises never breaks the stop",
+      all(o["exited"] for o in out_boom.values()), out_boom)
+check("it is reported as unproved, which is the honest reading",
+      all(o["clean"] is False for o in out_boom.values()), out_boom)
+
+# And it reaches the channel as a warning, with the refusal it is NOT spelled out.
+said_up = []
+clusterctl.dockerctl = FakeDocker()
+fleet_up = _Fleet({"island": {"server": 1, "exits": 2},
+                   "ragnarok": {"server": 1, "exits": 2}})
+ok_up, msg_up = clusterctl.stop(
+    st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
+    wait=lambda s: None, procs=fleet_up.procs, details=fleet_up.details,
+    stop_container=fleet_up.stop, settle=_settle_spy,
+    say=lambda e, t, level="info", detail=None, **f:
+        said_up.append({"event": e, "text": t, "level": level, "detail": detail or ""}))
+_unproved = [e for e in said_up if e["event"] == "cluster.shutdown_unproved"]
+check("a shutdown nobody could prove is announced, as a warning",
+      len(_unproved) == 1 and _unproved[0]["level"] == "warning", said_up)
+check("naming the maps and saying how old the world might be",
+      _unproved and "The Island" in _unproved[0]["text"]
+      and "15 minutes" in _unproved[0]["text"], _unproved)
+check("and saying out loud that it refused nothing",
+      _unproved and "Nothing was refused" in _unproved[0]["text"], _unproved)
+check("the stop itself went ahead regardless - this reports, it does not gate",
+      ok_up, msg_up)
 
 # ---- silence has two meanings, and only one of them is "it has exited"
 #
@@ -553,17 +830,20 @@ def refuses(host, port, cmd):
 stopped_n = []
 out_n = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
-    wait=lambda s: None, budget=30,
+    wait=lambda s: None, budget=30, procs=lambda n: [_SERVER_LINE],
     details=details_for({"island": "running", "ragnarok": "running"}),
-    stop_container=lambda k: (stopped_n.append(k), (True, "stopped"))[1])
+    stop_container=lambda k: (stopped_n.append(k), (True, "stopped"))[1],
+    settle=_settled)
 check("a map that refuses RCON while its container is running is NEVER called exited",
       not any(o["exited"] for o in out_n.values()), out_n)
 check("it is not-ready - still starting, not gone",
       all(o["state"] == clusterctl.NOT_READY for o in out_n.values()), out_n)
 check("and nothing is stopped on the strength of a refused connection",
       stopped_n == [], stopped_n)
-check("a map that never answers is still not-ready when the budget runs out",
-      all(o["state"] == clusterctl.NOT_READY for o in out_n.values()), out_n)
+# The bounded fallback must never reach one of these. A map that never answered RCON is
+# a server mid-boot, and stopping one of those IS the 2026-09-12 incident.
+check("and the bounded fallback never fires at a map that was never asked to exit",
+      stopped_n == [], stopped_n)
 check("and every one of them is named in the result, not quietly dropped",
       sorted(out_n) == ["Ragnarok", "The Island"], sorted(out_n))
 check("with a reason that says only what was actually established about it",
@@ -574,8 +854,8 @@ check("with a reason that says only what was actually established about it",
 # 2. refused, and nothing is running under that name: it really has gone.
 out_g = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
-    wait=lambda s: None, budget=30, details=details_for({}),
-    stop_container=lambda k: (True, "stopped"))
+    wait=lambda s: None, budget=30, details=details_for({}), procs=lambda n: [],
+    stop_container=lambda k: (True, "stopped"), settle=_settled)
 check("a map that refuses RCON with no container running has already gone",
       all(o["exited"] for o in out_g.values()), out_g)
 check("said as already-gone, which is one of the two states that mean exited",
@@ -594,9 +874,10 @@ check("and the reason names both halves of the evidence",
 stopped_u = []
 out_u = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
-    wait=lambda s: None, budget=30,
+    wait=lambda s: None, budget=30, procs=lambda n: None,
     details=lambda names: (_ for _ in ()).throw(OSError("docker did not answer")),
-    stop_container=lambda k: (stopped_u.append(k), (True, "stopped"))[1])
+    stop_container=lambda k: (stopped_u.append(k), (True, "stopped"))[1],
+    settle=_settled)
 check("a container Docker could not be asked about is NEVER called exited",
       not any(o["exited"] for o in out_u.values()), out_u)
 check("an unknown is not-ready - possibly up, which is not the same as gone",
@@ -613,80 +894,38 @@ clusterctl.dockerctl = FakeDocker()
 calls.clear()
 ok_u, msg_u = clusterctl.stop(
     st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
-    wait=lambda s: None, budget=30,
+    wait=lambda s: None, budget=30, procs=lambda n: None,
     details=lambda names: (_ for _ in ()).throw(OSError("docker did not answer")),
     stop_container=lambda k: (True, "stopped"), say=lambda *a, **k: None,
-    require_ready=True)
+    settle=_settled, require_ready=True)
 check("an apply will not stop a cluster it could not ask Docker about", not ok_u, msg_u)
 check("and it names the maps it could not establish anything about",
       "The Island" in msg_u and "Ragnarok" in msg_u, msg_u)
 check("docker compose down is never reached on an unknown either", calls == [], calls)
 
-# 3. DoExit taken, then silence: closed - and the container is stopped there and then,
-#    inside the loop, not left for the batch `down` up to fifteen minutes later. That
-#    gap is where a restart policy revives a server behind a stop that thinks it is done.
-order_c, turns_c = [], {"n": 0}
-silent_at = {"island": 0, "ragnarok": 2}
-
-
-def rcon_c(host, port, cmd):
-    key = "island" if "island" in host else "ragnarok"
-    if cmd == "DoExit":
-        order_c.append("doexit:%s" % key)
-        return "Exiting..."
-    if turns_c["n"] >= silent_at[key]:
-        raise OSError("connection refused")
-    return "No Players Connected"
-
-
-def wait_c(seconds):
-    turns_c["n"] += 1
-    order_c.append("turn")
-
-
-out_c = clusterctl.exit_worlds(
-    st, running=lambda s: TARGETS_X, rcon=rcon_c, now=ClockX().now, wait=wait_c,
-    budget=60, details=details_for({"island": "running", "ragnarok": "running"}),
-    stop_container=lambda k: (order_c.append("stop:%s" % k), (True, "stopped"))[1])
-check("a map that takes DoExit and then goes quiet has closed",
-      all(o["exited"] and o["state"] == clusterctl.CLOSED for o in out_c.values()),
-      out_c)
-check("and Obelisk stopped that container itself",
-      {"stop:island", "stop:ragnarok"} <= set(order_c), order_c)
-check("the moment it closed, not at the end - island is stopped before the next turn",
-      "turn" in order_c and "stop:island" in order_c
-      and order_c.index("stop:island") < order_c.index("turn"), order_c)
-check("and before the map that was still closing had even finished",
-      "stop:ragnarok" in order_c
-      and order_c.index("stop:island") < order_c.index("stop:ragnarok"), order_c)
-check("which the reason says, so the record shows the door was shut",
-      all("container is stopped" in o["why"] for o in out_c.values()), out_c)
-
-# 4. a booting map that comes up mid-wait is asked again - a real DoExit, inside the
+# 3. a booting map that comes up mid-wait is asked again - a real DoExit, inside the
 #    same budget, rather than a second wait of its own bolted on per map.
-order_b, boot = [], {"n": 0, "gone": False}
+order_b, boot = [], {"n": 0}
+fleet_b = _Fleet({"island": {"server": 1, "exits": 2}})
 
 
 def rcon_b(host, port, cmd):
-    key = "island" if "island" in host else "ragnarok"
+    key = _Fleet._key(host)
     if key == "ragnarok":
         raise OSError("connection refused")        # gone, and its container is not up
     if boot["n"] < 3:
         raise OSError("connection refused")        # still starting
     if cmd == "DoExit":
         order_b.append("doexit:island")
-        boot["gone"] = True
         return "Exiting..."
-    if boot["gone"]:
-        raise OSError("connection refused")
     return "No Players Connected"
 
 
 out_b = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=rcon_b, now=ClockX().now,
     wait=lambda s: boot.__setitem__("n", boot["n"] + 1), budget=60,
-    details=details_for({"island": "running"}),
-    stop_container=lambda k: (order_b.append("stop:%s" % k), (True, "stopped"))[1])
+    procs=fleet_b.procs, details=fleet_b.details, stop_container=fleet_b.stop,
+    settle=_settled)
 check("a map that was not ready is asked again once it opens RCON",
       "doexit:island" in order_b, order_b)
 check("and it was genuinely not ready first - this is the retry, not the first ask",
@@ -694,11 +933,10 @@ check("and it was genuinely not ready first - this is the retry, not the first a
 check("a retried map reaches closed like any other",
       out_b["The Island"]["state"] == clusterctl.CLOSED
       and out_b["The Island"]["exited"], out_b)
-check("with its container stopped the same way", "stop:island" in order_b, order_b)
 check("and the map that really was gone is still already-gone",
       out_b["Ragnarok"]["state"] == clusterctl.ALREADY_GONE, out_b)
 
-# 10. a map that keeps answering after taking DoExit is late, exactly as before.
+# 4. a map that never closes is late, and late is not exited.
 check("a map that never closes is late, and late is not exited",
       out_y["Ragnarok"]["state"] == clusterctl.LATE
       and not out_y["Ragnarok"]["exited"], out_y)
@@ -722,9 +960,10 @@ clusterctl.dockerctl = FakeDocker()
 calls.clear()
 ok_r, msg_r = clusterctl.stop(
     st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
-    wait=lambda s: None, budget=30,
+    wait=lambda s: None, budget=30, procs=lambda n: [_SERVER_LINE],
     details=details_for({"island": "running", "ragnarok": "running"}),
-    stop_container=lambda k: (True, "stopped"), say=say_r, require_ready=True)
+    stop_container=lambda k: (True, "stopped"), say=say_r, settle=_settled,
+    require_ready=True)
 check("an apply will not stop a cluster with a map still starting up", not ok_r, msg_r)
 check("and names every map that never became operational",
       "The Island" in msg_r and "Ragnarok" in msg_r, msg_r)
@@ -749,9 +988,9 @@ clusterctl.dockerctl = FakeDocker()
 calls.clear()
 ok_o, msg_o = clusterctl.stop(
     st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
-    wait=lambda s: None, budget=30,
+    wait=lambda s: None, budget=30, procs=lambda n: [_SERVER_LINE],
     details=details_for({"island": "running", "ragnarok": "running"}),
-    stop_container=lambda k: (True, "stopped"),
+    stop_container=lambda k: (True, "stopped"), settle=_settled,
     say=lambda e, t, level="info", detail=None, **f:
         said_o.append({"event": e, "text": t, "level": level}))
 check("an operator who presses Stop still gets a stop", ok_o, msg_o)
@@ -766,19 +1005,22 @@ check("and the channel heard about it too",
 
 # ---- the last look, before anything is signalled
 #
-# Every conclusion above is drawn from silence, and a server that has not opened RCON
-# sounds exactly like one that has closed. So every map is asked once more at the end:
-# one that is talking again was never closed, whatever the wait decided a minute ago.
-probe_w = {"n": 0}
+# A map reported CLOSED has had its container observed in a not-running state, and a
+# container that is not running cannot answer RCON. So a map that IS answering here
+# contradicts the observation that closed it, and the safe reading of a contradiction is
+# that the map is alive: NOT_READY, which holds the apply.
+fleet_w = _Fleet({"island": {"server": 1, "exits": 2},
+                  "ragnarok": {"server": 1, "exits": 2}})
 
 
 def rcon_w(host, port, cmd):
-    key = "island" if "island" in host else "ragnarok"
     if cmd == "DoExit":
         return "Exiting..."
-    probe_w["n"] += 1
-    if key == "island" and probe_w["n"] > 2:
-        return "No Players Connected"              # back from the dead, mid-stop
+    # The wait does not ask this at all any more - it reads the process listing. So the
+    # only ListPlayers here is the last look, and The Island answers it: both halves of
+    # the evidence said it had closed, and it is talking. That is the contradiction.
+    if _Fleet._key(host) == "island":
+        return "No Players Connected"
     raise OSError("connection refused")
 
 
@@ -786,9 +1028,8 @@ clusterctl.dockerctl = FakeDocker()
 calls.clear()
 ok_w, msg_w = clusterctl.stop(
     st, running=lambda s: TARGETS_X, rcon=rcon_w, now=ClockX().now,
-    wait=lambda s: None, budget=30,
-    details=details_for({"island": "running", "ragnarok": "running"}),
-    stop_container=lambda k: (True, "stopped"),
+    wait=lambda s: None, budget=30, procs=fleet_w.procs, details=fleet_w.details,
+    stop_container=fleet_w.stop, settle=_settled,
     say=lambda *a, **k: None, require_ready=True)
 check("a map that answers again after being called closed holds the stop",
       not ok_w, msg_w)
@@ -799,9 +1040,7 @@ check("while the map that really did close is named as one that is down until La
       "Ragnarok had already saved and closed before this, so it is down now and will "
       "stay down until Launch - the rest of the cluster is still up. Nothing was "
       "removed and no build was swapped." in msg_w, msg_w)
-check("nothing was signalled on the strength of the silence that turned out to be a lie",
-      calls == [], calls)
-
+check("nothing was signalled on the strength of a contradiction", calls == [], calls)
 
 clusterctl.dockerctl = fake
 
@@ -2540,9 +2779,9 @@ class _Rig:
     before the stop lands.
     """
 
-    def __init__(self, linger=1, revives=0, settled=True, answers=True, stop_ok=True,
+    def __init__(self, linger=1, revives=0, answers=True, stop_ok=True,
                  running=True, server_up=True, top=False, blind=False):
-        self.linger, self.revives, self.settled = linger, revives, settled
+        self.linger, self.revives = linger, revives
         self.answers, self.stop_ok, self.running = answers, stop_ok, running
         self.server_up, self.top, self.blind = server_up, top, blind
         self.events, self.clock, self.stops, self.polls = [], 1000.0, 0, 0
@@ -2579,13 +2818,6 @@ class _Rig:
             self.exiting, self.polls = True, 0
         return "ok"
 
-    def settle(self, sent):
-        self.events.append("settle")
-        return {label: {"settled": self.settled,
-                        "why": "saved" if self.settled else
-                               "a -journal file is still open beside its world"}
-                for label in sent}
-
     def stop(self, key):
         self.events.append("stop")
         self.stops += 1
@@ -2605,13 +2837,13 @@ def _close(rig, **kw):
     return clusterctl.close_map(_ps_store, "island", ("10.0.0.5", 27020),
                                 "asa-testcluster-island", "island",
                                 rcon=rig.rcon, procs=rig.procs, details=rig.details,
-                                stop_container=rig.stop, settle=rig.settle,
+                                stop_container=rig.stop,
                                 wait=rig.wait, now=rig.now, budget=60, interval=5,
                                 confirm=30, **kw)
 
 
-# the clean close: confirm, save, prove it on disk, exit, and shut the door the moment
-# the process is gone
+# the clean close: confirm it is operational, exit it, and shut the door the moment the
+# process is gone. NO SaveWorld anywhere in it.
 _rig_a = _Rig(linger=1)
 _out_a = _close(_rig_a)
 _pcheck("a map that closes ends STOPPED", _out_a["state"] == clusterctl.STOPPED, _out_a)
@@ -2619,9 +2851,15 @@ _pcheck("and is reported stopped only because its container was proved not runni
         _out_a["stopped"] is True, _out_a)
 _pcheck("it was confirmed operational before anything was asked of it",
         _rig_a.events[:2] == ["top", "ListPlayers"], _rig_a.events)
-_pcheck("the save was sent and then proved on disk before the exit",
-        _rig_a.events.index("SaveWorld") < _rig_a.events.index("settle")
-        < _rig_a.events.index("DoExit"), _rig_a.events)
+# The line the rebuild turns on. The save that used to go in front of the DoExit is
+# gone: the server writes its own on the way out - eleven seconds after DoExit when it
+# was measured at The Center - and RCON's "World Saved" was the request being accepted
+# rather than the write landing, so the save proved less than the exit does.
+_pcheck("no SaveWorld is sent before the DoExit, or at all",
+        "SaveWorld" not in _rig_a.events, _rig_a.events)
+_pcheck("DoExit is what a map is asked, and the only thing it is asked",
+        [e for e in _rig_a.events if e in ("DoExit", "SaveWorld")] == ["DoExit"],
+        _rig_a.events)
 _pcheck("the process was still there for a turn after DoExit, and was left alone",
         _rig_a.events.index("DoExit") + 1 < _rig_a.events.index("stop"), _rig_a.events)
 # The line this whole change exists for: the stop is issued in the SAME turn that first
@@ -2650,20 +2888,12 @@ _pcheck("a listing nobody could read never leads to a stop",
         "stop" not in _rig_c.events and _rig_c.stops == 0, _rig_c.events)
 _pcheck("and the map is held, not reported stopped", _out_c["stopped"] is False, _out_c)
 
-# the save has to land on disk. RCON taking SaveWorld is not enough to earn a DoExit.
-_rig_d = _Rig(settled=False)
-_out_d = _close(_rig_d)
-_pcheck("a world that did not finish writing is never asked to exit",
-        "DoExit" not in _rig_d.events, _rig_d.events)
-_pcheck("nor is its container stopped", _rig_d.stops == 0, _rig_d.events)
-_pcheck("and the reason says the world was still being written",
-        "did not finish writing" in _out_d["why"], _out_d)
-
-# revived: the supervisor wins the race once. Never signalled - saved and asked again.
+# revived: the supervisor wins the race once. Never signalled - confirmed and asked
+# again.
 _rig_e = _Rig(linger=1, revives=1)
 _out_e = _close(_rig_e)
-_pcheck("a map revived before the stop landed is taken round again, from the save",
-        _rig_e.events.count("SaveWorld") == 2, _rig_e.events)
+_pcheck("a map revived before the stop landed is taken round again from the start",
+        _rig_e.events.count("DoExit") == 2, _rig_e.events)
 _pcheck("and it gets there in the end", _out_e["state"] == clusterctl.STOPPED
         and _out_e["stopped"] is True, _out_e)
 _pcheck("which took two attempts", _out_e["attempts"] == 2, _out_e)
@@ -2686,7 +2916,7 @@ _pcheck("and nothing was ever signalled at it",
 # the gap, found before anything was asked: nothing to save, and the door is shut at once
 _rig_g = _Rig(server_up=False)
 _out_g = _close(_rig_g)
-_pcheck("a container already in the gap is stopped without being asked to save",
+_pcheck("a container already in the gap is stopped without being asked anything",
         "SaveWorld" not in _rig_g.events and "DoExit" not in _rig_g.events,
         _rig_g.events)
 _pcheck("and it is stopped", _out_g["state"] == clusterctl.STOPPED
@@ -2716,10 +2946,22 @@ _pcheck("the stop itself is still issued - it is the CLAIM that needs the eviden
 _csrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),
                 encoding="utf-8").read().split("def close_map")[1].split(
                     chr(10) + "def ")[0]
-_pcheck("the save is proved by the same wait the apply path uses",
-        "worlds_settled(store, sent," in _csrc, _csrc[:400])
+# The command as it would be SENT, quoted, rather than the word - both files still
+# explain in prose what was removed and why, and that prose must stay readable.
+_SAVE_CMD = chr(34) + "SaveWorld" + chr(34)
+_pcheck("no SaveWorld is sent anywhere in the close path",
+        _SAVE_CMD not in _csrc, _csrc[:400])
 _pcheck("the container is stopped with compose stop, not a signal",
         "stop_one(store, k)" in _csrc and "kill" not in _csrc, _csrc[:400])
+
+# And the same rule on the whole-cluster path, read off the source: a batch stop sends
+# DoExit and nothing else. The upstream save that used to run before it is gone too.
+_esrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),
+                encoding="utf-8").read().split("def exit_worlds")[1].split(
+                    chr(10) + "def ")[0]
+_pcheck("exit_worlds sends no SaveWorld either", _SAVE_CMD not in _esrc, _esrc[:400])
+_pcheck("and the disk reading it does afterwards issues nothing over RCON",
+        "rcon(" not in _esrc.split("the passive reading")[1], _esrc[-1500:])
 
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

@@ -250,6 +250,9 @@ ICONS = {
     # Warnings
     "warning": "⚠", "degraded": "⚠", "closed_partly": "⚠",
     "world_unreachable": "⚠", "deferred": "⚠",
+    # A stop that happened, over a world nobody could prove had finished writing.
+    # Amber, not red: nothing is known to be wrong - it is the proof that is missing.
+    "shutdown_unproved": "⚠",
     "offsite_unconfigured": "⚠", "push_unconfigured": "⚠",
     "ban_partial": "⚠",
     "unban_partial": "⚠",

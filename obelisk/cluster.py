@@ -196,14 +196,22 @@ ABSENT_POLLS = 6
 # was killed, was revived by the restart policy, and started another ten-minute boot.
 # Three maps went round that loop.
 #
-# Silence cannot tell those two apart. Docker can, because a server that has exited
-# leaves a container that is no longer running and a server that is still booting leaves
-# one that is. So every map a stop touches ends in exactly one of four states:
+# Silence cannot tell those two apart, and on 2026-09-18 it turned out silence cannot
+# tell anything apart: a minute after a hand-driven DoExit at The Center, RCON was
+# silent and Docker was still reporting the container Online. Silence means the server
+# process is gone for a moment. It is not evidence about the container, and it was never
+# evidence that a map would stay down.
 #
-#   CLOSED        DoExit taken, RCON went quiet, and Obelisk stopped that container
+# So the discriminator is the process listing plus the container state, both observed -
+# see the five states further down, which is where that reading lives. These four are
+# what a whole-cluster stop REPORTS, and each one is now reached from an observation:
+#
+#   CLOSED        DoExit taken, the server process is gone AND the container is in a
+#                 not-running state. Both halves, both observed.
 #   ALREADY_GONE  DoExit undeliverable, and its container is not running
-#   NOT_READY     DoExit undeliverable, and its container IS running - it is alive
-#   LATE          DoExit taken, still answering when the budget ran out
+#   NOT_READY     DoExit undeliverable and its container IS running - it is alive; or
+#                 its server process came back after having been gone, which is worse
+#   LATE          DoExit taken and the budget ran out without that pair being observed
 #
 # `exited` is True for CLOSED and ALREADY_GONE and for nothing else. NOT_READY reading
 # as exited is the whole of the incident, so it is the one line that must never move.
@@ -271,6 +279,21 @@ def _exit_names(store):
     for r in rows:
         out[r["name"]] = (naming.container_name(proj, r["instance"]), r["instance"])
     return out
+
+
+def _autosave_minutes(store):
+    """How old a world that could not be proved clean might be, in minutes.
+
+    The honest number to put in front of an operator, read from the setting that
+    decides it rather than written into a sentence as a constant - a cluster that has
+    tuned AutoSavePeriodMinutes down should be told its own figure, and one that cannot
+    be read at all is told the game's default rather than nothing.
+    """
+    try:
+        minutes = float(store.get("AutoSavePeriodMinutes"))
+    except Exception:                               # noqa: BLE001 - a default, not fatal
+        minutes = 0.0
+    return minutes if minutes > 0 else 15.0
 
 
 def _might_be_running(name, details):
@@ -342,47 +365,76 @@ def _ask_to_exit(one, rcon, details):
 
 
 def _close_the_door(one, label, stop_container):
-    """Stop this map's container the moment its own world is closed.
+    """The bounded fallback: stop a container whose server is STILL running. True if it did.
 
-    Per map, here, rather than left to the batch `docker compose down` that can be up
-    to EXIT_BUDGET later. That gap is a window in which a restart policy can bring a
-    server back up behind a stop that believes it is finished - and stopping a
-    container whose game is already gone is exactly the branch the image documents as
-    safe ("Server is not running, no need to save world before stopping container").
+    This is no longer a keep-it-down measure. The generated compose carries no
+    `restart:` key, so a container that exits stays exited and nothing has to be marked
+    user-stopped to hold it there - which is what this used to be for, and it used to
+    fire on an inferred exit, on every map, from RCON going quiet.
 
-    Best effort, because the world is already written either way: the danger this
-    closes is revival, and the batch `down` still follows.
+    What is left is the one case the wait cannot resolve: a map that took DoExit and
+    whose server process is still in the listing when the grace period has run out.
+    That is a stuck server rather than one mid-save - the save a server writes on its
+    way out landed eleven seconds after the DoExit when this was measured by hand at The
+    Center - and `compose stop` is not a kill: it lands on the image's own SIGTERM
+    handler, which runs a verified two-stage shutdown inside the 210s grace period the
+    compose file still sets.
+
+    It may only ever fire on a POSITIVELY observed still-running server. A process
+    listing nobody could read establishes nothing, and a map that never answered RCON at
+    all is a server mid-boot - the 2026-09-12 incident - so neither reaches here.
+
+    Whatever happens is said in `why`. A stop that was not observed is never claimed.
     """
     if not one.get("key"):
-        log.warning("%s closed its world but Obelisk could not tell which service to "
+        log.warning("%s was still running but Obelisk could not tell which service to "
                     "stop - the stop that follows will get it", label)
-        one["why"] += ", though Obelisk could not tell which container to stop"
+        one["why"] += ", and Obelisk could not tell which container to stop"
         return False
     try:
         ok, why = stop_container(one["key"])
     except Exception as e:                          # noqa: BLE001 - reported, not fatal
         ok, why = False, str(e)
     if not ok:
-        log.warning("%s closed its world but its container did not stop: %s", label, why)
-        one["why"] += ", though its container did not stop (%s)" % why
+        log.warning("%s was still running and its container did not stop: %s",
+                    label, why)
+        one["why"] += ", and its container would not stop either (%s)" % why
         return False
-    one["why"] += ", and its container is stopped"
+    one["why"] += ", so its container was stopped rather than left running"
     return True
 
 
 def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
                 interval=EXIT_INTERVAL, running=None, on_exited=None, details=None,
-                stop_container=None):
-    """Ask every running map to save and close itself. {label: {exited, why, state}}.
+                stop_container=None, procs=None, ark_root=None, settle=None):
+    """Ask every running map to close itself. {label: {exited, why, state, clean}}.
 
-    Sent, then waited for, because the point is the waiting: `DoExit` returns as soon as
-    the command is accepted, which is the same lie SaveWorld tells. What says the world
-    is closed is the server no longer answering at all.
+    DoExit and nothing else. No SaveWorld in front of it: the server writes its own save
+    on the way out - measured at eleven seconds after the DoExit was taken - and RCON's
+    "World Saved" is the request being accepted rather than the write landing, so a save
+    sent from here would prove less than the exit proves by itself.
+
+    What says a map is closed is NOT that RCON went quiet. That was the discriminator
+    until 2026-09-18, when it was driven by hand at The Center: a minute after DoExit
+    RCON was silent and Docker was still reporting the container Online. Silence means
+    the server process is gone for a moment; it says nothing about the container. So the
+    question asked here is the one that can actually be answered - is the server process
+    gone, AND is the container in a not-running state - and both halves are observed,
+    never inferred.
+
+    The container gets there on its own: POK reads the missing server process as a
+    self-restart and deliberately exits the container, and with no `restart:` key in the
+    compose file that exit is the end of it. `_close_the_door` is only the bounded
+    fallback for a server that is still running when the budget is spent.
 
     `state` is one of CLOSED, ALREADY_GONE, NOT_READY or LATE, and `exited` is True for
     the first two only. A map that will not answer is not automatically a map that has
     gone: if its container is still running it is alive - almost always still booting -
     and calling that "exited" is what let a stop signal three servers mid-boot.
+
+    `clean` is the passive disk reading: True when the world advanced after DoExit and
+    its sidecars are closed, False when that could not be proved, None for a map that
+    was never asked to exit. It reports and refuses nothing.
 
     Best-effort per map on purpose. A map that will not exit is not a reason to refuse
     the stop here - it is a reason to say so and let the caller decide, which is what
@@ -391,7 +443,10 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
     now = now or time.time
     wait = wait or time.sleep
     details = details or (lambda names: dockerctl.container_details(names))
+    procs = procs or (lambda name: dockerctl.processes(name))
     stop_container = stop_container or (lambda key: stop_one(store, key))
+    settle = settle or (lambda sent: worlds_settled(store, sent, ark_root=ark_root,
+                                                    now=now, wait=wait))
     targets = running(store) if running else running_instances(store)
     if not targets:
         return {}
@@ -403,9 +458,14 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
     seen = {}
     for label, host, port in targets:
         cname, key = named.get(label, (host, None))
-        seen[label] = {"at": (host, port), "name": cname, "key": key,
-                       "state": None, "exited": False, "why": ""}
-        _ask_to_exit(seen[label], rcon, details)
+        seen[label] = {"at": (host, port), "name": cname, "key": key, "state": None,
+                       "exited": False, "why": "", "sent": None, "gone": False,
+                       "revived": False, "clean": None}
+        if _ask_to_exit(seen[label], rcon, details):
+            # THE MOMENT A STOP IS DECIDED FOR THIS MAP, recorded per map. The disk
+            # check below measures the world against it, and it is the one point a
+            # persisted "down" intent would be written from.
+            seen[label]["sent"] = now()
 
     started = now()
     # Counted, so the reporter can say "3 of 10" rather than just naming maps into the
@@ -413,7 +473,7 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
     # report the same way are two waits somebody only has to learn once.
     closing = sum(1 for o in seen.values() if not o["exited"])
     shut = 0
-    for _turn in range(max(1, int(budget / max(1, interval)) + 1)):
+    for _turn in _turns(budget, interval):
         for label, one in seen.items():
             if one["exited"]:
                 continue
@@ -422,23 +482,34 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
                 # that has not opened RCON is asked again each turn inside the same
                 # budget; a wait of its own, per map, one after another, would cost the
                 # cluster far more than the bug it was fixing.
-                _ask_to_exit(one, rcon, details)
+                if _ask_to_exit(one, rcon, details):
+                    one["sent"] = now()
                 continue
-            host, port = one["at"]
-            try:
-                rcon(host, port, "ListPlayers")
-            except Exception:
-                # Silence *after* a DoExit that was taken. That is the world written and
-                # the process gone - so the container is stopped here and now.
-                one["state"], one["exited"] = CLOSED, True
-                one["why"] = "closed its world and exited"
-                _close_the_door(one, label, stop_container)
-                shut += 1
-                if on_exited:
-                    try:
-                        on_exited(label, shut, closing)
-                    except Exception as e:          # noqa: BLE001 - reporting only
-                        log.warning("could not report %s exiting: %s", label, e)
+            state, why = process_state(one["name"], procs, details,
+                                       seen_gone=one["gone"])
+            one["why"] = why
+            if state == PROCESS_GONE:
+                # Half of it, and only half. The server is gone and the container is
+                # still up - the gap that reads Online for about a minute. POK's own
+                # deliberate exit is what closes it, so this waits for that rather than
+                # inferring it or reaching for a stop.
+                one["gone"] = True
+                continue
+            if state == REVIVED:
+                one["revived"] = True
+                continue
+            if state != STOPPED:
+                # EXITING, or a listing nobody could read. Either way nothing has been
+                # established, so nothing is signalled.
+                continue
+            one["state"], one["exited"] = CLOSED, True
+            one["why"] = "its server process is gone and its container is not running"
+            shut += 1
+            if on_exited:
+                try:
+                    on_exited(label, shut, closing)
+                except Exception as e:              # noqa: BLE001 - reporting only
+                    log.warning("could not report %s exiting: %s", label, e)
         if all(one["exited"] for one in seen.values()):
             break
         if now() - started >= budget:
@@ -452,21 +523,77 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
             one["why"] = ("it never answered RCON in %ds and its container has not "
                           "stopped - it has not finished starting" % budget)
             log.warning("%s was never ready to be asked to close: %s", label, one["why"])
+            continue
+        if one["revived"]:
+            # A server that came back is a server that is booting, and that is the
+            # incident itself. NOT_READY rather than LATE, because NOT_READY is the one
+            # that holds an apply rather than letting it stop into this.
+            one["state"] = NOT_READY
+            one["why"] = ("its server process came back after having been gone - it is "
+                          "starting again, not closed")
+            log.warning("%s came back after having exited: %s", label, one["why"])
+            continue
+        one["state"] = LATE
+        present, known = _server_seen(one["name"], procs)
+        if present:
+            one["why"] = "it was still running %ds after DoExit" % budget
+            _close_the_door(one, label, stop_container)
+        elif known:
+            one["why"] = ("its server process is gone but its container never confirmed "
+                          "it had stopped within %ds" % budget)
         else:
-            one["state"] = LATE
-            one["why"] = "still answering %ds after DoExit" % budget
-            log.warning("%s did not close its world: %s", label, one["why"])
-    return {l: {"exited": o["exited"], "why": o["why"], "state": o["state"]}
+            one["why"] = ("nothing could be read about what is running inside it, so "
+                          "%ds after DoExit its stop is unproved" % budget)
+        log.warning("%s did not close its world: %s", label, one["why"])
+
+    # ---- the passive reading: did each world finish writing after it was told to exit?
+    #
+    # It observes and it reports. It sends no RCON command, it gates nothing and it
+    # refuses nothing - a map it cannot prove clean does not hold the stop, it gets a
+    # sentence saying so. It is bounded by worlds_settled's own budget, so a world that
+    # never settles costs a wait rather than the apply.
+    #
+    # This is worlds_settled unchanged; what changes is what `sent` means. It is the
+    # DoExit instant now, not the SaveWorld instant, so the question it answers is "did
+    # this world advance after the server was told to exit, and are its -journal / -wal
+    # sidecars closed" rather than "did the SaveWorld land".
+    # `is not None`, not truthiness: an epoch of 0.0 is a real instant, and a test
+    # clock that starts at zero is the first thing to produce one.
+    sent = {l: o["sent"] for l, o in seen.items() if o["sent"] is not None}
+    clean = {}
+    if sent:
+        try:
+            clean = settle(sent) or {}
+        except Exception as e:                      # noqa: BLE001 - reporting only
+            log.warning("could not read the worlds on disk after the exits: %s", e)
+            clean = {}
+    stale = _autosave_minutes(store)
+    for label, one in seen.items():
+        if one["sent"] is None:
+            continue
+        one["clean"] = bool((clean.get(label) or {}).get("settled"))
+        if not one["clean"]:
+            why = (clean.get(label) or {}).get("why") or "nothing was read"
+            one["why"] = ("%s; a clean shutdown could not be proved (%s), so its world "
+                          "on disk may be as old as its last autosave - up to %g "
+                          "minutes" % (one["why"], why, stale))
+            log.warning("%s could not be proved to have shut down cleanly: %s",
+                        label, why)
+
+    return {l: {"exited": o["exited"], "why": o["why"], "state": o["state"],
+                "clean": o["clean"]}
             for l, o in seen.items()}
 
 
 def still_answering(store, rcon=None, running=None):
     """Which maps answer RCON right now. Sorted labels, never raises.
 
-    The last look before anything is signalled. Everything a stop concludes about a
-    closed world is drawn from silence, and silence is also what a server that has not
-    opened its RCON port yet sounds like - so a map that is talking again was never
-    closed, whatever the wait decided about it a minute earlier.
+    The last look before anything is signalled, and it is a net rather than the
+    discriminator now. A map reported CLOSED has had its container observed in a
+    not-running state, and a container that is not running cannot answer RCON - so a map
+    that IS answering here contradicts the observation that closed it, and the safe
+    reading of a contradiction is that the map is alive. It is NOT_READY, and that holds
+    an apply, which is exactly the cheap end of the choice.
     """
     rcon = rcon or _rcon_for(store)
     try:
@@ -499,7 +626,12 @@ def still_answering(store, rcon=None, running=None):
 #   one minute   RCON silent, and Docker still reporting the container Online. The
 #                container-up-but-server-down gap is real, and it is a minute wide.
 #   two minutes  the map was restart-looping. A deliberate DoExit does NOT leave a map
-#                down: the container's own supervisor starts the server again.
+#                down. The container log says why: POK finds no server process,
+#                classifies it as a self-restart, and exits the WHOLE CONTAINER on
+#                purpose so that the restart policy brings it back. That policy is gone
+#                from the generated compose now, so the deliberate exit is the end of
+#                it - but the process, not the silence, is still what says the server
+#                has gone.
 #
 # So silence is not the discriminator, and neither is the container. The process is. The
 # supervisor stays up when the server exits - which is exactly why the container reads
@@ -658,35 +790,35 @@ def process_state(name, procs, details, answers=None, seen_gone=False):
 
 
 def close_map(store, label, at, name, key, rcon=None, procs=None, details=None,
-              stop_container=None, settle=None, wait=None, now=None, ark_root=None,
+              stop_container=None, wait=None, now=None, ark_root=None,
               budget=EXIT_BUDGET, interval=EXIT_INTERVAL, confirm=CONFIRM_BUDGET,
               attempts=CLOSE_ATTEMPTS):
-    """Save one map, let it exit itself, and shut its door the moment its process is gone.
+    """Let one map exit itself, and shut its door the moment its process is gone.
 
     {"state", "stopped", "why", "attempts"} - the state being one of the five above, and
     `stopped` true only for a container proved not to be running.
 
-    The order is the whole of it. Save, and prove the save on disk, because "World
-    Saved" answers the request and not the write. DoExit rather than a signal, because
-    SIGTERM starts a clock that the server's own save-on-exit does not respect. Then
-    watch the process list rather than the port, because the container stays up either
-    way - and stop that container in the same turn that first sees the server gone.
-    `compose stop` marks it user-stopped, which is the one thing `restart: unless-stopped`
-    will not undo, and it takes the image's "server is not running, no need to save
-    world" branch.
+    DoExit, and NOTHING in front of it. There was a SaveWorld here, proved on disk
+    before the exit was sent; it is gone, by decision. The server writes its own save on
+    the way out - eleven seconds after DoExit when this was measured by hand - and an
+    RCON "World Saved" is the request being accepted rather than the write landing, so
+    the save that was sent from here proved less than the exit does.
+
+    DoExit rather than a signal, because SIGTERM starts a clock that the server's own
+    save-on-exit does not respect. Then watch the process list rather than the port,
+    because the container stays up either way - and stop that container in the same turn
+    that first sees the server gone, since nothing here can tell whether the image will
+    take the container down itself on this particular map.
 
     A map that comes back instead is REVIVED - mid-boot, which is the incident itself -
-    and it is never signalled. It is re-confirmed and taken round again from the save,
-    and when the attempts run out this holds and says so rather than reaching for a
-    signal.
+    and it is never signalled. It is re-confirmed and taken round again, and when the
+    attempts run out this holds and says so rather than reaching for a signal.
     """
     now = now or time.time
     wait = wait or time.sleep
     procs = procs or (lambda n: dockerctl.processes(n))
     details = details or (lambda names: dockerctl.container_details(names))
     stop_container = stop_container or (lambda k: stop_one(store, k))
-    settle = settle or (lambda sent: worlds_settled(store, sent, ark_root=ark_root,
-                                                    now=now, wait=wait))
     if rcon is None:
         rcon = _rcon_for(store)
     host, port = at
@@ -735,6 +867,8 @@ def close_map(store, label, at, name, key, rcon=None, procs=None, details=None,
 
         # 1. Confirm OPERATIONAL. A map that has just been revived is minutes away from
         #    answering anything, so this waits for it rather than refusing on one look.
+        #    A LAUNCH THAT SUCCEEDS is the mirror of this, and the other point a
+        #    persisted per-map intent would be written from.
         state, why = EXITING, "nothing has been read yet"
         started = now()
         for _turn in _turns(budget, interval):
@@ -755,6 +889,7 @@ def close_map(store, label, at, name, key, rcon=None, procs=None, details=None,
             # The gap, found before anything was asked of it: no server process, and a
             # container still up. There is no world being written and nothing left to
             # exit, and this is the one state that may be signalled - so it is, at once.
+            # THE MOMENT A STOP IS DECIDED for this map.
             state, why = shut_the_door()
             if state == STOPPED:
                 out.update(state=STOPPED, stopped=True, why=why)
@@ -767,25 +902,9 @@ def close_map(store, label, at, name, key, rcon=None, procs=None, details=None,
             out.update(state=state, why="%s, so it was not asked to save or exit" % why)
             return out
 
-        # 2. Save, and prove it on disk. "World Saved" came back over RCON with a
-        #    journal still open beside the world, so the disk is the only witness there
-        #    is. This is worlds_settled's proof, not a second opinion about it.
-        sent = {}
-        try:
-            rcon(host, port, "SaveWorld")
-            sent[label] = now()
-        except Exception as e:                      # noqa: BLE001 - reported, not fatal
-            out.update(state=OPERATIONAL, why="it would not take SaveWorld (%s)" % e)
-            return out
-        world = (settle(sent) or {}).get(label) or {}
-        if not world.get("settled"):
-            out.update(state=OPERATIONAL,
-                       why=("its world did not finish writing (%s), so it was never "
-                            "asked to exit" % (world.get("why") or "nothing was read")))
-            return out
-
-        # 3. DoExit, and then watch the process rather than the port: RCON goes quiet
-        #    long before the save it makes on the way out has finished.
+        # 2. DoExit, with nothing in front of it, and then watch the process rather
+        #    than the port: RCON goes quiet long before the save the server makes on
+        #    its way out has finished.
         try:
             rcon(host, port, "DoExit")
         except Exception as e:                      # noqa: BLE001 - reported, not fatal
@@ -819,8 +938,8 @@ def close_map(store, label, at, name, key, rcon=None, procs=None, details=None,
             return out
         if state == REVIVED:
             log.warning("%s was started again before its container could be stopped - "
-                        "going round from the save again rather than signalling a "
-                        "server that is booting", label)
+                        "going round again rather than signalling a server that is "
+                        "booting", label)
             out.update(state=REVIVED, why=why)
             continue
         out.update(state=state, why=why)
@@ -885,9 +1004,10 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
             "cluster.world_closed",
             "%s saved its world and closed (%d of %d)." % (label, done, total)))
         say("cluster.closing",
-            "Stopping the cluster. Each map is being asked to save and close its own "
-            "world first, which takes a few minutes on a big map - nothing is shut "
-            "down until its world is written.")
+            "Stopping the cluster. Each map is being asked to exit, which writes its "
+            "own save on the way out and takes a few minutes on a big map - nothing is "
+            "signalled until Obelisk has seen that map's server process gone and its "
+            "container stopped.")
         try:
             closed = exit_worlds(store, **kw)
         except Exception as e:                      # noqa: BLE001 - never blocks a stop
@@ -899,11 +1019,11 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
                 level="warning")
 
     # One last probe of every map, before anything is signalled and before any of this
-    # is announced as done. Everything above concludes a world is closed from silence,
-    # and silence is also the sound of a server that has not opened its RCON port yet -
-    # so a map that is answering again was never closed, whatever the wait decided about
-    # it a minute ago. It is alive, which is NOT_READY, and this is the point at which
-    # that is still cheap to act on.
+    # is announced as done. A map reported CLOSED has had its container observed in a
+    # not-running state, and a container that is not running cannot answer RCON - so a
+    # map that IS answering contradicts the observation that closed it. The safe reading
+    # of a contradiction is that the map is alive, which is NOT_READY, and this is the
+    # point at which that is still cheap to act on.
     if closed:
         try:
             awake = still_answering(store, rcon=kw.get("rcon"), running=kw.get("running"))
@@ -981,6 +1101,29 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
                 "%-14s %s" % (l, "Saved and closed" if closed[l].get("exited")
                               else "DID NOT CLOSE - %s" % (closed[l].get("why") or ""))
                 for l in sorted(closed)))
+
+    # ---- what the disk says, said out loud. It gates nothing.
+    #
+    # exit_worlds watched each world after its DoExit and could not prove every one of
+    # them finished writing. That is not a reason to refuse anything and it is not
+    # treated as one - the stop has already happened by the time this is read. It is a
+    # reason to tell somebody what they are looking at, because the alternative is a
+    # cluster that comes back on a world an autosave period old and nobody knowing why.
+    unproved = sorted(l for l, c in closed.items() if c.get("clean") is False)
+    if unproved:
+        stale = _autosave_minutes(store)
+        say("cluster.shutdown_unproved",
+            "%s %s asked to exit, but Obelisk could not prove %s world finished "
+            "writing afterwards. Nothing was refused and nothing is being held - the "
+            "stop went ahead. What it means: %s world on disk may be as old as its last "
+            "autosave, up to %g minutes. Worth a look when the cluster is back."
+            % (_and(unproved), "were" if len(unproved) > 1 else "was",
+               "their" if len(unproved) > 1 else "its",
+               "those worlds" if len(unproved) > 1 else "that",
+               stale),
+            level="warning",
+            detail="\n".join("%-14s %s" % (l, closed[l].get("why") or "")
+                              for l in unproved))
 
     if not_ready:
         # Not a refusal here: Stop was asked for, and `down` removes the containers, so

@@ -882,7 +882,7 @@ APPLY_PHASES = [
 # is where a count belongs - it is not a phase of its own.
 STOP_PHASES = [
     ("Requested", ("starting", "stop requested")),
-    ("Closing worlds", ("asked to save and close", "could not be asked to close",
+    ("Closing worlds", ("asked to exit", "could not be asked to close",
                         "saved its world and closed")),
     ("Stopping servers", ("stopping the servers now",)),
     ("Stopped", ("cluster stopped",)),
