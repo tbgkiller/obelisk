@@ -33,6 +33,8 @@ from . import console as consolelib
 from . import pending as pendingctl
 from . import savepoints as pointsctl
 from . import maps as mapsmod
+from . import intent as intentctl
+from . import compose as composectl
 from .firstrun import bootstrap
 from .plan import build_plan
 from .settings import Invalid, validate as validate_setting
@@ -549,6 +551,18 @@ def build_app(store, docker=None):
                 # mount" are opposite advice and the label alone cannot tell which.
                 banner += ui.render_held_down(
                     still, states=updatesctl.held_down_states(store))
+        # What the crash watch is actually doing, which is not always what the
+        # checkbox says. Three states, and the one that must not be hidden is "on and
+        # doing nothing because Docker has the job" - an operator who thinks Obelisk is
+        # covering them finds out otherwise the day they turn the policy off.
+        try:
+            _stood = intentctl.stood_down(store)
+            _by_key = {r["instance"]: r["name"] for r in plan.get("maps") or []}
+            banner += ui.render_crash_watch(
+                bool(store.get("crash_watch")), composectl.restart_policy(store),
+                [_by_key.get(k, k) for k in _stood])
+        except Exception as e:                       # noqa: BLE001 - never a blank page
+            log.warning("could not render the crash watch note: %s", e)
         # One panel. render_stop_job owns #stopwrap and the poller replaces what is
         # inside it, so the server-rendered paint and the polled one are the same
         # element rather than two of them stacked.
@@ -3120,6 +3134,165 @@ async def loop_watch(store, interval=120, status=None, sleep_first=True):
             log.info("restart-loop watch skipped: %s", e)
 
 
+
+# ---------------------------------------------------------------- the crash watch
+#
+# What replaced `restart: unless-stopped`. The policy brought back anything that exited,
+# which is why a deliberate DoExit turned into a ten-minute boot loop; the default is now
+# `restart: no`, and the cost of that is that a genuine crash leaves a map down until
+# somebody notices. This is the thing that notices.
+#
+# It is the opposite of the policy in the one way that matters: the policy acted on the
+# container's exit, which cannot tell a crash from an apply, and this acts on a RECORD of
+# what Obelisk meant the map to be doing. Four things have to hold before it moves, and
+# every one of them fails closed.
+#
+# THE OWNER'S RULE, verbatim: "Get this wrong in the safe direction: if intent is
+# ambiguous, do NOT relaunch."
+#
+# The conflict that has no clean answer, stated rather than hidden: an operator who stops
+# a container in the Unraid UI has bypassed Obelisk entirely, so the record still says
+# "up" and this will start it again. Obelisk cannot tell that apart from a crash - both
+# are "the container is down and Obelisk did not stop it" - and Docker does not expose
+# anything that would. Of the two ways to be wrong, bringing back a map somebody stopped
+# outside Obelisk costs a map coming back up, bounded at three and announced each time;
+# not bringing back a crashed map is the regression this exists to fix. So it acts, and
+# the announcement says out loud what to do instead.
+def crash_pass(store, details=None, start=None, say=None, locked=None, policy=None,
+               names=None, seen_down=None, now=None):
+    """One look at every map. Returns what it did, and never raises.
+
+    Split out from the loop so the decision can be tested without a clock: everything
+    that decides whether a map is relaunched is in here, and the loop around it only
+    sleeps.
+    """
+    say = say or announce.say
+    now = now or time.time
+    seen_down = set() if seen_down is None else seen_down
+    out = {"relaunched": [], "stood_down": [], "failed": [], "skipped": "",
+           "down": set()}
+
+    if not store.get("crash_watch"):
+        out["skipped"] = "the crash watch is off"
+        return out
+
+    # THE ADDENDUM'S RULE. With a restart policy in place Docker is already restarting
+    # these containers, and two independent things restarting one map is a relaunch
+    # storm nobody can attribute afterwards. Docker owns recovery in that configuration
+    # and Obelisk does not get a second vote.
+    if (policy or composectl.restart_policy)(store) == "unless-stopped":
+        out["skipped"] = "the restart policy is unless-stopped, so Docker is doing this"
+        return out
+
+    # An apply stops ten maps on purpose and takes minutes over it. Relaunching into the
+    # middle of one is the exact fight this record exists to prevent, and the lock is
+    # already how every other unattended path in this file stays out of the way.
+    if (locked or APPLY_LOCK.locked)():
+        out["skipped"] = "an apply is in flight"
+        return out
+
+    try:
+        mapping = (names or clusterctl.map_containers)(store)
+    except Exception as e:                           # noqa: BLE001 - never fatal
+        log.info("crash watch could not work out this cluster's containers: %s", e)
+        return out
+    if not mapping:
+        return out
+
+    details = details or (lambda n: dockerctl.container_details(n))
+    try:
+        got = details([n for n, _k in mapping.values() if n]) or {}
+    except Exception as e:                           # noqa: BLE001 - never fatal
+        log.info("crash watch could not ask Docker what is running: %s", e)
+        return out
+
+    for label in sorted(mapping):
+        name, key = mapping[label]
+        if not name or not key:
+            continue
+        # POSITIVE evidence, the same rule the stop path keeps: a state that is there
+        # and says so. container_details drops any container whose inspect failed, so an
+        # absent answer is a Docker hiccup OR a container that was removed, and neither
+        # is something to start a server over.
+        if (got.get(name) or {}).get("state") not in clusterctl.NOT_RUNNING:
+            continue
+        out["down"].add(key)
+        if key not in seen_down:
+            # Seen down once is not seen down. A recreate, a restart and an apply all
+            # pass through `exited` on the way somewhere else, and acting on the first
+            # look would race every one of them.
+            continue
+
+        ok, why = intentctl.may_relaunch(store, key, now=now)
+        if not ok:
+            if (intentctl.read(store, key).get("intent") == intentctl.UP
+                    and not intentctl.read(store, key).get("stood_down")):
+                # The budget is gone. Stand down permanently and say so loudly - an
+                # unbounded watch is the restart loop rebuilt inside Obelisk, where it
+                # is harder to see than Docker's was.
+                intentctl.stand_down(store, key, why, now=now)
+                out["stood_down"].append(key)
+                say("cluster.watch_stood_down",
+                    "%s keeps going down and Obelisk has stopped bringing it back: %s. "
+                    "It is still down and nothing automatic will touch it again - "
+                    "something is wrong with that map rather than with its luck. Check "
+                    "its log on the Cluster page, then start it yourself when you have "
+                    "dealt with it." % (label, why), level="error")
+            continue
+
+        n = intentctl.record_relaunch(store, key, now=now)
+        try:
+            ok_s, why_s = (start or clusterctl.start_one)(store, key, record=False)
+        except Exception as e:                       # noqa: BLE001 - reported, not fatal
+            ok_s, why_s = False, str(e)
+        if not ok_s:
+            out["failed"].append(key)
+            say("cluster.relaunch_failed",
+                "%s is down and Obelisk has it recorded as a map that should be up, but "
+                "starting it again failed: %s" % (label, why_s), level="error")
+            continue
+        out["relaunched"].append(key)
+        say("cluster.map_relaunched",
+            "%s was down and Obelisk had it recorded as a map that should be up, so it "
+            "has been started again (%d of %d allowed in %d hours). If you stopped this "
+            "map yourself outside Obelisk, use Obelisk's own Stop instead - it cannot "
+            "tell that apart from a crash."
+            % (label, n, intentctl.BUDGET, int(intentctl.WINDOW / 3600)))
+    return out
+
+
+async def crash_watch(store, interval=120, sleep_first=True, **kw):
+    """Bring back a map that is down when Obelisk meant it to be up.
+
+    Two consecutive looks before anything moves, which is the same discipline the world
+    settle uses: a recreate, a restart and an apply all pass through `exited` on the way
+    somewhere else, and one look cannot tell those from a map that has stopped.
+    """
+    seen_down = set()
+    told = ""
+    while True:
+        if sleep_first:
+            await asyncio.sleep(interval)
+        sleep_first = True
+        try:
+            out = await asyncio.to_thread(
+                lambda: crash_pass(store, seen_down=set(seen_down), **kw))
+            seen_down = out["down"]
+            # Said once per change of state, not once per pass. A watch that is standing
+            # down is standing down for as long as the setting says so, and a line every
+            # two minutes about it is how a channel gets muted - which costs the next
+            # alert too.
+            why = out["skipped"]
+            if why and why != told and "unless-stopped" in why:
+                announce.say("cluster.watch_standing_by",
+                             "The restart policy is set to unless-stopped, so Docker is "
+                             "bringing maps back and Obelisk's crash watch is standing "
+                             "down. Only one of them gets to do this.", level="warning")
+            told = why
+        except Exception as e:                       # noqa: BLE001 - never fatal
+            log.info("crash watch skipped: %s", e)
+
+
 async def relay_watch(store, bot, interval=120):
     """Keep the relay pointed at every player map, as they come and go.
 
@@ -3413,6 +3586,7 @@ async def main():
     tasks.append(asyncio.create_task(empty_watch(store)))
     tasks.append(asyncio.create_task(world_watch(store)))
     tasks.append(asyncio.create_task(loop_watch(store)))
+    tasks.append(asyncio.create_task(crash_watch(store)))
 
     from . import bot
     # The relay used to learn its maps from a SERVERS environment variable, which only

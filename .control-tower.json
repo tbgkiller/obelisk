@@ -13,7 +13,9 @@
       "mods": "python -m obelisk.test_mods",
       "cluster": "python -m obelisk.test_cluster",
       "updates": "python -m obelisk.test_updates",
-      "plan": "python -m obelisk.test_plan"
+      "plan": "python -m obelisk.test_plan",
+      "intent": "python -m obelisk.test_intent",
+      "app": "python -m obelisk.test_app"
     }
   },
   "guards": [
@@ -160,6 +162,46 @@
       "disable": "        one[\"clean\"] = bool((clean.get(label) or {}).get(\"settled\"))\n        one[\"exited\"] = one[\"exited\"] and one[\"clean\"]  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "the owner removed the pre-stop save gate deliberately, and the disable text is that gate being rebuilt here under a new name - a world nobody could prove clean quietly turning into a map that did not close, which is a refusal wearing a report's clothes. The reading after DoExit observes and says what it saw: it sends no RCON, it holds nothing, and a world it cannot prove gets an honest sentence about being up to an autosave old rather than a veto. Bounded, too - a map that never settles costs a wait, not the apply"
+    },
+    {
+      "id": "intent-that-is-not-exactly-up-never-relaunches",
+      "file": "obelisk/intent.py",
+      "guard": "    if got.get(\"intent\") != UP:",
+      "disable": "    if got.get(\"intent\") in (None, DOWN):  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "intent",
+      "why": "THE OWNER'S RULE, verbatim: \"Get this wrong in the safe direction: if intent is ambiguous, do NOT relaunch.\" This is the line that is that rule. The record comes back out of JSON written by some version of this program, so the values that actually arrive are not only \"up\" and \"down\" - they are a missing key, a null, \"Up\", True, 1, a spelling a later version introduced, and a record that is not a dict at all. The disable text is the enumerate-the-bad-ones reading, which is the one somebody writes when they are thinking about the two values they meant rather than the ones a file can hold, and every other shape falls through it into an unattended relaunch of a map that may have been stopped on purpose. Only an exact compare against \"up\" is safe here"
+    },
+    {
+      "id": "a-relaunch-budget-that-is-spent-is-spent",
+      "file": "obelisk/intent.py",
+      "guard": "    if spent >= budget:",
+      "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "intent",
+      "why": "an unbounded watch is `restart: unless-stopped` rebuilt inside Obelisk, where it is harder to see than Docker's was and announces itself into the channel every two minutes while it runs. A map that has crashed three times in six hours has a reason - a mod that will not load, a world the server cannot read, a full disk - and a fourth relaunch writes more over the evidence. Without this the watch keeps starting a map that keeps dying, for as long as nobody is looking, which is exactly the failure mode the whole restart-policy change exists to remove"
+    },
+    {
+      "id": "the-watch-stands-down-when-docker-has-the-job",
+      "file": "obelisk/app.py",
+      "guard": "    if (policy or composectl.restart_policy)(store) == \"unless-stopped\":",
+      "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "app",
+      "why": "the restart policy is an operator setting now, so it can be turned back on - and with it on, Docker is already restarting these containers. Two independent things restarting one map is a relaunch storm nobody can attribute afterwards: Docker brings it up, the watch sees it down on the pass before that and brings it up again, and the budget burns through on a map that was never really failing to start. Docker owns recovery in that configuration and Obelisk does not get a second vote. Without this branch the watch runs anyway and silently races it"
+    },
+    {
+      "id": "a-container-nobody-could-ask-about-is-not-a-down-one",
+      "file": "obelisk/app.py",
+      "guard": "        if (got.get(name) or {}).get(\"state\") not in clusterctl.NOT_RUNNING:",
+      "disable": "        if (got.get(name) or {}).get(\"state\") == \"running\":  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "app",
+      "why": "container_details drops any container whose `docker inspect` returned an error, so a Docker hiccup, a container that has been removed, and a container that is genuinely stopped all arrive differently and only the last is evidence. The disable text is the negation somebody writes instead, and it reads an unanswerable Docker AND a `restarting` container as maps to start - so a manager that cannot reach the socket for one pass would issue `compose up` at ten maps that are fine. Same rule the stop path keeps one module over: the state has to be there and it has to say so"
+    },
+    {
+      "id": "a-watch-relaunch-never-hands-itself-a-new-budget",
+      "file": "obelisk/cluster.py",
+      "guard": "    if record:",
+      "disable": "    if True:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "recording an intent is a clean slate - it clears the relaunch history and any stand-down, because somebody deciding a map should be up is the \"until a human acts\" in \"do not try again until a human acts\". The crash watch is not a human acting, so it relaunches through start_one(record=False). The disable text makes the watch record its own relaunches, which hands it a fresh budget every single time and turns a bounded three-in-six-hours into an unbounded loop - the restart policy rebuilt inside Obelisk, which is the one thing this whole change exists to avoid"
     }
   ]
 }

@@ -1717,6 +1717,45 @@ STOP_JS = """
 """
 
 
+def render_crash_watch(on, policy, stood_down=None):
+    """What the crash watch is actually doing, which is not always what it is set to.
+
+    The setting is a checkbox and a checkbox can only say on or off, but there are three
+    states and the third one is the dangerous one to hide: the watch is ON and doing
+    nothing, because the restart policy is back to unless-stopped and Docker is
+    restarting maps instead. Rendering that as "on" would tell an operator they have
+    cover from Obelisk that they are actually getting from Docker - and the day they set
+    the policy back to no, the cover they thought they had all along is the only thing
+    still standing.
+
+    Nothing here is a fault and nothing is disabled. It says which of the two is
+    restarting maps, and it names any map the watch has given up on - because that map
+    is down, will stay down, and nothing automatic is going to touch it again.
+    """
+    from .cluster import _and
+    out = ""
+    if on and str(policy) == "unless-stopped":
+        out += ('<div class=warn>The crash watch is switched on but standing down: the '
+                'container restart policy is <code>unless-stopped</code>, so Docker is '
+                'bringing maps back and Obelisk is not. Only one of them gets to do '
+                'this, or they fight. Set the restart policy to <code>no</code> and '
+                'recreate the maps to hand the job to Obelisk.</div>')
+    stood = sorted(stood_down or [])
+    if stood:
+        one = len(stood) == 1
+        out += ("<div class=problem>The crash watch has given up on %s. %s still down "
+                "and nothing automatic will start %s again - something is wrong with "
+                "%s rather than with %s luck. Check the log on this page, then start "
+                "%s yourself once you have dealt with it.</div>"
+                % (_and(stood),
+                   "It is" if one else "They are",
+                   "it" if one else "them",
+                   "that map" if one else "those maps",
+                   "its" if one else "their",
+                   "it" if one else "them"))
+    return out
+
+
 def render_held_down(maps, states=None):
     """The gate refused these and is holding them down. Say so where the buttons are.
 

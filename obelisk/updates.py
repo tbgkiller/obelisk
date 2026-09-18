@@ -562,7 +562,18 @@ def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
     step("stopping the cluster and the staging server")
     ok, detail = stop_all()
     if not ok:
-        announce.say("ark.update_failed", "The cluster was not stopped: %s" % detail,
+        # This branch is the one that changed shape when the restart policy went. A
+        # failed stop can leave the cluster PARTLY down - some maps closed, the rest
+        # still serving - and nothing brings the closed ones back by themselves any
+        # more. Obelisk will not bring them back either, and that is deliberate: it
+        # decided seconds ago that those maps should be down, so a watch that undid that
+        # would be fighting the apply it belongs to. What was missing was the telling,
+        # not the acting, so this says plainly what an operator is looking at.
+        announce.say("ark.update_failed",
+                     "The cluster was not stopped: %s Nothing was swapped and the build "
+                     "is still waiting. Any map that had already closed is DOWN and "
+                     "will stay down until you press Launch - the containers have no "
+                     "restart policy, so nothing brings a map back on its own." % detail,
                      level="error")
         return False, "the cluster was not stopped: %s" % detail, {}
 

@@ -223,7 +223,7 @@ ICONS = {
     "done": "✅", "applied": "✅", "update_applied": "✅",
     "primed": "✅", "update_primed": "✅", "saved": "✅",
     "closed": "✅", "world_closed": "✅", "readable_again": "✅",
-    "map_settled": "✅",
+    "map_settled": "✅", "map_relaunched": "✅",
     "message_sent": "✅",
     "kick_sent": "✅",
     "ban_sent": "✅",
@@ -236,7 +236,10 @@ ICONS = {
     "failed": "❌", "update_failed": "❌", "prime_failed": "❌",
     "batch_failed": "❌", "closing_failed": "❌",
     "unsafe": "❌", "update_unsafe": "❌", "world_damaged": "❌",
-    "map_looping": "❌",
+    "map_looping": "❌", "relaunch_failed": "❌",
+    # Loud on purpose. The watch giving up on a map is the end of anything automatic
+    # happening to it, and the map stays down until a person acts.
+    "watch_stood_down": "❌",
     "message_failed": "❌",
     "kick_failed": "❌",
     "ban_failed": "❌",
@@ -253,6 +256,9 @@ ICONS = {
     # A stop that happened, over a world nobody could prove had finished writing.
     # Amber, not red: nothing is known to be wrong - it is the proof that is missing.
     "shutdown_unproved": "⚠",
+    # Not a fault: the restart policy is on, so Docker owns recovery and the watch is
+    # deliberately doing nothing.
+    "watch_standing_by": "⚠",
     "offsite_unconfigured": "⚠", "push_unconfigured": "⚠",
     "ban_partial": "⚠",
     "unban_partial": "⚠",

@@ -1840,10 +1840,24 @@ check("and the refused map stays down deliberately - that is the protection",
 check("with the whole-cluster start never reached, so nothing undoes it",
       "start" not in _log4, _log4)
 
-# 5. the one branch that owes nobody a start: the stop itself did not work.
+# 5. the one branch that does not start anything: the stop itself did not work.
+#
+# It is deliberate, and it is the branch that changed shape when the restart policy
+# went. A failed stop can leave the cluster PARTLY down, and nothing brings those maps
+# back by itself now. Obelisk will not either - it decided seconds ago that they should
+# be down, and a watch that undid that would be fighting the apply it belongs to. What
+# was missing was the telling, so the refusal says what an operator is looking at.
+drain()
 _ok5, _m5, _log5, _st5 = _branch(stop_ok=False)
-check("a stop that failed does not start anything - nothing got stopped to start",
+check("a stop that failed does not start anything - the maps that closed meant to close",
       not _ok5 and "start" not in _log5 and _st5 == [], _log5)
+_said5 = [i for i in drain() if i["event"] == "ark.update_failed"]
+check("and the failure says the closed maps are down and staying down",
+      _said5 and "will stay down until you press Launch" in _said5[0]["text"], _said5)
+check("naming the reason - there is no restart policy to bring one back",
+      _said5 and "no restart policy" in _said5[0]["text"], _said5)
+check("while making clear nothing was swapped",
+      _said5 and "Nothing was swapped" in _said5[0]["text"], _said5)
 
 
 # ---- the count has to be true

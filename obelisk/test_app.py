@@ -1030,6 +1030,219 @@ check("the restart-loop watch is started with the other background watches",
 
 
 
+
+# ---- the crash watch: what replaced `restart: unless-stopped`
+#
+# The policy brought back anything that exited, which is why a deliberate DoExit turned
+# into a ten-minute boot loop. The default is `restart: no` now, and the cost is that a
+# genuine crash leaves a map down until somebody notices. This is the thing that
+# notices - and the difference between it and the policy is that it acts on a RECORD of
+# what Obelisk meant the map to be doing, which a container exit cannot tell you.
+#
+# THE OWNER'S RULE: "Get this wrong in the safe direction: if intent is ambiguous, do
+# NOT relaunch." Most of what follows is that sentence.
+from . import intent as _intent2                                  # noqa: E402
+
+_cw_store = Store(os.path.join(tempfile.mkdtemp(), "settings.json")).load()
+_cw_store.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
+_cw_store.patch({"maps": "island,ragnarok", "admin_password": "pw",
+                 "cluster_id": "cwtest", "host_ram_gb": 256})
+
+_CW_NAMES = {"The Island": ("asa-cwtest-island", "island"),
+             "Ragnarok": ("asa-cwtest-ragnarok", "ragnarok")}
+
+
+def _cw_details(states):
+    """Docker's answer about these containers. A name left out is one it did not answer
+    about - a hiccup, or a container that has been removed - and neither is evidence."""
+    def details(names):
+        return {n: {"state": states[n]} for n in names if n in states}
+    return details
+
+
+class _CwStarts:
+    def __init__(self, ok=True):
+        self.ok, self.calls = ok, []
+
+    def start(self, store, key, record=True):
+        self.calls.append((key, record))
+        return (self.ok, "started" if self.ok else "docker said no")
+
+
+def _cw_pass(store, states, starts=None, locked=False, policy="no", twice=True):
+    """One decided pass, after the map has already been seen down once.
+
+    `twice=False` is the FIRST look at a map that is down, which must never act: a
+    recreate, a restart and an apply all pass through `exited` on the way somewhere
+    else.
+    """
+    starts = starts or _CwStarts()
+    seen = {k for _n, k in _CW_NAMES.values()} if twice else set()
+    out = _appmod.crash_pass(
+        store, details=_cw_details(states), start=starts.start,
+        say=lambda *a, **k: _cw_said.append((a[0], a[1], k.get("level", "info"))),
+        locked=lambda: locked, policy=lambda _s: policy,
+        names=lambda _s: dict(_CW_NAMES), seen_down=seen)
+    return out, starts
+
+
+_cw_said = []
+_DOWN_BOTH = {"asa-cwtest-island": "exited", "asa-cwtest-ragnarok": "exited"}
+_UP_BOTH = {"asa-cwtest-island": "running", "asa-cwtest-ragnarok": "running"}
+
+# 1. the map Obelisk meant to be up, and the map it stopped on purpose, side by side.
+#    This is the whole difference from the restart policy, in one pass.
+_cw_store.patch({"crash_watch": True})
+_intent2.remember(_cw_store, "island", _intent2.UP, "start")
+_intent2.remember(_cw_store, "ragnarok", _intent2.DOWN, "apply")
+_cw_said.clear()
+_out, _starts = _cw_pass(_cw_store, _DOWN_BOTH)
+check("a map that is down and was meant to be up is started again",
+      _out["relaunched"] == ["island"], _out)
+check("and a map Obelisk stopped on purpose is left alone - the policy could not tell "
+      "those apart", [c for c in _starts.calls if c[0] == "ragnarok"] == [],
+      _starts.calls)
+check("the relaunch does not record a new intent, which is what keeps it bounded",
+      _starts.calls == [("island", False)], _starts.calls)
+check("and it is announced, naming the map and the budget it is spending",
+      any(e == "cluster.map_relaunched" and "The Island" in t and "1 of 3" in t
+          for e, t, _l in _cw_said), _cw_said)
+check("with the out-of-band stop said out loud, because it cannot be detected",
+      any("outside Obelisk" in t for _e, t, _l in _cw_said), _cw_said)
+
+# 2. THE RULE, in every shape an ambiguous record arrives in. None of these relaunches.
+for _name_c, _value_c in (("no record at all", None),
+                          ("an empty record", {}),
+                          ("a null intent", {"intent": None}),
+                          ("a capitalised Up", {"intent": "Up"}),
+                          ("a boolean True", {"intent": True}),
+                          ("a future spelling", {"intent": "running"}),
+                          ("a record that is not a dict", "up")):
+    _st_c = Store(os.path.join(tempfile.mkdtemp(), "settings.json")).load()
+    _st_c.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
+    _st_c.patch({"maps": "island,ragnarok", "admin_password": "pw",
+                 "cluster_id": "cwtest", "host_ram_gb": 256, "crash_watch": True})
+    if _value_c is not None:
+        _st_c.data[_intent2.STATE] = {"island": _value_c}
+    _cw_said.clear()
+    _o_c, _s_c = _cw_pass(_st_c, _DOWN_BOTH)
+    check("%s never earns a relaunch" % _name_c, _s_c.calls == [], (_value_c, _s_c.calls))
+
+# 3. the container has to be POSITIVELY down. A Docker that did not answer about a
+#    container, and a container that has been removed, both arrive as an absent answer -
+#    and neither is a reason to start a server.
+_intent2.remember(_cw_store, "island", _intent2.UP, "start")
+_cw_said.clear()
+_o_h, _s_h = _cw_pass(_cw_store, {})
+check("a Docker that did not answer is not a map that is down", _s_h.calls == [],
+      _s_h.calls)
+_o_r, _s_r = _cw_pass(_cw_store, {"asa-cwtest-island": "restarting"})
+check("nor is a container Docker calls restarting", _s_r.calls == [], _s_r.calls)
+_o_up, _s_up = _cw_pass(_cw_store, _UP_BOTH)
+check("nor is one that is running", _s_up.calls == [], _s_up.calls)
+
+# 4. one look is not enough. A recreate passes through `exited` on its way up.
+_o_1, _s_1 = _cw_pass(_cw_store, _DOWN_BOTH, twice=False)
+check("a map seen down for the first time is watched, not acted on", _s_1.calls == [],
+      _s_1.calls)
+check("but it is remembered, so the next pass can act", "island" in _o_1["down"], _o_1)
+
+# 5. an apply is in flight. It stops ten maps on purpose and takes minutes over it.
+_o_l, _s_l = _cw_pass(_cw_store, _DOWN_BOTH, locked=True)
+check("nothing is relaunched while an apply holds the lock", _s_l.calls == [],
+      _s_l.calls)
+check("and it says why rather than going quiet", "apply is in flight" in _o_l["skipped"],
+      _o_l)
+
+# 6. THE ADDENDUM'S RULE: Docker owns recovery when the policy is on.
+_o_p, _s_p = _cw_pass(_cw_store, _DOWN_BOTH, policy="unless-stopped")
+check("the watch stands down entirely while the restart policy is unless-stopped",
+      _s_p.calls == [], _s_p.calls)
+check("saying that Docker is doing it, not that nothing is wrong",
+      "Docker is doing this" in _o_p["skipped"], _o_p)
+
+# 7. the switch means what it says
+_cw_store.patch({"crash_watch": False})
+_o_o, _s_o = _cw_pass(_cw_store, _DOWN_BOTH)
+check("a watch that is switched off relaunches nothing", _s_o.calls == [], _s_o.calls)
+_cw_store.patch({"crash_watch": True})
+
+# 8. BOUNDED, and then it stands down for good. An unbounded watch is the restart loop
+#    rebuilt inside Obelisk, where it is harder to see than Docker's was.
+_intent2.remember(_cw_store, "island", _intent2.UP, "start")
+_intent2.remember(_cw_store, "ragnarok", _intent2.DOWN, "apply")
+_started_n = []
+_cw_said.clear()
+for _i in range(_intent2.BUDGET + 4):
+    _o_b, _s_b = _cw_pass(_cw_store, _DOWN_BOTH)
+    _started_n.extend(_s_b.calls)
+check("a map is brought back at most the budget, however long it keeps falling over",
+      len(_started_n) == _intent2.BUDGET, _started_n)
+check("then the watch stands down on it",
+      _intent2.read(_cw_store, "island").get("stood_down"),
+      _intent2.read(_cw_store, "island"))
+_sd_said = [(e, t, l) for e, t, l in _cw_said if e == "cluster.watch_stood_down"]
+check("and says so loudly - this needs a person",
+      _sd_said and _sd_said[0][2] == "error", _cw_said)
+check("naming the map, saying it stays down, and saying what a person has to do",
+      _sd_said and "The Island" in _sd_said[0][1]
+      and "still down" in _sd_said[0][1]
+      and "nothing automatic will touch it again" in _sd_said[0][1]
+      and "start it yourself" in _sd_said[0][1], _sd_said)
+# Said ONCE, not once per pass. Four more passes happened after it stood down, and a
+# line every two minutes for hours is how a channel gets muted - which costs the next
+# alert too.
+check("and it is said once, not once per pass", len(_sd_said) == 1, _sd_said)
+
+# ...until a human acts, which is any explicit intent being written for that map.
+_intent2.remember(_cw_store, "island", _intent2.UP, "start")
+_cw_said.clear()
+_o_a, _s_a = _cw_pass(_cw_store, _DOWN_BOTH)
+check("an operator starting it by hand puts the watch back on it",
+      _s_a.calls == [("island", False)], _s_a.calls)
+
+# 9. a relaunch that fails is a failure, said as one, and it still spent its budget
+_intent2.remember(_cw_store, "island", _intent2.UP, "start")
+_cw_said.clear()
+_o_f, _s_f = _cw_pass(_cw_store, _DOWN_BOTH, starts=_CwStarts(ok=False))
+check("a relaunch that would not start is reported as a failure",
+      _o_f["failed"] == ["island"] and _o_f["relaunched"] == [], _o_f)
+check("to the channel, in red",
+      any(e == "cluster.relaunch_failed" and l == "error" for e, _t, l in _cw_said),
+      _cw_said)
+check("and it still spent a try, so a map that cannot start cannot loop forever",
+      _intent2.relaunches(_cw_store, "island") == 1,
+      _intent2.read(_cw_store, "island"))
+
+# 10. every event it raises renders as something rather than a bullet
+for _tail_c in ("map_relaunched", "relaunch_failed", "watch_stood_down",
+                "watch_standing_by"):
+    check("%s has an icon of its own" % _tail_c,
+          _ann2.ICONS.get(_tail_c) not in (None, "•"), _ann2.ICONS.get(_tail_c))
+
+# 11. the three states of the switch, and the one that must not be hidden: ON, and
+#     doing nothing, because Docker has the job.
+_note_on = _ui.render_crash_watch(True, "unless-stopped")
+check("a watch standing down behind the restart policy says so where it is seen",
+      "standing down" in _note_on and "unless-stopped" in _note_on, _note_on)
+check("and says which of the two is actually restarting maps",
+      "Docker is bringing maps back and Obelisk is not" in _note_on, _note_on)
+check("a watch that is on and working draws no note at all",
+      _ui.render_crash_watch(True, "no") == "",
+      _ui.render_crash_watch(True, "no"))
+check("and one that is switched off is not blamed on the policy",
+      _ui.render_crash_watch(False, "unless-stopped") == "",
+      _ui.render_crash_watch(False, "unless-stopped"))
+_note_sd = _ui.render_crash_watch(True, "no", ["The Island"])
+check("a map the watch gave up on is named where the buttons are",
+      "given up on The Island" in _note_sd and "class=problem" in _note_sd, _note_sd)
+check("and the operator is told it will stay down until they act",
+      "start it yourself" in _note_sd, _note_sd)
+
+# 12. it has to actually be running, or none of the above happens on a real manager.
+check("the crash watch is started with the other background watches",
+      "crash_watch(store)" in _ba_src, _ba_src[-600:])
+
 # ---- the post-swap gates: every map gets asked every question
 #
 # It used to read `bool(ok_h) and verify_instance(...)`, so a map that did not report

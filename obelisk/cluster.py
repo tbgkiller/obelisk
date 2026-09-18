@@ -303,6 +303,17 @@ def _autosave_minutes(store):
     return minutes if minutes > 0 else 15.0
 
 
+def map_containers(store):
+    """{label: (container name, compose service)} for every map this cluster defines.
+
+    The public name for _exit_names, which the stop path has always used. The crash
+    watch needs exactly the same three facts - what to call a map, what to ask Docker
+    about, and what to tell compose to start - and a second derivation of those would be
+    a second thing to keep in step with the plan.
+    """
+    return _exit_names(store)
+
+
 def _might_be_running(name, details):
     """Is this container up - or is there any chance it still is? True if either.
 
