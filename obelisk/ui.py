@@ -765,11 +765,48 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
             # Only when something IS staged. With nothing staged the panel already
             # says so above, and a second sentence explaining why the button for it is
             # off would be answering a question nobody asked.
-            # The engine's sentence verbatim, not a paraphrase of it. It is written
-            # as a fragment ("the staged build ... is the one already running"), so it
-            # is joined rather than started after a full stop.
-            buttons += ('<div class=note><b>Nothing to apply</b> &mdash; %s.</div>'
-                        % _e(why_not))
+            #
+            # Two states under one headline, and only two of the three refusals had
+            # earned it. "The staged build is the one already running" and "it is
+            # older" are determinations, and grey is the right colour for a settled
+            # answer. The third is the absence of one - the install could not be read -
+            # and it wore the same grey while its own sentence said the question was
+            # never answered, three lines under a version row saying
+            # "25117056 -> 25200000 update available". An operator scans the bold and
+            # reads "you are current"; what happened is the share was not mounted.
+            # This panel's whole reason for existing is that somewhere answered "up to
+            # date" about a question it never asked, so the unknown gets amber, the
+            # same way the version rows and the console already do it.
+            #
+            # By identity, never by looking for words inside the sentence: the text is
+            # also refusal and log text and may be reworded, and a reword must not be
+            # able to change what colour the page paints it.
+            if why_not == updatesctl.UNREADABLE:
+                buttons += ('<div class=warn><b>Could not check</b> &mdash; %s. '
+                            'Apply is held until it can be read.</div>' % _e(why_not))
+            else:
+                # The engine's sentence verbatim, not a paraphrase of it. It has to
+                # stand alone for the log and for the refusal, so it ends "...there is
+                # nothing to apply" - which is why the headline names the state and
+                # then stops, rather than saying the same three words again.
+                #
+                # The extra clause is for the checkbox: "apply even with players
+                # online" sits enabled beside the greyed button, and adjacency invites
+                # reading it as the override for this refusal. It is not - force is a
+                # judgement about players, and this refusal never asked about players.
+                #
+                # Only for the build we are already on, because that is the only state
+                # it is true of. A downgrade is not a build the cluster is already on,
+                # and its own sentence already says the button is off by policy rather
+                # than for want of a switch - so a second policy sentence there would
+                # be redundant and wrong at once. Matched by identity against the
+                # engine's own template, for the same reason as the amber above.
+                already = why_not == updatesctl.ALREADY_RUNNING % (
+                    (ready or {}).get("build") or "")
+                buttons += ('<div class=note><b>Apply is off</b> &mdash; %s.%s</div>'
+                            % (_e(why_not),
+                               ' Obelisk does not reinstall a build the cluster is '
+                               'already on.' if already else ''))
 
     warn = ""
     if not staging_on:

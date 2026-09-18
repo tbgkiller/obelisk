@@ -902,6 +902,27 @@ def newer_build(running, staged):
     return b != a
 
 
+# Named rather than inline because the page has to tell this refusal apart from the
+# other two, and it must do that by identity. The other two are determinations - the
+# staged build IS the running one, or IS older - and they belong in the grey of a
+# settled answer. This one is the absence of a determination: the install could not be
+# read at all, which on Unraid is usually an unmounted share or the wrong Ark root.
+# Matching on words in the sentence would mean a reword silently changed its colour,
+# and an unknown wearing the colour of a finished thing is the failure the console
+# rule already names out loud.
+UNREADABLE = ("the installed build could not be read, so it is not known "
+              "whether the staged one is newer")
+
+# Named for the same reason, and only this one of the two determinations. The page
+# adds a sentence about not reinstalling a build the cluster is already on, which is
+# true here and false of a downgrade - and the downgrade sentence already says why the
+# button is off and that it is policy, so a second one there would be redundant as
+# well as wrong. Identity again, never a substring: these sentences are refusal and
+# log text too.
+ALREADY_RUNNING = ("the staged build (%s) is the one already running, so there is "
+                   "nothing to apply")
+
+
 def staged_worth_applying(store, installed=None, ark_root=None):
     """(would swapping the staged tree in change anything, why) - the build half.
 
@@ -931,8 +952,7 @@ def staged_worth_applying(store, installed=None, ark_root=None):
     if not installed:
         # Not knowing what is running is not a reason to restart ten servers on the
         # chance that the staged thing is newer.
-        return False, ("the installed build could not be read, so it is not known "
-                       "whether the staged one is newer")
+        return False, UNREADABLE
     staged = ready.get("build")
     if not newer_build(installed, staged):
         # Two shapes of "not newer", and they had one sentence between them. A staged
@@ -948,8 +968,7 @@ def staged_worth_applying(store, installed=None, ark_root=None):
             return False, ("the staged build (%s) is older than the one running (%s), "
                            "so there is nothing to apply - installing it would be a "
                            "downgrade" % (staged, installed))
-        return False, ("the staged build (%s) is the one already running, so there is "
-                       "nothing to apply" % staged)
+        return False, ALREADY_RUNNING % staged
     return True, "build %s is staged and verified, newer than %s" % (
         ready.get("build"), installed)
 

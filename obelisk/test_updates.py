@@ -1288,6 +1288,8 @@ check("and stopped nothing", spy.log == [], spy.log)
 # survived; there is one now, and this is what holds it to one.
 from . import ui as _ui
 
+_ui_src = open(_ui.__file__, encoding="utf-8").read()
+
 
 def _btn(page):
     """The button and the sentence beside it - never the whole page, which carries
@@ -1297,24 +1299,87 @@ def _btn(page):
     return page[max(0, i - 160):i + 220].encode("ascii", "replace").decode("ascii")
 
 
-for _label, _st, _ark, _installed in (
-        ("a rehearsal of the running build", _stale_store("25117056"), ARK, "25117056"),
-        ("a downgrade", _stale_store("25117056"), ARK, "25200000"),
+# `known` is whether Obelisk reached a determination. Two of these three refusals are
+# answers - the staged build IS the running one, or IS older - and belong in the grey
+# of a settled thing. The third is the absence of an answer and gets amber, because a
+# grey "Nothing to apply" over a body sentence reading "it is not known whether the
+# staged one is newer" asserts the very determination that sentence denies making.
+_pages = {}
+for _label, _st, _ark, _installed, _known in (
+        ("a rehearsal of the running build", _stale_store("25117056"), ARK,
+         "25117056", True),
+        ("a downgrade", _stale_store("25117056"), ARK, "25200000", True),
         ("an unreadable installed build", _stale_store("25200000"),
-         "/nowhere-at-all", None)):
+         "/nowhere-at-all", None, False)):
     _ans = updates.staged_worth_applying(_st, installed=_installed, ark_root=_ark)
     _spy = _Spy()
     (_ok, _msg, _), _rn = _apply(_st, _spy, ark=_ark, installed=_installed)
     _page = _ui.render_ark_update(_st, {"build": {"running": "25117056"}},
                                   ready=updates.primed(_st), owns=True,
                                   applicable=_ans)
+    _seen = _btn(_page)
+    _pages[_label] = _page
     check("the engine refuses %s" % _label, not _ok, _msg)
     check("the button is disabled for %s" % _label, "disabled>Apply now" in _page,
-          _btn(_page))
+          _seen)
     check("for the same reason and in the same words - %s" % _label,
           _msg == _ans[1], (_msg, _ans[1]))
-    check("and the page carries that reason - %s" % _label,
-          "Nothing to apply" in _page and _ans[1] in _page, _btn(_page))
+    check("and the page carries that reason - %s" % _label, _ans[1] in _page, _seen)
+    if _known:
+        check("a settled answer is drawn in the grey of one - %s" % _label,
+              "<div class=note><b>Apply is off</b>" in _page, _seen)
+        check("and never in the amber of an unknown - %s" % _label,
+              "class=warn" not in _seen, _seen)
+    else:
+        check("an unknown is drawn in amber, not the grey of a finished thing",
+              "<div class=warn><b>Could not check</b>" in _page, _seen)
+        check("and it never claims there is nothing to apply",
+              "Apply is off" not in _page and "Nothing to apply" not in _page, _seen)
+        check("it says the button is held rather than that the cluster is current",
+              "Apply is held until it can be read." in _page, _seen)
+        check("and it does not claim a build nobody could read is one we are on",
+              "already on." not in _page, _seen)
+
+# ---- the clause about not reinstalling belongs to exactly one of the three
+#
+# "Apply even with players online" sits enabled next to the greyed button, and
+# adjacency invites reading it as the override for this refusal. One sentence closes
+# that loop - and it is only true of the build the cluster is already on. A downgrade
+# is not that, and its own sentence already says the button is off by policy rather
+# than for want of a switch; an unreadable install is not known to be anything. Three
+# states, three answers, asserted three times rather than once over a group.
+FORCE_CLAUSE = "Obelisk does not reinstall a build the cluster is already on."
+
+check("the equal case closes the loop on the force checkbox beside it",
+      FORCE_CLAUSE in _pages["a rehearsal of the running build"],
+      _btn(_pages["a rehearsal of the running build"]))
+check("the downgrade case does not - its own sentence already says why, and this "
+      "clause would be untrue of a build the cluster is NOT already on",
+      FORCE_CLAUSE not in _pages["a downgrade"], _btn(_pages["a downgrade"]))
+check("and the unknown case does not either - nothing is known to be already on",
+      FORCE_CLAUSE not in _pages["an unreadable installed build"],
+      _btn(_pages["an unreadable installed build"]))
+check("the downgrade still says the button is off by policy, without it",
+      "installing it would be a downgrade" in _pages["a downgrade"],
+      _btn(_pages["a downgrade"]))
+check("and the clause is keyed on the engine's own template, not on words in it",
+      "updatesctl.ALREADY_RUNNING %" in _ui_src, "")
+check("whose text is byte-identical to the sentence that has always been returned",
+      updates.ALREADY_RUNNING % "25117056" == EQUAL_WHY,
+      updates.ALREADY_RUNNING % "25117056")
+
+
+# Keyed off the constant, not off words in the sentence. The text is refusal and log
+# text too; if it is ever reworded the colour must follow it rather than fall back to
+# grey, which is the failure this whole distinction exists to prevent.
+check("the unknown branch is matched by identity with updates.UNREADABLE",
+      "why_not == updatesctl.UNREADABLE" in _ui_src, "")
+_page = _ui.render_ark_update(_stale_store("25200000"),
+                              {"build": {"running": "25117056"}},
+                              ready={"ok": True, "build": "25200000", "loaded": {}},
+                              owns=True, applicable=(False, updates.UNREADABLE))
+check("so the amber follows the constant even though nothing matched on its words",
+      "class=warn" in _btn(_page), _btn(_page))
 
 # The strongest form of "the same function": swap the function out and the page has
 # to follow. A parallel implementation left behind in ui.py would be untouched by

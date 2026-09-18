@@ -87,6 +87,14 @@
       "disable": "    swap_files, why_build = bool(ready) and owns_updates(store), \"\"  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "updates",
       "why": "the disable text is the exact gate apply_batch used to carry, and it is too weak: `staging_mode: always` rehearses the build already RUNNING as routine bookkeeping, which writes a verified primed record for it, so `bool(ready)` reads that as work to do. Pressing Apply then stopped ten servers to install what they were already on - and a needless full restart IS an ARK apply, so it is a live route into the stop path. The comparison that makes the difference is newer_build(installed, staged), and it has to be asked HERE, inside the verb: the gate used to live at the callers, empty_watch and due() got one, and the manual apply was added later without one"
+    },
+    {
+      "id": "an-unreadable-install-is-not-an-answer",
+      "file": "obelisk/ui.py",
+      "guard": "            if why_not == updatesctl.UNREADABLE:",
+      "disable": "            if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "the third state again, on the panel whose docstring says it gets its own colour rather than quietly rendering as a tick. Two of the apply refusals are determinations - the staged build IS the one running, or IS older - and grey is right for a settled answer. The third is the absence of one: the install could not be read at all, which on Unraid is an unmounted share or the wrong Ark root. Without this branch it wore the same grey under a bold 'Apply is off', three lines below a version row reading 25117056 -> 25200000 update available, so an operator scanning the bold read 'you are current' about a question Obelisk never managed to ask. Matched on identity with updates.UNREADABLE and not on words in the sentence, because that text is refusal and log text too and a reword must not be able to drop the colour back to grey"
     }
   ]
 }

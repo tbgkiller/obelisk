@@ -7619,6 +7619,96 @@ _ccheck("the box that was refused is still on the page to correct",
       "name=text" in _from(_c_ref_page, "<fieldset id=console>"),
       "the form went away with the refusal")
 
+# ---- one fact, two panels, one answer
+#
+# The dashboard carries the pending panel above the ARK update panel, and they were
+# answering the same question differently. _pending_panel listed anything primed, and
+# with staging set to always the staging server rehearses the build already running as
+# routine bookkeeping - so the page drew "1 change pending", a row reading
+# 25117056 -> 25117056 (an arrow from a build to itself) and an enabled Apply, three
+# inches above the update panel saying there was nothing to apply and greying its own
+# button. The engine refuses either way, so no restart was ever at risk; the cost is an
+# operator who commits to a restart, waits, and is bounced by the page that had already
+# told him the opposite.
+#
+# A real Ark root with a real appmanifest, because the cheap version of this test -
+# leave the root unreadable - hides the panel for a reason that has nothing to do with
+# what is being checked.
+_2pdir = tempfile.mkdtemp()
+_2pwas = os.environ.get("OBELISK_ARK")
+os.environ["OBELISK_ARK"] = os.path.join(_2pdir, "ark")
+_2psf = os.path.join(_2pdir, "ark", "ServerFiles")
+os.makedirs(_2psf, exist_ok=True)
+io.open(os.path.join(_2psf, "appmanifest_2430930.acf"), "w", encoding="utf-8").write(
+    '"AppState"\n{\n\t"appid"\t\t"2430930"\n\t"buildid"\t\t"25117056"\n}\n')
+_2pstore, _2pc, _2pcode = bootstrap(os.path.join(_2pdir, "obelisk"), environ={})
+_2pstore.patch({"admin_password": "pw", "cluster_id": "twopanels", "maps": "island",
+                "ark_update_mode": "obelisk"})
+
+
+async def _two_panels():
+    from . import updates as _u2p
+    # The update panel refuses to render rows before the first poll - "not checked yet"
+    # is not the same as "could not check" - so the poll's last answer is put where the
+    # dashboard reads it. Without this the panel says nothing at all and the half of
+    # this test about the two panels agreeing would pass against a blank.
+    _appmod.ARK_UPDATE.clear()
+    _appmod.ARK_UPDATE.update({
+        "build": {"running": "25117056", "latest": "25200000", "newer": True,
+                  "problem": ""},
+        "mods": [], "mods_newer": [], "any_newer": True, "unknown": False})
+    check("the test root really does read as build 25117056",
+          _appmod.arkupdate.installed_build(_2psf)[0] == "25117056",
+          _appmod.arkupdate.installed_build(_2psf))
+
+    # The routine rehearsal: primed for the build already running, nothing queued.
+    _u2p.remember(_2pstore, primed={"ok": True, "build": "25117056", "loaded": {}})
+    client = TestClient(TestServer(build_app(_2pstore, docker=DOCKER_UP)))
+    await client.start_server()
+    try:
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_2pstore.get("admin_token"))})
+        r = await client.get("/")
+        body = await r.text()
+        check("a rehearsal of the running build is not listed as waiting",
+              "Waiting to be applied" not in body,
+              _window(body, "Waiting to be applied", 400))
+        check("and no arrow is drawn from a build to itself",
+              "25117056</code> &rarr; <code>25117056" not in body,
+              _window(body, "&rarr;", 200))
+        check("and nothing is counted as pending",
+              "change pending" not in body, _window(body, "change pending", 200))
+        check("while the update panel says why, in the grey of a settled answer",
+              "<b>Apply is off</b>" in body, _window(body, "Apply is off", 300))
+        check("so the two panels no longer contradict each other about one build",
+              ("Waiting to be applied" not in body) and ("Apply is off" in body))
+
+        # A genuinely newer build is a change waiting, and still reads as one.
+        _u2p.remember(_2pstore, primed={"ok": True, "build": "25200000", "loaded": {}})
+        r = await client.get("/")
+        body = await r.text()
+        check("a genuinely newer staged build is still listed as waiting",
+              "Waiting to be applied" in body,
+              _window(body, "ARK build and mods", 300))
+        check("with the arrow pointing at the new build",
+              "&rarr; <code>25200000" in body, _window(body, "&rarr;", 260))
+        check("and its Apply is offered rather than greyed",
+              "name=apply value=1>Apply now" in body,
+              _window(body, "name=apply", 260))
+        check("and the update panel no longer says there is nothing to apply",
+              "Apply is off" not in body, _window(body, "Apply is off", 300))
+    finally:
+        await client.close()
+        _appmod.ARK_UPDATE.clear()
+
+
+asyncio.run(_two_panels())
+if _2pwas is None:
+    os.environ.pop("OBELISK_ARK", None)
+else:
+    os.environ["OBELISK_ARK"] = _2pwas
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

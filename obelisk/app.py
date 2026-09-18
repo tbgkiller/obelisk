@@ -643,7 +643,18 @@ def build_app(store, docker=None):
         try:
             ready = updatesctl.primed(store)
             primed = None
-            if ready:
+            # The same question the update panel asks and the apply refuses with, and
+            # it has to be asked here too. A primed record is not a change waiting: with
+            # staging set to always, the staging server rehearses the build already
+            # running as routine bookkeeping, and listing that as pending drew a row
+            # reading 25117056 -> 25117056 - an arrow from a build to itself - counted
+            # it in "1 change pending", and offered an enabled Apply. The engine refuses
+            # it, so nothing would have been restarted; the cost is an operator who
+            # commits to a restart, waits, and gets bounced by a page that had already
+            # said the opposite three inches lower down. One fact, two panels, one
+            # answer.
+            if ready and updatesctl.staged_worth_applying(
+                    store, ark_root=_ark_root())[0]:
                 primed = dict(ready,
                               running=(ARK_UPDATE.get("build") or {}).get("running"))
             return ui.render_pending(pendingctl.rows(store), job=ujob,
