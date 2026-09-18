@@ -11,7 +11,8 @@
       "maps": "python -m obelisk.test_maps",
       "ui": "python -m obelisk.test_ui",
       "mods": "python -m obelisk.test_mods",
-      "cluster": "python -m obelisk.test_cluster"
+      "cluster": "python -m obelisk.test_cluster",
+      "updates": "python -m obelisk.test_updates"
     }
   },
   "guards": [
@@ -78,6 +79,14 @@
       "disable": "        if False:  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "a refused RCON connection has two opposite meanings - the world has closed, or the server has not opened its RCON port yet - and only the container tells them apart. Reading a refusal from a RUNNING container as \"exited\" is what let a stop signal three booting servers into a kill-revive-boot loop, so exited may only ever be true for a map whose container is gone"
+    },
+    {
+      "id": "a-primed-build-is-not-an-update",
+      "file": "obelisk/updates.py",
+      "guard": "    swap_files, why_build = staged_worth_applying(store, installed, ark_root)",
+      "disable": "    swap_files, why_build = bool(ready) and owns_updates(store), \"\"  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "the disable text is the exact gate apply_batch used to carry, and it is too weak: `staging_mode: always` rehearses the build already RUNNING as routine bookkeeping, which writes a verified primed record for it, so `bool(ready)` reads that as work to do. Pressing Apply then stopped ten servers to install what they were already on - and a needless full restart IS an ARK apply, so it is a live route into the stop path. The comparison that makes the difference is newer_build(installed, staged), and it has to be asked HERE, inside the verb: the gate used to live at the callers, empty_watch and due() got one, and the manual apply was added later without one"
     }
   ]
 }
