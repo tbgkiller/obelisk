@@ -158,6 +158,20 @@ _st_bad.data["cluster"]["restart_policy"] = "alwyas"
 check("an unrecognised policy falls back to no, not to Docker's error",
       _rp(_st_bad) == "no", _rp(_st_bad))
 
+# The other way the default is reached, and the one that covers every cluster that
+# existed before this setting did: the key is simply not in the store. That is not the
+# same line of code as the unrecognised-value fallback - `or "no"` decides it before
+# POLICIES is ever consulted - and it is the case a store that cannot be read lands on
+# too. Both halves have to point at `no` or a fleet upgrading into this ships with the
+# policy that caused the 2026-09-18 boot loop.
+_st_unset = store(maps="island", mem_limit="20g")
+_st_unset.data["cluster"].pop("restart_policy", None)
+check("a store with no restart policy at all reads as no",
+      _rp(_st_unset) == "no", _rp(_st_unset))
+_st_none = store(maps="island", mem_limit="20g")
+_st_none.data["cluster"]["restart_policy"] = None
+check("and so does one holding an empty value", _rp(_st_none) == "no", _rp(_st_none))
+
 # The setting has to say that changing it does nothing until the containers are
 # recreated. A setting that silently fails to apply is a lie the system tells.
 from .schema import SETTINGS as _SET

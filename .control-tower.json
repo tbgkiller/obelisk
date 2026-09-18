@@ -134,10 +134,18 @@
     {
       "id": "the-restart-policy-defaults-to-no",
       "file": "obelisk/compose.py",
-      "guard": "    value = str(store.get(\"restart_policy\") or \"no\").strip().lower()\n    return value if value in POLICIES else \"no\"",
-      "disable": "    value = str(store.get(\"restart_policy\") or \"unless-stopped\").strip().lower()  # GUARD DISABLED BY MUTATION CHECK\n    return value if value in POLICIES else \"unless-stopped\"",
+      "guard": "    return value if value in POLICIES else \"no\"",
+      "disable": "    return value if value in POLICIES else \"unless-stopped\"  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "plan",
-      "why": "a deliberate DoExit does not leave a map down while a restart policy is there. Observed at The Center on 2026-09-18 and then read back out of the container log: POK finds no server process, classifies it as a self-restart, and exits the WHOLE CONTAINER on purpose so that Docker's policy brings it back - so the map that was just closed boots for ten minutes and closes again. The policy is a SETTING now rather than a deletion, which makes its DEFAULT the whole of the protection: a fresh install, a store that cannot be read, and a value nobody recognises all have to land on `no`. The disable text is the other default, and it is the one somebody reaches for the first time a crashed map stays down. The answer to that is the crash watch, not this default"
+      "why": "a deliberate DoExit does not leave a map down while a restart policy is there. Observed at The Center on 2026-09-18 and then read back out of the container log: POK finds no server process, classifies it as a self-restart, and exits the WHOLE CONTAINER on purpose so that Docker's policy brings it back - so the map that was just closed boots for ten minutes and closes again. The policy is a SETTING now rather than a deletion, which makes its DEFAULT the whole of the protection: a fresh install, a store that cannot be read, and a value nobody recognises all have to land on `no`. The disable text is the other default, and it is the one somebody reaches for the first time a crashed map stays down. The answer to that is the crash watch, not this default This half is the value nobody recognises - a typo, an old spelling, a policy Docker takes but this code has never heard of. NOTE this needle is deliberately ONE line: the repo's blobs carry CRLF and a Windows checkout materialises them that way, so a multi-line needle stored with LF matches zero times and the guard silently reports NOT CHECKED instead of failing. A one-line needle has no newline to disagree about."
+    },
+    {
+      "id": "an-unset-restart-policy-is-no",
+      "file": "obelisk/compose.py",
+      "guard": "    value = str(store.get(\"restart_policy\") or \"no\").strip().lower()",
+      "disable": "    value = str(store.get(\"restart_policy\") or \"unless-stopped\").strip().lower()  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "plan",
+      "why": "a deliberate DoExit does not leave a map down while a restart policy is there. Observed at The Center on 2026-09-18 and then read back out of the container log: POK finds no server process, classifies it as a self-restart, and exits the WHOLE CONTAINER on purpose so that Docker's policy brings it back - so the map that was just closed boots for ten minutes and closes again. The policy is a SETTING now rather than a deletion, which makes its DEFAULT the whole of the protection: a fresh install, a store that cannot be read, and a value nobody recognises all have to land on `no`. The disable text is the other default, and it is the one somebody reaches for the first time a crashed map stays down. The answer to that is the crash watch, not this default This half is the OTHER way the default is reached: a store with no such key at all, which is every cluster that existed before this setting did, and every one whose store could not be read. NOTE this needle is deliberately ONE line: the repo's blobs carry CRLF and a Windows checkout materialises them that way, so a multi-line needle stored with LF matches zero times and the guard silently reports NOT CHECKED instead of failing. A one-line needle has no newline to disagree about."
     },
     {
       "id": "a-server-still-in-the-listing-is-not-a-closed-map",
@@ -150,10 +158,10 @@
     {
       "id": "the-fallback-stop-needs-a-server-it-can-see",
       "file": "obelisk/cluster.py",
-      "guard": "        present, known = _server_seen(one[\"name\"], procs)\n        if present:",
-      "disable": "        present, known = True, True  # GUARD DISABLED BY MUTATION CHECK\n        if present:",
+      "guard": "        present, known = _server_seen(one[\"name\"], procs)",
+      "disable": "        present, known = True, True  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
-      "why": "`compose stop` is the one signal this path can still send, and it may only ever go at a server POSITIVELY observed still running after the grace period - a genuinely stuck server, where SIGTERM lands on the image's own verified two-stage shutdown inside its 210s grace. The disable text is the fail-OPEN reading: a process listing that could not be read, or a map whose server is already gone, becomes something to signal. Reading 'I could not ask' as 'it is still running' is how a Docker hiccup comes to stop a container mid-write, and it is the same unknown the rest of this mechanism already refuses to act on"
+      "why": "`compose stop` is the one signal this path can still send, and it may only ever go at a server POSITIVELY observed still running after the grace period - a genuinely stuck server, where SIGTERM lands on the image's own verified two-stage shutdown inside its 210s grace. The disable text is the fail-OPEN reading: a process listing that could not be read, or a map whose server is already gone, becomes something to signal. Reading 'I could not ask' as 'it is still running' is how a Docker hiccup comes to stop a container mid-write, and it is the same unknown the rest of this mechanism already refuses to act on NOTE this needle is deliberately ONE line: the repo's blobs carry CRLF and a Windows checkout materialises them that way, so a multi-line needle stored with LF matches zero times and the guard silently reports NOT CHECKED instead of failing. A one-line needle has no newline to disagree about."
     },
     {
       "id": "the-post-exit-disk-reading-reports-and-never-gates",
