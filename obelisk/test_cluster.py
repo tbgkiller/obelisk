@@ -2309,5 +2309,352 @@ for _what, _frag in sorted({
 }.items()):
     check("%s still asks the same question" % _what, _frag in _appsrc_2a, _frag)
 
+
+# ---------------------------------------------------------------- the process discriminator
+#
+# Driven by hand at The Center on 2026-09-18, empty and healthy: SaveWorld answered
+# "World Saved" with a journal still open, DoExit was taken and the world was written
+# again eleven seconds later, the container read Online for a minute after RCON went
+# silent, and two minutes later the map was restart-looping. So a map is judged by what
+# is running inside it, and these are the lines `docker top` actually returned.
+_PROTON = "python3 /home/pok/.steam/.../GE-Proton10-34/proton run ArkAscendedServer.exe ..."
+_STEAM = r"c:\windows\system32\steam.exe ArkAscendedServer.exe ..."
+_SERVER = ('ArkAscendedServer.exe TheCenter_WP?listen?SessionName="TBG 02 | The Center '
+           '| PvE 10x | NoWipe | All Maps"?RCONEnabled=True?RCONPort=27021?... '
+           "-Port=7778 -clusterid=tbgcluster -mods=... -UseBattlEye")
+# The supervisor half, which stays up when the server exits - the reason the container
+# still reads Online during the gap, and the reason a container check cannot tell them
+# apart.
+_SUPERVISOR = ["/tini -- /home/pok/scripts/init.sh",
+               "/bin/bash /home/pok/scripts/init.sh",
+               "python3 /home/pok/scripts/health_server.py",
+               "/bin/bash /home/pok/scripts/launch_ASA.sh",
+               "tail -F server_console.log",
+               "/bin/bash /home/pok/scripts/update_notice_monitor.sh"]
+_UP = [_PROTON, _STEAM, _SERVER] + _SUPERVISOR      # a map that is serving
+_GAP = list(_SUPERVISOR)                            # container up, server gone
+
+_TOP_HEADER = ("UID                 PID                 PPID                C"
+               "                   STIME               TTY                 TIME"
+               "                CMD")
+
+
+def _top_output(lines, header=_TOP_HEADER):
+    """`docker top`'s own shape: a header, then one padded row per process."""
+    rows = [header]
+    for i, cmd in enumerate(lines):
+        rows.append("%-19s %-19s %-19s %-19s %-19s %-19s %-19s %s"
+                    % ("pok", 1200 + i, 1199, 0, "12:01", "?", "00:00:0%d" % (i % 10),
+                       cmd))
+    return chr(10).join(rows) + chr(10)
+
+
+def _flat(detail, cap=600):
+    """A detail that survives being printed.
+
+    check() prints to stdout, and stdout on a Windows dev box is cp1252 - a detail
+    carrying a character it cannot encode crashes the module instead of failing a check,
+    which names nothing and stops everything after it.
+    """
+    return str(detail)[:cap].encode("ascii", "replace").decode("ascii")
+
+
+def _pcheck(name, cond, detail=""):
+    """check(), with a detail that survives being printed. See _flat."""
+    check(name, cond, _flat(detail))
+
+
+# -- the CMD column comes back whole, and "could not ask" is not "nothing is running"
+class _FakeDocker:
+    def __init__(self, rc, out):
+        self.rc, self.out, self.asked = rc, out, []
+
+    def run(self, args, timeout=60):
+        self.asked.append(args)
+        return self.rc, self.out
+
+
+_dock = __import__("obelisk.dockerctl", fromlist=["dockerctl"])
+_real_run = _dock._run
+
+
+def _processes_with(rc, out, name="asa-tbgcluster-center"):
+    fake = _FakeDocker(rc, out)
+    _dock._run = fake.run
+    try:
+        return _dock.processes(name), fake
+    finally:
+        _dock._run = _real_run
+
+
+_got, _fake = _processes_with(0, _top_output(_UP))
+_pcheck("docker top is what is asked", _fake.asked
+        and _fake.asked[0][:3] == ["docker", "top", "asa-tbgcluster-center"], _fake.asked)
+_pcheck("every process in the container comes back", len(_got) == len(_UP), _got)
+_pcheck("the server's own command line survives whole - spaces, quotes and pipes",
+        _SERVER in _got, _got)
+_pcheck("and so does the launcher's, which is the one a naive split truncates",
+        _PROTON in _got and _STEAM in _got, _got)
+
+_none_rc, _ = _processes_with(1, "Error response from daemon: is not running")
+_pcheck("a docker top that failed is not an empty process list", _none_rc is None,
+        _none_rc)
+_none_to, _ = _processes_with(124, "timed out after 30s")
+_pcheck("nor is one that timed out", _none_to is None, _none_to)
+_none_empty, _ = _processes_with(0, "")
+_pcheck("nor is an answer with nothing in it at all", _none_empty is None, _none_empty)
+_empty_list, _ = _processes_with(0, _top_output([]))
+_pcheck("but a header with no rows IS an answered question with nothing running",
+        _empty_list == [], _empty_list)
+
+# -- the first token is the server. Two of the three hits are wrappers.
+_pcheck("the real server line is the server", clusterctl.is_server_process(_SERVER))
+_pcheck("the proton launcher is NOT the server",
+        not clusterctl.is_server_process(_PROTON), _PROTON)
+_pcheck("the steam wrapper is NOT the server",
+        not clusterctl.is_server_process(_STEAM), _STEAM)
+_pcheck("a path in front of the exe is NOT the server",
+        not clusterctl.is_server_process("/foo/ArkAscendedServer.exe TheCenter_WP?listen"),
+        "a matched path prefix means a substring test crept back in")
+_pcheck("neither is anything the supervisor runs",
+        not any(clusterctl.is_server_process(l) for l in _SUPERVISOR), _SUPERVISOR)
+_pcheck("nor an empty line", not clusterctl.is_server_process(""))
+_pcheck("the gap listing has no server in it",
+        not any(clusterctl.is_server_process(l) for l in _GAP), _GAP)
+
+
+# -- the five states, from those same lines
+def _state(lines, running=True, answers=None, seen_gone=False, raises=False):
+    def procs(name):
+        if raises:
+            raise OSError("cannot connect to the Docker daemon")
+        return lines
+
+    def details(names):
+        return {n: {"state": "running" if running else "exited"} for n in names}
+
+    return clusterctl.process_state("asa-tbgcluster-center", procs, details,
+                                    answers=answers, seen_gone=seen_gone)
+
+
+_s_op = _state(_UP, answers=True)
+_pcheck("a map whose server is there and answering is OPERATIONAL",
+        _s_op[0] == clusterctl.OPERATIONAL, _s_op)
+_s_exit = _state(_UP, answers=False)
+_pcheck("the same map silent after DoExit is EXITING, because its process is still there",
+        _s_exit[0] == clusterctl.EXITING, _s_exit)
+_s_gone = _state(_GAP, answers=False)
+_pcheck("a container that is up with no server process is PROCESS_GONE",
+        _s_gone[0] == clusterctl.PROCESS_GONE, _s_gone)
+_s_wrap = _state([_PROTON, _STEAM] + _SUPERVISOR, answers=False)
+_pcheck("and the wrappers on their own are still PROCESS_GONE - they are not the server",
+        _s_wrap[0] == clusterctl.PROCESS_GONE, _s_wrap)
+_s_rev = _state(_UP, answers=False, seen_gone=True)
+_pcheck("a server process back after being gone is REVIVED",
+        _s_rev[0] == clusterctl.REVIVED, _s_rev)
+_s_stop = _state(_GAP, running=False)
+_pcheck("a container that is not running is STOPPED",
+        _s_stop[0] == clusterctl.STOPPED, _s_stop)
+
+# -- fail closed. Absence has to be established; it is never the default.
+_s_unread = _state(None)
+_pcheck("a process list that could not be read is NOT absence",
+        _s_unread[0] != clusterctl.PROCESS_GONE, _s_unread)
+_pcheck("and it reads as EXITING, which is a state nothing may be signalled in",
+        _s_unread[0] == clusterctl.EXITING, _s_unread)
+_s_raise = _state(None, raises=True)
+_pcheck("a process list that raised is NOT absence either",
+        _s_raise[0] != clusterctl.PROCESS_GONE, _s_raise)
+
+
+def _unaskable_docker(names):
+    raise OSError("docker daemon is not reachable")
+
+
+_s_blind = clusterctl.process_state("asa-tbgcluster-center", lambda n: None,
+                                    _unaskable_docker)
+_pcheck("a Docker that cannot be asked anything at all yields no signal either",
+        _s_blind[0] != clusterctl.PROCESS_GONE and _s_blind[0] != clusterctl.STOPPED,
+        _s_blind)
+
+
+# -- the per-map sequence, against a map that behaves the way the observation says
+class _Rig:
+    """One map, scripted the way The Center actually behaved.
+
+    `linger` is how many polls the server process stays in the listing after DoExit -
+    the window in which its own save-on-exit is still being written. `revives` is how
+    many times the container's supervisor wins the race and starts another server
+    before the stop lands.
+    """
+
+    def __init__(self, linger=1, revives=0, settled=True, answers=True, stop_ok=True,
+                 running=True, server_up=True, top=False):
+        self.linger, self.revives, self.settled = linger, revives, settled
+        self.answers, self.stop_ok, self.running = answers, stop_ok, running
+        self.server_up, self.top = server_up, top
+        self.events, self.clock, self.stops, self.polls = [], 1000.0, 0, 0
+        self.exiting = False
+
+    # -- seams
+    def now(self):
+        return self.clock
+
+    def wait(self, seconds):
+        self.events.append("wait")
+        self.clock += seconds
+
+    def procs(self, name):
+        self.events.append("top")
+        if self.top is not False:
+            return self.top                         # an unreadable or scripted listing
+        if self.server_up and self.exiting:
+            self.polls += 1
+            if self.polls > self.linger:
+                self.server_up = False
+        return list(_UP) if self.server_up else list(_GAP)
+
+    def details(self, names):
+        return {n: {"state": "running" if self.running else "exited"} for n in names}
+
+    def rcon(self, host, port, command):
+        self.events.append(command)
+        if command == "ListPlayers" and not self.answers:
+            raise OSError("connection refused")
+        if command == "DoExit":
+            self.exiting, self.polls = True, 0
+        return "ok"
+
+    def settle(self, sent):
+        self.events.append("settle")
+        return {label: {"settled": self.settled,
+                        "why": "saved" if self.settled else
+                               "a -journal file is still open beside its world"}
+                for label in sent}
+
+    def stop(self, key):
+        self.events.append("stop")
+        self.stops += 1
+        if self.revives > 0:
+            # The supervisor got there first: launch_ASA.sh started another server.
+            self.revives -= 1
+            self.server_up, self.exiting, self.polls = True, False, 0
+        else:
+            self.running = False
+        return (self.stop_ok, "stopped" if self.stop_ok else "no such service")
+
+
+_ps_store, _ps_dir = fresh()
+
+
+def _close(rig, **kw):
+    return clusterctl.close_map(_ps_store, "island", ("10.0.0.5", 27020),
+                                "asa-testcluster-island", "island",
+                                rcon=rig.rcon, procs=rig.procs, details=rig.details,
+                                stop_container=rig.stop, settle=rig.settle,
+                                wait=rig.wait, now=rig.now, budget=60, interval=5,
+                                confirm=30, **kw)
+
+
+# the clean close: confirm, save, prove it on disk, exit, and shut the door the moment
+# the process is gone
+_rig_a = _Rig(linger=1)
+_out_a = _close(_rig_a)
+_pcheck("a map that closes ends STOPPED", _out_a["state"] == clusterctl.STOPPED, _out_a)
+_pcheck("and is reported stopped only because its container was proved not running",
+        _out_a["stopped"] is True, _out_a)
+_pcheck("it was confirmed operational before anything was asked of it",
+        _rig_a.events[:2] == ["top", "ListPlayers"], _rig_a.events)
+_pcheck("the save was sent and then proved on disk before the exit",
+        _rig_a.events.index("SaveWorld") < _rig_a.events.index("settle")
+        < _rig_a.events.index("DoExit"), _rig_a.events)
+_pcheck("the process was still there for a turn after DoExit, and was left alone",
+        _rig_a.events.index("DoExit") + 1 < _rig_a.events.index("stop"), _rig_a.events)
+# The line this whole change exists for: the stop is issued in the SAME turn that first
+# read a listing with no server in it. Anything between those two events is a window in
+# which launch_ASA.sh starts another server behind a stop that thinks it has finished.
+_i_stop = _rig_a.events.index("stop")
+_pcheck("the container is stopped in the same turn the process is first seen gone",
+        _rig_a.events[_i_stop - 1] == "top", _rig_a.events)
+_pcheck("nothing waits between seeing it gone and stopping it",
+        "wait" not in _rig_a.events[_i_stop - 1:_i_stop], _rig_a.events)
+_pcheck("one stop, not a second one afterwards", _rig_a.stops == 1, _rig_a.events)
+
+# EXITING: the process is still there, so nothing is signalled, ever
+_rig_b = _Rig(linger=999)
+_out_b = _close(_rig_b)
+_pcheck("a server still in the process list is never stopped",
+        "stop" not in _rig_b.events and _rig_b.stops == 0, _rig_b.events)
+_pcheck("it holds as EXITING instead", _out_b["state"] == clusterctl.EXITING, _out_b)
+_pcheck("and does not claim to have stopped anything", _out_b["stopped"] is False,
+        _out_b)
+
+# fail closed, all the way through the sequence: an unreadable listing signals nothing
+_rig_c = _Rig(top=None)
+_out_c = _close(_rig_c)
+_pcheck("a listing nobody could read never leads to a stop",
+        "stop" not in _rig_c.events and _rig_c.stops == 0, _rig_c.events)
+_pcheck("and the map is held, not reported stopped", _out_c["stopped"] is False, _out_c)
+
+# the save has to land on disk. RCON taking SaveWorld is not enough to earn a DoExit.
+_rig_d = _Rig(settled=False)
+_out_d = _close(_rig_d)
+_pcheck("a world that did not finish writing is never asked to exit",
+        "DoExit" not in _rig_d.events, _rig_d.events)
+_pcheck("nor is its container stopped", _rig_d.stops == 0, _rig_d.events)
+_pcheck("and the reason says the world was still being written",
+        "did not finish writing" in _out_d["why"], _out_d)
+
+# revived: the supervisor wins the race once. Never signalled - saved and asked again.
+_rig_e = _Rig(linger=1, revives=1)
+_out_e = _close(_rig_e)
+_pcheck("a map revived before the stop landed is taken round again, from the save",
+        _rig_e.events.count("SaveWorld") == 2, _rig_e.events)
+_pcheck("and it gets there in the end", _out_e["state"] == clusterctl.STOPPED
+        and _out_e["stopped"] is True, _out_e)
+_pcheck("which took two attempts", _out_e["attempts"] == 2, _out_e)
+_pcheck("a revived map is never killed or signalled",
+        not any(e.lower() in ("kill", "sigterm", "down") for e in _rig_e.events),
+        _rig_e.events)
+
+# and a map that keeps coming back is held, not forced
+_rig_f = _Rig(linger=1, revives=99)
+_out_f = _close(_rig_f)
+_pcheck("a map that keeps being revived stops being asked",
+        _out_f["attempts"] == clusterctl.CLOSE_ATTEMPTS, _out_f)
+_pcheck("it is left running rather than forced down",
+        _out_f["state"] == clusterctl.REVIVED and _out_f["stopped"] is False, _out_f)
+_pcheck("the hold says it came back", "came back" in _out_f["why"], _out_f)
+_pcheck("and nothing was ever signalled at it",
+        not any(e.lower() in ("kill", "sigterm", "down") for e in _rig_f.events),
+        _rig_f.events)
+
+# the gap, found before anything was asked: nothing to save, and the door is shut at once
+_rig_g = _Rig(server_up=False)
+_out_g = _close(_rig_g)
+_pcheck("a container already in the gap is stopped without being asked to save",
+        "SaveWorld" not in _rig_g.events and "DoExit" not in _rig_g.events,
+        _rig_g.events)
+_pcheck("and it is stopped", _out_g["state"] == clusterctl.STOPPED
+        and _rig_g.stops == 1, _rig_g.events)
+
+# a container that is already down is nothing to do
+_rig_h = _Rig(running=False)
+_out_h = _close(_rig_h)
+_pcheck("a container that is not running is left alone entirely",
+        _rig_h.stops == 0 and not any(e in ("SaveWorld", "DoExit")
+                                      for e in _rig_h.events), _rig_h.events)
+_pcheck("and reads as STOPPED", _out_h["state"] == clusterctl.STOPPED
+        and _out_h["stopped"] is True, _out_h)
+
+# -- it reuses the proof that already exists rather than growing a second one
+_csrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),
+                encoding="utf-8").read().split("def close_map")[1].split(
+                    chr(10) + "def ")[0]
+_pcheck("the save is proved by the same wait the apply path uses",
+        "worlds_settled(store, sent," in _csrc, _csrc[:400])
+_pcheck("the container is stopped with compose stop, not a signal",
+        "stop_one(store, k)" in _csrc and "kill" not in _csrc, _csrc[:400])
+
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)

@@ -171,6 +171,39 @@ def container_details(names, timeout=30):
     return out
 
 
+def processes(name, timeout=30):
+    """Every command line running inside `name` - or None when Docker could not be asked.
+
+    None is "the question did not get through" and [] is "it was answered, and nothing
+    is running in there". Flattening those two is the mistake this whole area exists to
+    delete: the absence of a process is evidence a server has exited, and a question
+    that failed is no evidence whatsoever. Same rule the rest of this module keeps - a
+    Docker that will not answer says nothing, rather than saying no.
+
+    The CMD column is taken whole. It carries spaces, quotes and pipe characters - an
+    ARK server's own line has `SessionName="TBG 02 | The Center | PvE 10x"` in the
+    middle of it - so splitting a row on whitespace truncates the one field that says
+    which process this is. The row is split on the header's column count instead, which
+    leaves everything from CMD onwards in one piece.
+    """
+    rc, out = _run(["docker", "top", name], timeout=timeout)
+    if rc != 0:
+        return None
+    rows = [line for line in out.splitlines() if line.strip()]
+    if not rows:
+        return None                # no header means nothing answered, not "nothing runs"
+    columns = len(rows[0].split())
+    if columns < 2:
+        return None
+    lines = []
+    for row in rows[1:]:
+        parts = row.split(None, columns - 1)
+        if len(parts) < columns:
+            continue               # a short row is a row we cannot read the CMD out of
+        lines.append(parts[-1].rstrip())
+    return lines
+
+
 def logs(name, tail=200, timeout=30):
     """The tail of one container's log, for showing a person why it is unhappy."""
     rc, out = _run(["docker", "logs", "--tail", str(tail), name], timeout=timeout)
