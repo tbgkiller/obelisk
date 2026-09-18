@@ -99,10 +99,10 @@
     {
       "id": "the-server-is-the-first-token",
       "file": "obelisk/cluster.py",
-      "guard": "    return first == SERVER_EXE",
-      "disable": "    return SERVER_EXE in line  # GUARD DISABLED BY MUTATION CHECK",
+      "guard": "    first = line.split()[0].strip(\"'\\\"\")",
+      "disable": "    first = SERVER_EXE if SERVER_EXE in line else \"\"  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
-      "why": "`docker top` on a running map returns THREE lines carrying ArkAscendedServer.exe and only one is the server: the other two are the Proton launcher (`proton run ArkAscendedServer.exe`) and the Steam wrapper (`steam.exe ArkAscendedServer.exe`). The disable text is the substring test somebody will write instead, and it reads a wrapper as a server - which holds a stop for ever waiting on a process that has already gone, and on the day it is inverted reads a wrapper's absence as the server being gone and signals into a save that is still being written. Observed at The Center on 2026-09-18"
+      "why": "`docker top` on a running map returns THREE lines carrying ArkAscendedServer.exe and only one is the server: the other two are the Proton launcher (`proton run ArkAscendedServer.exe`) and the Steam wrapper (`steam.exe ArkAscendedServer.exe`). Only the FIRST token may ever be judged, and the disable text is the containment test somebody will write instead - it reads either wrapper as a server, which holds a stop for ever waiting on a process that has already gone, and on the day it is inverted reads a wrapper's absence as the server being gone and signals into a save still being written. Observed at The Center on 2026-09-18"
     },
     {
       "id": "an-unreadable-process-list-is-not-an-exited-server",
@@ -111,6 +111,22 @@
       "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "PROCESS_GONE is the one state a stop may be signalled in, and it requires positive evidence of absence: a process listing that was read and had no server in it. A listing that failed, timed out or raised establishes nothing - and without this branch it falls straight through to PROCESS_GONE, which is a Docker hiccup deciding to stop a container whose server is still writing its save-on-exit. The same conservative reading _might_be_running already makes of an unanswerable Docker, one layer down"
+    },
+    {
+      "id": "the-server-is-recognised-however-it-is-spelled",
+      "file": "obelisk/cluster.py",
+      "guard": "    return first.casefold() == SERVER_EXE.casefold()",
+      "disable": "    return first == SERVER_EXE  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "the two directions of this test are not symmetric. Reading a wrapper as a server only HOLDS a stop - safe, and visible. Failing to recognise the REAL server reads a live map as PROCESS_GONE, which is the one state that authorises a signal, and on a first look close_map acts on it with no save and no DoExit in front - so a casing or quoting change in the launch line would stop a container whose world is live and unsaved. The disable text is the narrow compare this was written as first, and five real spellings fall through it: arkascendedserver.exe, ARKASCENDEDSERVER.EXE, ./ArkAscendedServer.exe, a quoted one, and Z:\\ARK\\ArkAscendedServer.exe"
+    },
+    {
+      "id": "an-unconfirmed-container-is-not-a-stopped-one",
+      "file": "obelisk/cluster.py",
+      "guard": "    return (got.get(name) or {}).get(\"state\") in NOT_RUNNING",
+      "disable": "    return (got.get(name) or {}).get(\"state\") != \"running\"  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "container_details skips any container whose `docker inspect` returned an error, so a Docker hiccup arrives as an empty answer that looks exactly like a container that is genuinely gone. The disable text is that reading, and it is the last fail-OPEN direction this mechanism had - close_map treats STOPPED as terminal success, so it would report a clean stop over a map whose server is still live and unsaved. STOPPED has to be positive evidence: a state that is there and says so. Everything else in this mechanism already fails closed"
     }
   ]
 }

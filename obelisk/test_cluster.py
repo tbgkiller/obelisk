@@ -2413,9 +2413,33 @@ _pcheck("the proton launcher is NOT the server",
         not clusterctl.is_server_process(_PROTON), _PROTON)
 _pcheck("the steam wrapper is NOT the server",
         not clusterctl.is_server_process(_STEAM), _STEAM)
-_pcheck("a path in front of the exe is NOT the server",
-        not clusterctl.is_server_process("/foo/ArkAscendedServer.exe TheCenter_WP?listen"),
-        "a matched path prefix means a substring test crept back in")
+# A path in front of the exe reads as the server, and that is the safe direction on
+# purpose. Only the FIRST token is ever looked at, and both wrappers fail there on their
+# own names - `python3`, and `steam.exe` once its path is off - so widening the token
+# costs no discriminating power at all. What it buys is the direction that matters: a
+# spelling this rule does not recognise reads a LIVE server as gone, and PROCESS_GONE is
+# the one state that authorises a stop - with no save and no DoExit in front of it on a
+# first look. A spelling it recognises too readily only holds the stop, which is safe
+# and visible. So a path-prefixed exe is far likelier to be a server nobody has observed
+# yet than a wrapper, and it is read as one.
+for _spelling in ("/foo/ArkAscendedServer.exe TheCenter_WP?listen",
+                  "./ArkAscendedServer.exe TheCenter_WP?listen",
+                  r"Z:\ARK\ArkAscendedServer.exe TheCenter_WP?listen",
+                  '"ArkAscendedServer.exe" TheCenter_WP?listen',
+                  "arkascendedserver.exe TheCenter_WP?listen",
+                  "ARKASCENDEDSERVER.EXE TheCenter_WP?listen"):
+    _pcheck("a server spelled %s is still the server" % _spelling.split()[0],
+            clusterctl.is_server_process(_spelling),
+            "this spelling reads a live server as gone, which is the direction that "
+            "signals into an unsaved world")
+# and the widening does not reach the wrappers, which is the whole claim it rests on
+_pcheck("the steam wrapper's own basename is still not this name",
+        not clusterctl.is_server_process(r"c:\WINDOWS\SYSTEM32\STEAM.EXE "
+                                         "ArkAscendedServer.exe ..."), _STEAM)
+_pcheck("and a command that merely mentions the exe is not it either",
+        not clusterctl.is_server_process("grep ArkAscendedServer.exe /var/log/pok.log")
+        and not clusterctl.is_server_process("env FOO=1 ArkAscendedServer.exe"),
+        "the first token is grep, and env")
 _pcheck("neither is anything the supervisor runs",
         not any(clusterctl.is_server_process(l) for l in _SUPERVISOR), _SUPERVISOR)
 _pcheck("nor an empty line", not clusterctl.is_server_process(""))
@@ -2424,13 +2448,18 @@ _pcheck("the gap listing has no server in it",
 
 
 # -- the five states, from those same lines
-def _state(lines, running=True, answers=None, seen_gone=False, raises=False):
+def _state(lines, running=True, answers=None, seen_gone=False, raises=False,
+           blind=False):
     def procs(name):
         if raises:
             raise OSError("cannot connect to the Docker daemon")
         return lines
 
     def details(names):
+        # blind is container_details' real behaviour when `docker inspect` fails: the
+        # container is skipped, so the answer comes back empty rather than saying so.
+        if blind:
+            return {}
         return {n: {"state": "running" if running else "exited"} for n in names}
 
     return clusterctl.process_state("asa-tbgcluster-center", procs, details,
@@ -2455,6 +2484,29 @@ _pcheck("a server process back after being gone is REVIVED",
 _s_stop = _state(_GAP, running=False)
 _pcheck("a container that is not running is STOPPED",
         _s_stop[0] == clusterctl.STOPPED, _s_stop)
+for _down in clusterctl.NOT_RUNNING:
+    _s_down = clusterctl.process_state(
+        "asa-tbgcluster-center", lambda n: list(_GAP),
+        lambda names: {n: {"state": _down} for n in names})
+    _pcheck("and so is one Docker calls %s" % _down,
+            _s_down[0] == clusterctl.STOPPED, _s_down)
+_s_restarting = clusterctl.process_state(
+    "asa-tbgcluster-center", lambda n: list(_GAP),
+    lambda names: {n: {"state": "restarting"} for n in names})
+_pcheck("but a container Docker calls restarting is not a stopped one",
+        _s_restarting[0] != clusterctl.STOPPED, _s_restarting)
+
+# container_details skips a container whose inspect failed, so an empty answer is a
+# Docker that did not say - never a container that is down. Reading it as down is the
+# one fail-OPEN direction left in this mechanism, and it sits on the success path.
+_s_blind_stop = _state(_GAP, blind=True)
+_pcheck("an inspect that answered nothing is NOT a stopped container",
+        _s_blind_stop[0] != clusterctl.STOPPED, _s_blind_stop)
+_pcheck("it is judged on what is running in there instead",
+        _s_blind_stop[0] == clusterctl.PROCESS_GONE, _s_blind_stop)
+_s_blind_blind = _state(None, blind=True)
+_pcheck("and when neither question is answered, nothing is concluded at all",
+        _s_blind_blind[0] == clusterctl.EXITING, _s_blind_blind)
 
 # -- fail closed. Absence has to be established; it is never the default.
 _s_unread = _state(None)
@@ -2489,10 +2541,10 @@ class _Rig:
     """
 
     def __init__(self, linger=1, revives=0, settled=True, answers=True, stop_ok=True,
-                 running=True, server_up=True, top=False):
+                 running=True, server_up=True, top=False, blind=False):
         self.linger, self.revives, self.settled = linger, revives, settled
         self.answers, self.stop_ok, self.running = answers, stop_ok, running
-        self.server_up, self.top = server_up, top
+        self.server_up, self.top, self.blind = server_up, top, blind
         self.events, self.clock, self.stops, self.polls = [], 1000.0, 0, 0
         self.exiting = False
 
@@ -2515,6 +2567,8 @@ class _Rig:
         return list(_UP) if self.server_up else list(_GAP)
 
     def details(self, names):
+        if self.blind:
+            return {}                               # inspect failed: Docker did not say
         return {n: {"state": "running" if self.running else "exited"} for n in names}
 
     def rcon(self, host, port, command):
@@ -2646,6 +2700,17 @@ _pcheck("a container that is not running is left alone entirely",
                                       for e in _rig_h.events), _rig_h.events)
 _pcheck("and reads as STOPPED", _out_h["state"] == clusterctl.STOPPED
         and _out_h["stopped"] is True, _out_h)
+
+# a stop is only a stop once Docker says the container is down. A hiccup on the way
+# past is not a clean stop, however tempting the timing is.
+_rig_i = _Rig(linger=1, blind=True)
+_out_i = _close(_rig_i)
+_pcheck("a Docker that will not confirm the container is down never reports a stop",
+        _out_i["stopped"] is False, _out_i)
+_pcheck("and it says so, rather than going quiet about it",
+        "did not confirm it stopped" in _out_i["why"], _out_i)
+_pcheck("the stop itself is still issued - it is the CLAIM that needs the evidence",
+        _rig_i.stops == 1, _rig_i.events)
 
 # -- it reuses the proof that already exists rather than growing a second one
 _csrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),

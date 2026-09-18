@@ -553,17 +553,64 @@ def _turns(budget, interval):
 
 
 def is_server_process(command):
-    """Is this `docker top` line the ARK server, or one of the things in front of it?
+    r"""Is this `docker top` line the ARK server, or one of the things in front of it?
 
-    The first token, compared whole. `proton run ArkAscendedServer.exe` and
-    `steam.exe ArkAscendedServer.exe` both carry the name and neither one is the server,
-    so containment is the single test that must never be used here.
+    The FIRST token, and only ever the first token: that is what keeps the two wrappers
+    out. `python3 .../proton run ArkAscendedServer.exe` and
+    `c:\windows\system32\steam.exe ArkAscendedServer.exe` both carry the name further
+    along the line, so a containment test reads either of them as a server.
+
+    Within that token the match is deliberately generous, and the asymmetry is the whole
+    reason. PROCESS_GONE is the only state that authorises a stop, and on a first look
+    close_map acts on it with no save and no DoExit in front - so a spelling this rule
+    fails to recognise turns "the server is running" into "the server is gone", and
+    stops a container whose world is live and unsaved. A spelling it recognises too
+    readily only ever HOLDS the stop, which is safe and visible. So quotes come off, a
+    path in front comes off - on either separator, because these command lines carry
+    Windows paths - and the compare ignores case. ./ArkAscendedServer.exe,
+    "ArkAscendedServer.exe", Z:\ARK\ArkAscendedServer.exe and arkascendedserver.exe are
+    all the server.
+
+    Neither wrapper survives that widening: their first tokens are `python3` and
+    `c:\windows\system32\steam.exe`, whose basename is steam.exe - not this name, in any
+    spelling. The discriminating power is unchanged; only the dangerous direction is.
     """
     line = str(command or "").strip()
     if not line:
         return False
-    first = line.split()[0]
-    return first == SERVER_EXE
+    first = line.split()[0].strip("'\"")
+    first = first.replace(chr(92), "/").rsplit("/", 1)[-1]
+    return first.casefold() == SERVER_EXE.casefold()
+
+
+# The container states that are positive evidence a container is NOT running. Anything
+# else - "running", "restarting", or an inspect that did not answer at all - is not.
+NOT_RUNNING = ("exited", "created", "dead")
+
+
+def _container_stopped(name, details):
+    """Is this container POSITIVELY known not to be running?
+
+    Not the negation of _might_be_running, and the difference is the fail-open hole it
+    closes. container_details skips any container whose `docker inspect` returned an
+    error, so a Docker hiccup and a container that is genuinely gone both arrive as an
+    empty answer - and close_map treats STOPPED as terminal success. Reading "Docker did
+    not say" as "it is down" would report a clean stop over a map whose server is still
+    live and unsaved, which is the same claim-without-evidence the whole incident was.
+
+    _might_be_running is right for its own caller, which asks "could this still be up"
+    and gets True for an unknown. This asks the opposite question, so the unknown has to
+    fall the opposite way: the state has to be there, and it has to say so.
+    """
+    if not name:
+        return False
+    try:
+        got = details([name]) or {}
+    except Exception as e:                          # noqa: BLE001 - reported, not fatal
+        log.warning("could not ask Docker what state %s is in (%s) - that is not "
+                    "evidence it has stopped, so it is not read as one", name, e)
+        return False
+    return (got.get(name) or {}).get("state") in NOT_RUNNING
 
 
 def _server_seen(name, procs):
@@ -592,7 +639,7 @@ def process_state(name, procs, details, answers=None, seen_gone=False):
     `seen_gone` is whether this map's server process has already been observed absent,
     which is the only thing that tells a server still running from one brought back.
     """
-    if not _might_be_running(name, details):
+    if _container_stopped(name, details):
         return STOPPED, "its container is not running"
     present, known = _server_seen(name, procs)
     if not known:
