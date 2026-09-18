@@ -2859,7 +2859,19 @@ _ccheck("a password exactly at the floor still counts",
 # -- the confirmation says what it will do, not just what it is called
 _eff = _con.effect("DoExit", "The Island")
 _ccheck("a stop says it stops that map", "stop The Island" in _eff, _eff)
-_ccheck("and says the map stays down", "stays down" in _eff, _eff)
+# It used to say "and this map stays down until something starts it again", and the
+# hand-driven stop on 2026-09-18 proved that false - the container started another
+# server about a minute later and the map went into a restart loop. Pinned whole,
+# because the sentence is the thing being got right.
+_ccheck("a stop no longer claims the map stays down", "stays down" not in _eff, _eff)
+_ccheck("it says the container brings it back, and where to go to stop that",
+        _eff == ("stop The Island. The server exits and everyone on it is disconnected "
+                 "- and it does not stay down: the container starts it again, often "
+                 "into a restart loop. Stopping the cluster is what puts a map down "
+                 "and keeps it down"), _eff)
+_ccheck("and Shutdown says the same thing, because it does the same thing",
+        _con.effect("Shutdown", "The Island") == _eff,
+        _con.effect("Shutdown", "The Island"))
 _ccheck("a destroy nobody enumerated still says it destroys",
       "cannot bring back" in _con.effect("DestroyTribeIdDinos 42", "The Island"),
       _con.effect("DestroyTribeIdDinos 42", "The Island"))

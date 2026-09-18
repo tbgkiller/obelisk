@@ -82,10 +82,17 @@ GATED_PREFIXES = ("destroy",)
 # What sending it will actually do, said in the confirmation. Keyed by the same verb. A question that only names the command is a question nobody can answer without
 # already knowing the answer.
 EFFECTS = {
-    "doexit": ("stop %s. The server exits, everyone on it is disconnected, and this "
-               "map stays down until something starts it again"),
-    "shutdown": ("stop %s. The server exits, everyone on it is disconnected, and this "
-                 "map stays down until something starts it again"),
+    # Not "and the map stays down". It was driven by hand at The Center on 2026-09-18
+    # and it does not: the server exits, and about a minute later its container starts
+    # another one, which went into a restart loop. So the confirmation says what was
+    # actually seen, and points at the one route that puts a map down and keeps it down.
+    "doexit": ("stop %s. The server exits and everyone on it is disconnected - and it "
+               "does not stay down: the container starts it again, often into a restart "
+               "loop. Stopping the cluster is what puts a map down and keeps it down"),
+    "shutdown": ("stop %s. The server exits and everyone on it is disconnected - and it "
+                 "does not stay down: the container starts it again, often into a "
+                 "restart loop. Stopping the cluster is what puts a map down and keeps "
+                 "it down"),
     "kick": "disconnect somebody from %s. They can rejoin straight away",
     "kickplayer": "disconnect somebody from %s. They can rejoin straight away",
     "ban": ("ban somebody from %s. ARK keeps a ban list per server, so this is %s and "
