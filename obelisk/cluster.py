@@ -385,10 +385,11 @@ def _ask_to_exit(one, rcon, details):
 def _close_the_door(one, label, stop_container):
     """The bounded fallback: stop a container whose server is STILL running. True if it did.
 
-    This is no longer a keep-it-down measure. The generated compose carries no
-    `restart:` key, so a container that exits stays exited and nothing has to be marked
-    user-stopped to hold it there - which is what this used to be for, and it used to
-    fire on an inferred exit, on every map, from RCON going quiet.
+    This is no longer a keep-it-down measure. The restart policy is an operator setting
+    now and it defaults to `no`, so on that default a container that exits stays exited
+    and nothing has to be marked user-stopped to hold it there - which is what this used
+    to be for, and it used to fire on an inferred exit, on every map, from RCON going
+    quiet.
 
     What is left is the one case the wait cannot resolve: a map that took DoExit and
     whose server process is still in the listing when the grace period has run out.
@@ -442,9 +443,9 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
     never inferred.
 
     The container gets there on its own: POK reads the missing server process as a
-    self-restart and deliberately exits the container, and with no `restart:` key in the
-    compose file that exit is the end of it. `_close_the_door` is only the bounded
-    fallback for a server that is still running when the budget is spent.
+    self-restart and deliberately exits the container, and on the default `restart: no`
+    policy that exit is the end of it. `_close_the_door` is only the bounded fallback
+    for a server that is still running when the budget is spent.
 
     `state` is one of CLOSED, ALREADY_GONE, NOT_READY or LATE, and `exited` is True for
     the first two only. A map that will not answer is not automatically a map that has

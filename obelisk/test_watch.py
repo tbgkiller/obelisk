@@ -196,8 +196,15 @@ for _tail_c in ("map_relaunched", "relaunch_failed", "watch_stood_down",
 _note_on = ui.render_crash_watch(True, "unless-stopped")
 check("a watch standing down behind the restart policy says so where it is seen",
       "standing down" in _note_on and "unless-stopped" in _note_on, _note_on)
-check("and says which of the two is actually restarting maps",
-      "Docker is bringing maps back and Obelisk is not" in _note_on, _note_on)
+check("and says which of the two has the job of restarting maps",
+      "Docker has this job and Obelisk will not" in _note_on, _note_on)
+# It may NOT claim Docker is already doing it. The policy is a setting and a container
+# keeps the one it was created with, so between changing this and recreating the maps a
+# container can be carrying neither watcher - Obelisk stood down on the setting, Docker
+# never told by the container. Asserting cover that is not there is the failure mode
+# this whole panel exists to prevent, so the banner names the gap instead.
+check("without claiming cover a container that was never recreated does not have",
+      "not recreated" in _note_on and "neither" in _note_on, _note_on)
 check("a watch that is on and working draws no note at all",
       ui.render_crash_watch(True, "no") == "",
       ui.render_crash_watch(True, "no"))

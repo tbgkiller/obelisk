@@ -1722,11 +1722,15 @@ def render_crash_watch(on, policy, stood_down=None):
 
     The setting is a checkbox and a checkbox can only say on or off, but there are three
     states and the third one is the dangerous one to hide: the watch is ON and doing
-    nothing, because the restart policy is back to unless-stopped and Docker is
-    restarting maps instead. Rendering that as "on" would tell an operator they have
-    cover from Obelisk that they are actually getting from Docker - and the day they set
-    the policy back to no, the cover they thought they had all along is the only thing
-    still standing.
+    nothing, because the restart policy is set back to unless-stopped and that hands the
+    job to Docker. Rendering that as "on" would tell an operator they have cover from
+    Obelisk that they are meant to be getting from Docker - and the day they set the
+    policy back to no, the cover they thought they had all along is the only thing still
+    standing.
+
+    "Meant to be", because the policy is a setting and a container keeps the one it was
+    created with: between changing this and recreating the maps, a container can be
+    carrying neither watcher. The banner says so rather than asserting Docker has it.
 
     Nothing here is a fault and nothing is disabled. It says which of the two is
     restarting maps, and it names any map the watch has given up on - because that map
@@ -1736,10 +1740,12 @@ def render_crash_watch(on, policy, stood_down=None):
     out = ""
     if on and str(policy) == "unless-stopped":
         out += ('<div class=warn>The crash watch is switched on but standing down: the '
-                'container restart policy is <code>unless-stopped</code>, so Docker is '
-                'bringing maps back and Obelisk is not. Only one of them gets to do '
-                'this, or they fight. Set the restart policy to <code>no</code> and '
-                'recreate the maps to hand the job to Obelisk.</div>')
+                'restart policy is set to <code>unless-stopped</code>, so Docker has '
+                'this job and Obelisk will not. Only one of them gets to do it, or they '
+                'fight. A container keeps the policy it was created with, so any map you '
+                'have not recreated since changing this setting has neither watching it - '
+                'recreate the maps, or set the policy back to <code>no</code> to hand the '
+                'job to Obelisk.</div>')
     stood = sorted(stood_down or [])
     if stood:
         one = len(stood) == 1
