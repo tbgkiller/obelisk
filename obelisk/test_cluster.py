@@ -1157,8 +1157,12 @@ clusterctl.start_one(_ist5, "island", record=False)
 check("a watch relaunch does not reset the map's relaunch budget",
       _intent.relaunches(_ist5, "island") == _spent_before,
       _intent.read(_ist5, "island"))
+# Asked of the relaunch history rather than of may_relaunch, which would be the more
+# obvious way to say it: the gate is intent.py's invariant and test_intent is what pins
+# it, so borrowing it here to prove a point about start_one makes one mutation turn two
+# named tests red. The history is the fact this check actually needs.
 check("and the budget really was spent, so this is not a vacuous pass",
-      not _intent.may_relaunch(_ist5, "island")[0], _intent.read(_ist5, "island"))
+      _spent_before == _intent.BUDGET, _intent.read(_ist5, "island"))
 clusterctl.start_one(_ist5, "island")
 check("an operator starting it by hand DOES reset it",
       _intent.relaunches(_ist5, "island") == 0, _intent.read(_ist5, "island"))
