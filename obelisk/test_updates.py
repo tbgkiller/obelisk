@@ -1203,6 +1203,72 @@ check("a staged build OLDER than the running one is refused - that is a downgrad
       not ok, msg)
 check("and it stopped nothing to find that out", spy.log == [], spy.log)
 
+# ---- the two shapes of "not newer" get two sentences, because one of them was false
+#
+# Equal and older were refused with one sentence between them - "the staged build (X)
+# is the one already running" - and about an older build that is not true: 25117056 is
+# the one running, 25000000 is not. It was survivable while the sentence only reached
+# a log. It is not any more: this branch prints the refusal on the update page under
+# "Nothing to apply", so a wrong statement about which build is live is one an
+# operator would act on. Both stay refusals; only which sentence comes back changed.
+#
+# Both pinned as exact strings. The equal-case text is shared with empty_watch, due()
+# and the apply, and is byte-for-byte what it was at 6db0934 - a reword here would
+# quietly change what the two unattended triggers say, which is not this slice's
+# business. The older-case text is new and belongs to nothing else.
+EQUAL_WHY = ("the staged build (25117056) is the one already running, so there is "
+             "nothing to apply")
+OLDER_WHY = ("the staged build (25000000) is older than the one running (25117056), "
+             "so there is nothing to apply - installing it would be a downgrade")
+
+st = _stale_store(build="25117056")
+check("equal: refused in exactly the words it has always used",
+      updates.staged_worth_applying(st, installed="25117056") == (False, EQUAL_WHY),
+      updates.staged_worth_applying(st, installed="25117056"))
+
+st = _stale_store(build="25000000")
+check("older: refused in its own words, which name both builds",
+      updates.staged_worth_applying(st, installed="25117056") == (False, OLDER_WHY),
+      updates.staged_worth_applying(st, installed="25117056"))
+check("and they are not the same sentence - that is the whole point",
+      EQUAL_WHY != OLDER_WHY)
+check("the older one never claims the staged build is the one running",
+      "already running" not in OLDER_WHY, OLDER_WHY)
+check("and it says which build actually is running", "running (25117056)" in OLDER_WHY,
+      OLDER_WHY)
+
+# The split is read off newer_build both ways round rather than out of a new
+# comparison of its own, so nothing here can disagree with the gate itself about
+# which build is newer. For builds that are not plain numbers newer_build has only
+# difference and no ordering, so "not newer" already means equal and the older branch
+# is unreachable - which is right, since there would be nothing truthful to say.
+check("not-newer splits into exactly older and equal, for numbers",
+      updates.newer_build("25000000", "25117056")
+      and not updates.newer_build("25117056", "25117056"))
+_n = _stale_store(build="beta-one")
+check("and a build that is not a number is never called older",
+      updates.staged_worth_applying(_n, installed="beta-one")[1]
+      == "the staged build (beta-one) is the one already running, so there is "
+         "nothing to apply",
+      updates.staged_worth_applying(_n, installed="beta-one"))
+
+# Both sentences still refuse, through every path that asks the question.
+st = _stale_store(build="25000000")
+check("worth_applying hands the older-case sentence through unchanged",
+      updates.worth_applying(st, installed="25117056") == (False, OLDER_WHY),
+      updates.worth_applying(st, installed="25117056"))
+_ok_dg, _why_dg = updates.due(st, now=lambda: at(5), installed="25117056")
+check("and the window still refuses a downgrade, exactly as it always did",
+      not _ok_dg, _why_dg)
+
+st = _stale_store(build="25000000")
+spy = _Spy()
+(ok, msg, _d), renamed = _apply(st, spy, installed="25117056")
+check("the apply refuses a downgrade in the new words", (not ok) and msg == OLDER_WHY,
+      msg)
+check("and stopped, saved, warned and started nothing", spy.log == [], spy.log)
+check("and moved none of the install", renamed == [], renamed)
+
 # Not knowing what is running is not a reason to restart ten servers on the chance
 # the staged thing is newer. worth_applying has taken that stance for a while; the
 # button takes it now too.
@@ -1222,6 +1288,15 @@ check("and stopped nothing", spy.log == [], spy.log)
 # survived; there is one now, and this is what holds it to one.
 from . import ui as _ui
 
+
+def _btn(page):
+    """The button and the sentence beside it - never the whole page, which carries
+    an em dash and an arrow and raises UnicodeEncodeError on a cp1252 console. A
+    failing check has to print as a FAIL, not as a crash."""
+    i = page.find("Apply now")
+    return page[max(0, i - 160):i + 220].encode("ascii", "replace").decode("ascii")
+
+
 for _label, _st, _ark, _installed in (
         ("a rehearsal of the running build", _stale_store("25117056"), ARK, "25117056"),
         ("a downgrade", _stale_store("25117056"), ARK, "25200000"),
@@ -1235,11 +1310,11 @@ for _label, _st, _ark, _installed in (
                                   applicable=_ans)
     check("the engine refuses %s" % _label, not _ok, _msg)
     check("the button is disabled for %s" % _label, "disabled>Apply now" in _page,
-          _page[_page.find("Apply now") - 140:])
+          _btn(_page))
     check("for the same reason and in the same words - %s" % _label,
           _msg == _ans[1], (_msg, _ans[1]))
     check("and the page carries that reason - %s" % _label,
-          "Nothing to apply" in _page and _ans[1] in _page, _page)
+          "Nothing to apply" in _page and _ans[1] in _page, _btn(_page))
 
 # The strongest form of "the same function": swap the function out and the page has
 # to follow. A parallel implementation left behind in ui.py would be untouched by
@@ -1252,7 +1327,7 @@ try:
                                          "loaded": LOADED}, owns=True)
     check("the panel asks updates.staged_worth_applying rather than re-deriving it",
           "disabled>Apply now" in _page and "SENTINEL asked the engine" in _page,
-          _page[_page.find("Apply now") - 240:])
+          _btn(_page))
 finally:
     updates.staged_worth_applying = _real_swa
 

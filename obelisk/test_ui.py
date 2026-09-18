@@ -832,6 +832,17 @@ check("nothing is disabled except the install-time fields",
 check("and filtering hides rather than disables", "f.hidden=!ok" in _h)
 
 
+def _button(page, label="Apply now"):
+    """The button and the sentence beside it, as a failing check's detail.
+
+    Never the whole page. It carries an em dash and an arrow, and printing it on a
+    cp1252 console raises UnicodeEncodeError - which turns a clean FAIL into a crash
+    and loses the name of the check that went red.
+    """
+    i = page.find(label)
+    return page[max(0, i - 140):i + 220].encode("ascii", "replace").decode("ascii")
+
+
 # ---- the ARK update panel: three states, and never a false green
 #
 # The whole panel exists because a checker somewhere reported "up to date" about a
@@ -895,9 +906,31 @@ check("with the timestamp of the boot that proved it",
 check("and the file ids it proved", "8210044" in _p2)
 check("and Apply is offered", "disabled>Apply now" not in _p2)
 
-_p3 = ui.render_ark_update(_ps, _status, ready=_ready, owns=False)
+# Ownership, and it has to be OWNERSHIP that disables the button. The store holds a
+# genuinely newer staged build - 25200000 over a running 25117056 - so every other
+# reason to refuse is off the table: strip the ownership branch and this button goes
+# live. The old fixture had nothing staged at all, which disabled the button for a
+# reason that had nothing to do with the name of the test.
+_ps3 = _PanelStore(ark_update_mode="automatic")
+_ps3.data["ark_update"] = {"primed": _ready}
+_pok = _upd.staged_worth_applying(_ps3, installed="25117056")
+check("the engine refuses a newer build only because POK owns updates",
+      _pok == (False, "a build is staged but POK applies updates on this cluster"),
+      _pok)
+_p3 = ui.render_ark_update(_ps3, _status, ready=_ready, owns=False, applicable=_pok)
 check("while the image owns updates, Apply stays disabled", "disabled>Apply now" in _p3)
 check("and the panel explains which system is in charge", "two update systems" in _p3)
+check("and it is ownership that disabled it, not a missing or stale staged build",
+      "Staged and verified" in _p3 and "25200000" in _p3, _button(_p3))
+
+# The two inputs arrive separately and must not be able to contradict each other. A
+# caller handing in a cheerful `applicable` beside owns=False would have rendered a
+# live Apply button on a cluster where the server image applies the builds.
+_p3b = ui.render_ark_update(_ps3, _status, ready=_ready, owns=False,
+                            applicable=(True, "build 25200000 is staged and verified, "
+                                              "newer than 25117056"))
+check("an enabled answer cannot talk its way past owns=False",
+      "disabled>Apply now" in _p3b, _button(_p3b))
 
 _p4 = ui.render_ark_update(_ps, _status, staging_on=False)
 check("with the staging server off, Prime is disabled", "disabled>Prime update" in _p4)

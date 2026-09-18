@@ -933,9 +933,23 @@ def staged_worth_applying(store, installed=None, ark_root=None):
         # chance that the staged thing is newer.
         return False, ("the installed build could not be read, so it is not known "
                        "whether the staged one is newer")
-    if not newer_build(installed, ready.get("build")):
+    staged = ready.get("build")
+    if not newer_build(installed, staged):
+        # Two shapes of "not newer", and they had one sentence between them. A staged
+        # build OLDER than the running one was refused as "the one already running",
+        # which is simply false about it - and this refusal is now printed on the
+        # update page, so it is a wrong statement an operator would act on. The same
+        # helper answers it, read the other way round: inside this branch, installed
+        # being strictly newer than staged is exactly "staged is older". For builds
+        # that are not plain numbers newer_build has no ordering, only difference, so
+        # not-newer already means equal and this reads False - which is right, since
+        # there would be nothing truthful to say about which came first.
+        if newer_build(staged, installed):
+            return False, ("the staged build (%s) is older than the one running (%s), "
+                           "so there is nothing to apply - installing it would be a "
+                           "downgrade" % (staged, installed))
         return False, ("the staged build (%s) is the one already running, so there is "
-                       "nothing to apply" % ready.get("build"))
+                       "nothing to apply" % staged)
     return True, "build %s is staged and verified, newer than %s" % (
         ready.get("build"), installed)
 

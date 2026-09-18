@@ -745,15 +745,23 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
         # asks the engine's own question instead, so the button is disabled exactly
         # when the apply would refuse, and says the reason the apply would have given.
         from . import updates as updatesctl
-        can_apply, why_not = (applicable if applicable is not None
-                              else updatesctl.staged_worth_applying(store))
+        worth, why_not = (applicable if applicable is not None
+                          else updatesctl.staged_worth_applying(store))
+        # `and owns` because the two inputs arrive separately and could contradict
+        # each other. staged_worth_applying refuses on POK ownership itself, so for
+        # every caller that exists this changes nothing - but the panel is handed
+        # `owns` as its own argument, and a caller passing a cheerful `applicable`
+        # next to owns=False would otherwise render a live Apply button on a cluster
+        # where the server image is the one applying builds. The stricter of the two
+        # wins; an enabled button is the thing that has to be earned twice.
+        can_apply = bool(worth) and owns
         buttons = (
             '<button type=submit formaction="/admin/update/prime"%s>Prime update</button> '
             '<button type=submit formaction="/admin/update/apply"%s>Apply now</button> '
             % ("" if staging_on else " disabled", "" if can_apply else " disabled"))
         buttons += ('<label class=inline><input type=checkbox name=force value=1> '
                     'apply even with players online</label>')
-        if ready and not can_apply and owns:
+        if ready and not worth and owns:
             # Only when something IS staged. With nothing staged the panel already
             # says so above, and a second sentence explaining why the button for it is
             # off would be answering a question nobody asked.
