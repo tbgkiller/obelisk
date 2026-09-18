@@ -95,6 +95,22 @@
       "disable": "            if False:  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "updates",
       "why": "the third state again, on the panel whose docstring says it gets its own colour rather than quietly rendering as a tick. Two of the apply refusals are determinations - the staged build IS the one running, or IS older - and grey is right for a settled answer. The third is the absence of one: the install could not be read at all, which on Unraid is an unmounted share or the wrong Ark root. Without this branch it wore the same grey under a bold 'Apply is off', three lines below a version row reading 25117056 -> 25200000 update available, so an operator scanning the bold read 'you are current' about a question Obelisk never managed to ask. Matched on identity with updates.UNREADABLE and not on words in the sentence, because that text is refusal and log text too and a reword must not be able to drop the colour back to grey"
+    },
+    {
+      "id": "the-server-is-the-first-token",
+      "file": "obelisk/cluster.py",
+      "guard": "    return first == SERVER_EXE",
+      "disable": "    return SERVER_EXE in line  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "`docker top` on a running map returns THREE lines carrying ArkAscendedServer.exe and only one is the server: the other two are the Proton launcher (`proton run ArkAscendedServer.exe`) and the Steam wrapper (`steam.exe ArkAscendedServer.exe`). The disable text is the substring test somebody will write instead, and it reads a wrapper as a server - which holds a stop for ever waiting on a process that has already gone, and on the day it is inverted reads a wrapper's absence as the server being gone and signals into a save that is still being written. Observed at The Center on 2026-09-18"
+    },
+    {
+      "id": "an-unreadable-process-list-is-not-an-exited-server",
+      "file": "obelisk/cluster.py",
+      "guard": "    if not known:",
+      "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "PROCESS_GONE is the one state a stop may be signalled in, and it requires positive evidence of absence: a process listing that was read and had no server in it. A listing that failed, timed out or raised establishes nothing - and without this branch it falls straight through to PROCESS_GONE, which is a Docker hiccup deciding to stop a container whose server is still writing its save-on-exit. The same conservative reading _might_be_running already makes of an unanswerable Docker, one layer down"
     }
   ]
 }
