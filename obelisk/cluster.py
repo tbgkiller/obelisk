@@ -557,8 +557,9 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
     # DoExit instant now, not the SaveWorld instant, so the question it answers is "did
     # this world advance after the server was told to exit, and are its -journal / -wal
     # sidecars closed" rather than "did the SaveWorld land".
-    # `is not None`, not truthiness: an epoch of 0.0 is a real instant, and a test
-    # clock that starts at zero is the first thing to produce one.
+    #
+    # `is not None` rather than truthiness: an epoch of 0.0 is a real instant, and the
+    # first thing to hand one over is always a test clock that starts at zero.
     sent = {l: o["sent"] for l, o in seen.items() if o["sent"] is not None}
     clean = {}
     if sent:
