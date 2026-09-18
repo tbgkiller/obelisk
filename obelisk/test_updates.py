@@ -1775,6 +1775,77 @@ _msg_mx = [i for i in ev_mx if i["event"] == "ark.world_damaged"][0]["text"]
 check("and it says both things, each about the right map",
       "Restore" in _msg_mx and "storage problem" in _msg_mx, _msg_mx)
 
+# ---- every branch that stopped the cluster starts something again
+#
+# This used to be belt and braces. It is load-bearing now: there is no `restart:` key on
+# the ARK containers any more, so nothing revives a stopped map by itself and
+# launch() / start_one() is the ONLY thing that brings one up. A branch that stops ten
+# servers and returns without starting anything leaves them down until a human notices,
+# which is exactly what the restart policy used to paper over - badly, by also reviving
+# maps that were stopped deliberately.
+#
+# The two deliberate exceptions are named here rather than left to be discovered: a map
+# the world gate refused stays down ON PURPOSE, and a stop that FAILED never got far
+# enough to owe anybody a start.
+def _branch(gates=True, check_worlds=None, rename=None, stage=None, stop_ok=True):
+    """One apply with every destructive step counted. (ok, the fake's log, started)."""
+    drain()
+    st_ = real_store()
+    updates.remember(st_, primed=ready)
+    if stage:
+        _pend.stage(st_, stage)
+    c_ = Cluster(gates=gates, stop_ok=stop_ok)
+    started_ = []
+    _r, rn_ = moved_nothing()
+    ok_, msg_, _d = updates.apply_batch(
+        st_, ARK, installed=OLD_BUILD, warn=c_.warn, stop_all=c_.stop,
+        start_all=c_.start, verify=c_.verify, check_worlds=check_worlds,
+        start_some=lambda keys: (started_.extend(keys) or list(keys)),
+        players=lambda: (0, {}, []), rename=rename or rn_,
+        exists=tree_exists(), now=lambda: 4242)
+    return ok_, msg_, c_.log, started_
+
+# 1. the ordinary apply
+_ok1, _m1, _log1, _st1 = _branch()
+check("a clean apply reaches the start", _ok1 and "start" in _log1, _log1)
+
+# 2. the gates fail after the restart - the cluster is already up by then
+_ok2, _m2, _log2, _st2 = _branch(gates=False)
+check("an apply whose gates fail still started the cluster first",
+      not _ok2 and _log2.index("start") < _log2.index("verify"), _log2)
+
+# 3. the swap fails part way and is undone
+_tree3 = {"/ark/ServerFiles": 1, "/ark/ServerFiles.staging": 1}
+_n3 = {"i": 0}
+
+
+def _flaky3(src, dst):
+    _n3["i"] += 1
+    if _n3["i"] == 2:
+        raise OSError("the disk said no")
+    if src in _tree3:
+        _tree3[dst] = _tree3.pop(src)
+
+
+_ok3, _m3, _log3, _st3 = _branch(rename=_flaky3)
+check("a swap that failed is undone and the cluster is started again",
+      not _ok3 and _log3.count("start") == 1, _log3)
+
+# 4. the world gate refuses: the good maps come back, the bad one stays down on purpose
+_ok4, _m4, _log4, _st4 = _branch(check_worlds=lambda: ONE_BAD)
+check("a partial world refusal still starts the maps that are fine",
+      _st4 == ["astraeos"], _st4)
+check("and the refused map stays down deliberately - that is the protection",
+      "island" not in _st4, _st4)
+check("with the whole-cluster start never reached, so nothing undoes it",
+      "start" not in _log4, _log4)
+
+# 5. the one branch that owes nobody a start: the stop itself did not work.
+_ok5, _m5, _log5, _st5 = _branch(stop_ok=False)
+check("a stop that failed does not start anything - nothing got stopped to start",
+      not _ok5 and "start" not in _log5 and _st5 == [], _log5)
+
+
 # ---- the count has to be true
 #
 # It used to report the maps it ATTEMPTED to start. A start that fails while a world is
