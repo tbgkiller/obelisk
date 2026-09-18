@@ -1551,7 +1551,10 @@ check("a reporting callback that raises does not break the save",
 check("and the other maps are still proved after it",
       len(res_z) == 2, res_z)
 
-# The seam the app actually uses: save_and_settle hands keywords straight through.
+# The seam the operator-driven paths use: save_and_settle hands keywords straight
+# through. The apply does NOT come through here any more - Obelisk sends no save of
+# its own before a stop - but the backup flush, the console button and the Discord
+# command all still do, and they are opt-in, which is the difference.
 calls_kw = []
 clk_kw = Clock()
 disk_kw = Disk({ISLAND_ARK: [(120, 1001.0)], RAG_ARK: [(80, 1001.0)]})
@@ -1899,6 +1902,10 @@ check("a single-map cluster that has never booted still skips, non-blocking",
 
 
 # ---- save_and_settle: one call that sends the command and proves the write
+#
+# Kept on purpose. It has no automatic caller now - the apply's pre-stop save was
+# removed by decision - but it still backs the three places a person asks for a save
+# by hand, and those all stay.
 asked_q = []
 clk_sw = Clock()
 disk_sw = Disk({ISLAND_ARK: [(120, 1001.0)], RAG_ARK: [(80, 1001.0)]})

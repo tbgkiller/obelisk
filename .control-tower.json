@@ -12,7 +12,8 @@
       "ui": "python -m obelisk.test_ui",
       "mods": "python -m obelisk.test_mods",
       "cluster": "python -m obelisk.test_cluster",
-      "updates": "python -m obelisk.test_updates"
+      "updates": "python -m obelisk.test_updates",
+      "plan": "python -m obelisk.test_plan"
     }
   },
   "guards": [
@@ -127,6 +128,38 @@
       "disable": "    return (got.get(name) or {}).get(\"state\") != \"running\"  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "container_details skips any container whose `docker inspect` returned an error, so a Docker hiccup arrives as an empty answer that looks exactly like a container that is genuinely gone. The disable text is that reading, and it is the last fail-OPEN direction this mechanism had - close_map treats STOPPED as terminal success, so it would report a clean stop over a map whose server is still live and unsaved. STOPPED has to be positive evidence: a state that is there and says so. Everything else in this mechanism already fails closed"
+    },
+    {
+      "id": "the-ark-containers-carry-no-restart-policy",
+      "file": "obelisk/compose.py",
+      "guard": "            \"    container_name: %s\" % naming.container_name(project, instance),\n            # No `restart:` key at all, so",
+      "disable": "            \"    container_name: %s\" % naming.container_name(project, instance),\n            \"    restart: unless-stopped\",  # GUARD DISABLED BY MUTATION CHECK\n            # No `restart:` key at all, so",
+      "expected_test": "plan",
+      "why": "a deliberate DoExit does not leave a map down while a restart policy is there. Observed at The Center on 2026-09-18 and then read back out of the container log: POK finds no server process, classifies it as a self-restart, and exits the WHOLE CONTAINER on purpose so that Docker's policy brings it back - so the map that was just closed boots for ten minutes and closes again. The disable text is the exact line that was removed, and it is the line somebody puts back the first time a crashed map stays down. The answer to that is the crash-watch, not this key"
+    },
+    {
+      "id": "a-server-still-in-the-listing-is-not-a-closed-map",
+      "file": "obelisk/cluster.py",
+      "guard": "            if state != STOPPED:",
+      "disable": "            if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "CLOSED needs BOTH halves - the server process gone AND the container positively not running - and this is the line that refuses to settle for one. Without it EXITING falls straight through to CLOSED, which is a server still writing the save it makes on its way out being reported as a map that has finished, and an unreadable process listing being reported as one too. That is the disproven RCON-silence rule rebuilt out of different parts: on 2026-09-18 a map was silent on RCON, still Online in Docker, and still had its server process in `docker top`, a full minute after DoExit"
+    },
+    {
+      "id": "the-fallback-stop-needs-a-server-it-can-see",
+      "file": "obelisk/cluster.py",
+      "guard": "        present, known = _server_seen(one[\"name\"], procs)\n        if present:",
+      "disable": "        present, known = True, True  # GUARD DISABLED BY MUTATION CHECK\n        if present:",
+      "expected_test": "cluster",
+      "why": "`compose stop` is the one signal this path can still send, and it may only ever go at a server POSITIVELY observed still running after the grace period - a genuinely stuck server, where SIGTERM lands on the image's own verified two-stage shutdown inside its 210s grace. The disable text is the fail-OPEN reading: a process listing that could not be read, or a map whose server is already gone, becomes something to signal. Reading 'I could not ask' as 'it is still running' is how a Docker hiccup comes to stop a container mid-write, and it is the same unknown the rest of this mechanism already refuses to act on"
+    },
+    {
+      "id": "the-post-exit-disk-reading-reports-and-never-gates",
+      "file": "obelisk/cluster.py",
+      "guard": "        one[\"clean\"] = bool((clean.get(label) or {}).get(\"settled\"))",
+      "disable": "        one[\"clean\"] = bool((clean.get(label) or {}).get(\"settled\"))\n        one[\"exited\"] = one[\"exited\"] and one[\"clean\"]  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "the owner removed the pre-stop save gate deliberately, and the disable text is that gate being rebuilt here under a new name - a world nobody could prove clean quietly turning into a map that did not close, which is a refusal wearing a report's clothes. The reading after DoExit observes and says what it saw: it sends no RCON, it holds nothing, and a world it cannot prove gets an honest sentence about being up to an autosave old rather than a veto. Bounded, too - a map that never settles costs a wait, not the apply"
     }
   ]
 }
