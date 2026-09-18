@@ -421,7 +421,7 @@ def _staging_answers(store, probe=None):
 def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=None,
                 verify=None, players=None, on_step=None, force=False,
                 check_worlds=None, start_some=None,
-                rename=None, exists=None, now=None):
+                rename=None, exists=None, now=None, installed=None):
     """Apply everything that is waiting, in one restart. (ok, message, detail).
 
     Two kinds of thing wait for a safe moment - a build that has been staged and proved,
@@ -446,7 +446,15 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
     # Ownership gates the *files*, not the settings. A config change is Obelisk's
     # business whoever is applying builds, so refusing the whole batch over it would
     # mean the mod list could never be applied on a cluster where POK still owns updates.
-    swap_files = bool(ready) and owns_updates(store)
+    #
+    # And being primed is not being newer. `staging_mode: always` rehearses the build
+    # already running as routine bookkeeping, so `bool(ready)` alone - which is what
+    # stood here - said yes to stopping ten servers to install what they were already
+    # on. The unattended triggers have asked the stricter question for a while; the
+    # button never did, because the gate lived at the callers and a new caller simply
+    # did not get one. It lives with the verb now, where it cannot be skipped by
+    # arriving from somewhere else.
+    swap_files, why_build = staged_worth_applying(store, installed, ark_root)
     waiting = pending.count(store)
 
     if not swap_files and not waiting:
@@ -455,6 +463,11 @@ def apply_batch(store, ark_root, warn=None, save=None, stop_all=None, start_all=
                            "updates itself - two update systems on one cluster is how "
                            "you get two restarts. Switch \"Who applies ARK updates\" to "
                            "Obelisk first."), {}
+        if ready:
+            # Something IS staged; it is just not worth a restart. Said in the words
+            # staged_worth_applying used, so the page, the log and the refusal all
+            # name the same build for the same reason.
+            return False, why_build, {}
         return False, ("nothing is waiting to be applied - no settings queued, and no "
                        "update staged and verified"), {}
 
@@ -889,27 +902,24 @@ def newer_build(running, staged):
     return b != a
 
 
-def worth_applying(store, installed=None, ark_root=None):
-    """(is there anything to apply, why) - the gate every trigger shares.
+def staged_worth_applying(store, installed=None, ark_root=None):
+    """(would swapping the staged tree in change anything, why) - the build half.
+
+    Split out of worth_applying because one function was answering two questions and
+    only one caller could use the answer. "Is there anything to apply at all" is
+    satisfied by a queued setting on its own; "would the file swap change anything" is
+    not, and that is the one apply_batch needs. A stale primed record next to a real
+    setting change means apply the settings and leave the 12 GB of install alone.
 
     **A primed build is not an update.** With staging set to always, the staging server
     deliberately rehearses the *current* build to warm the tree and prove the path, which
     writes a verified primed record for the build already running. Reading that as work
     to do is what stopped ten servers to install what they were already on - and because
     a restart empties the cluster, the empty-cluster trigger then fired again, and again.
-
-    So the question is not "is something primed". It is "is there a change, or a build
-    strictly newer than the one running".
     """
-    from . import pending
-
-    waiting = pending.count(store)
-    if waiting:
-        return True, "%d setting change(s) are waiting" % waiting
-
     ready = primed(store)
     if not ready:
-        return False, "nothing is queued and nothing is staged"
+        return False, "nothing is staged"
     if not owns_updates(store):
         return False, "a build is staged but POK applies updates on this cluster"
 
@@ -928,6 +938,27 @@ def worth_applying(store, installed=None, ark_root=None):
                        "nothing to apply" % ready.get("build"))
     return True, "build %s is staged and verified, newer than %s" % (
         ready.get("build"), installed)
+
+
+def worth_applying(store, installed=None, ark_root=None):
+    """(is there anything to apply, why) - the gate every trigger shares.
+
+    So the question is not "is something primed". It is "is there a change, or a build
+    strictly newer than the one running" - the second half of which is
+    staged_worth_applying, asked here and asked by the apply itself so the two cannot
+    come to different answers about the same cluster.
+    """
+    from . import pending
+
+    waiting = pending.count(store)
+    if waiting:
+        return True, "%d setting change(s) are waiting" % waiting
+
+    if not primed(store):
+        # Its own sentence, because with nothing queued either "nothing is staged" is
+        # only half of why there is nothing to do.
+        return False, "nothing is queued and nothing is staged"
+    return staged_worth_applying(store, installed=installed, ark_root=ark_root)
 
 
 def empty_enough(store, streak, needed=3):

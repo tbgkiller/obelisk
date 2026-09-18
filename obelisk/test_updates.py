@@ -285,21 +285,21 @@ def tree_exists(missing=()):
 s = FakeStore(ark_update_mode="automatic")
 updates.remember(s, primed=ready)
 calls, rename = moved_nothing()
-ok, msg, _ = updates.apply_update(s, ARK, rename=rename, exists=tree_exists())
+ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD, rename=rename, exists=tree_exists())
 check("apply refuses while the server image owns updates", not ok, msg)
 check("nothing was renamed", calls == [], calls)
 check("and it says how to change that", "Who applies ARK updates" in msg, msg)
 
 s = FakeStore()
 calls, rename = moved_nothing()
-ok, msg, _ = updates.apply_update(s, ARK, rename=rename, exists=tree_exists())
+ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD, rename=rename, exists=tree_exists())
 check("apply refuses with nothing staged", not ok, msg)
 check("still nothing renamed", calls == [], calls)
 
 s = FakeStore()
 updates.remember(s, primed=ready)
 calls, rename = moved_nothing()
-ok, msg, _ = updates.apply_update(s, ARK, players=lambda: (3, {"island": 3}, []),
+ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD, players=lambda: (3, {"island": 3}, []),
                                   rename=rename, exists=tree_exists())
 check("apply refuses with players online", not ok, msg)
 check("and names where they are", "island (3)" in msg, msg)
@@ -307,7 +307,7 @@ check("and moved nothing", calls == [], calls)
 
 # The one that matters most: a map that did not answer is not an empty map.
 calls, rename = moved_nothing()
-ok, msg, _ = updates.apply_update(s, ARK,
+ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD,
                                   players=lambda: (0, {}, [("genesis", "timeout")]),
                                   rename=rename, exists=tree_exists())
 check("a map that did not answer stops the apply - silence is not 'nobody is on'",
@@ -348,7 +348,7 @@ updates.remember(s, primed=ready)
 c = Cluster()
 renamed, rename = moved_nothing()
 ok, msg, detail = updates.apply_update(
-    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a clean apply succeeds", ok, msg)
@@ -374,7 +374,7 @@ updates.remember(s_w, primed=ready)
 c_w = Cluster()
 _renamed_w, rename_w = moved_nothing()
 updates.apply_update(
-    s_w, ARK, warn=c_w.warn, save=c_w.save, stop_all=c_w.stop, start_all=c_w.start,
+    s_w, ARK, installed=OLD_BUILD, warn=c_w.warn, save=c_w.save, stop_all=c_w.stop, start_all=c_w.start,
     verify=c_w.verify, players=lambda: (2, {"The Island": 2}, []), force=True,
     rename=rename_w, exists=tree_exists(), now=lambda: 1000)
 check("and with players on, warn still comes first - before the save, not just the stop",
@@ -390,7 +390,7 @@ updates.remember(s, primed=ready)
 c = Cluster()
 _, rename = moved_nothing()
 ok, msg, _ = updates.apply_update(
-    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (5, {"island": 5}, []), force=True,
     rename=rename, exists=tree_exists(), now=lambda: 1000)
 check("force applies over players online", ok, msg)
@@ -431,7 +431,7 @@ class _NoDownloads:
 
 with _NoDownloads() as guard:
     ok, msg, detail = updates.apply_update(
-        s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+        s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
         verify=c.verify, players=lambda: (0, {}, []), rename=rename,
         exists=tree_exists(), now=lambda: 1000)
 check("the scheduled apply succeeds on staged files", ok, msg)
@@ -478,7 +478,7 @@ updates.remember(st, primed=ready)
 c = Cluster()
 renamed, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
-    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a build and a setting apply together", ok, msg)
@@ -498,7 +498,7 @@ _pend.stage(st, {"max_players": 250})
 c = Cluster()
 calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
-    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a settings-only batch applies with nothing staged", ok, msg)
@@ -516,7 +516,7 @@ updates.remember(st, primed=ready)
 c = Cluster()
 calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
-    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a config change is not blocked by who owns updates", ok, msg)
@@ -526,12 +526,12 @@ check("and the staged update is still staged for later",
 
 st = real_store(ark_update_mode="automatic")
 updates.remember(st, primed=ready)
-ok, msg, _d = updates.apply_batch(st, ARK, rename=rename, exists=tree_exists())
+ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename, exists=tree_exists())
 check("with only a staged build and POK in charge, it refuses and says why",
       not ok and "Who applies ARK updates" in msg, msg)
 
 st = real_store()
-ok, msg, _d = updates.apply_batch(st, ARK, rename=rename, exists=tree_exists())
+ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename, exists=tree_exists())
 check("with nothing waiting at all it refuses", not ok, msg)
 check("and says there is nothing to do", "nothing is waiting" in msg, msg)
 
@@ -550,7 +550,7 @@ def tree_rename(src, dst):
 
 c = Cluster(start_ok=False)
 ok, msg, detail = updates.apply_batch(
-    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=tree_rename,
     exists=lambda p: p in tree, now=lambda: 1000)
 check("a cluster that will not start fails the batch", not ok, msg)
@@ -572,7 +572,7 @@ st.data["pending"] = {"cluster": {"max_players": 99999}, "maps": {}, "clears": {
 c = Cluster()
 calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
-    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("an impossible queued value fails the batch", not ok, msg)
@@ -585,7 +585,7 @@ check("and it was started again", c.log.count("start") == 1, c.log)
 st = real_store()
 _pend.stage(st, {"max_players": 250})
 calls, rename = moved_nothing()
-ok, msg, _d = updates.apply_batch(st, ARK, players=lambda: (2, {"island": 2}, []),
+ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, players=lambda: (2, {"island": 2}, []),
                                   rename=rename, exists=tree_exists())
 check("a settings batch will not restart a cluster somebody is playing on",
       not ok and "player(s) are online" in msg, msg)
@@ -606,7 +606,7 @@ _pend.stage(st, {"max_players": 250})
 c = Cluster(gates=False)
 _, rename = moved_nothing()
 ok, msg, detail = updates.apply_batch(
-    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a batch whose gates fail is a failure", not ok, msg)
@@ -687,7 +687,7 @@ def gated(st_, disk, force=False, budget=60):
     c_ = Cluster()
     _, rename_ = moved_nothing()
     ok_, msg_, detail_ = updates.apply_batch(
-        st_, ARK, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
+        st_, ARK, installed=OLD_BUILD, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
         save=lambda: _cl.save_and_settle(
             st_, ARK, rcon=lambda h, p, cmd: None, now=clk.now, stat=disk.stat,
             exists=disk.exists, wait=clk.wait, budget=budget),
@@ -753,7 +753,7 @@ def warned(players_answer, force=False, minutes=30, raises=False):
     _, rn_ = moved_nothing()
     disk_ = _Disk(_QUIET)
     updates.apply_batch(
-        st_, ARK, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
+        st_, ARK, installed=OLD_BUILD, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
         save=lambda: _cl.save_and_settle(
             st_, ARK, rcon=lambda h, p, cmd: None, now=clk_.now, stat=disk_.stat,
             exists=disk_.exists, wait=clk_.wait, budget=60),
@@ -873,7 +873,7 @@ def _astraeos_is_down(host, port, cmd):
 
 
 ok, msg, _d = updates.apply_batch(
-    st, ARK, warn=c.warn, stop_all=c.stop, start_all=c.start, verify=c.verify,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start, verify=c.verify,
     save=lambda: _cl.save_and_settle(
         st, ARK, rcon=_astraeos_is_down, now=clk.now, stat=disk.stat,
         exists=disk.exists, wait=clk.wait, budget=60),
@@ -900,7 +900,7 @@ def _nobody_home(host, port, cmd):
 
 
 ok, msg, _d = updates.apply_batch(
-    st, ARK, warn=c.warn, stop_all=c.stop, start_all=c.start, verify=c.verify,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start, verify=c.verify,
     save=lambda: _cl.save_and_settle(
         st, ARK, rcon=_nobody_home, now=clk.now, stat=_Disk({}).stat,
         exists=lambda p: False, wait=clk.wait, budget=60),
@@ -929,7 +929,7 @@ updates.remember(st, primed=ready)
 c = Cluster()
 _, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
-    st, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 4242)
 check("a save that reports nothing per map is still allowed through", ok, msg)
@@ -1089,6 +1089,182 @@ ok, why = updates.due(st, now=lambda: at(5), installed="25117056")
 check("so the window does not fire for it either", not ok, why)
 
 
+# ---- ...and neither does the button. The gate lives with the verb.
+#
+# Both unattended triggers asked the stricter question and the manual apply did not,
+# because the gate lived at the callers: `empty_watch` got one, `due()` got one, and
+# `update_apply` - added later - simply did not. Pressing Apply on the routine
+# rehearsal of the running build stopped ten servers to install what they were already
+# on, and a needless full restart IS an ARK apply, which is the stop path. So the
+# refusal now lives inside apply_batch, where a caller cannot arrive without it.
+class _Spy:
+    """Counts the four things a needless apply would do to a live cluster."""
+
+    def __init__(self):
+        self.log = []
+
+    def warn(self, minutes, build):
+        self.log.append("warn")
+
+    def save(self):
+        self.log.append("save")
+        return True, "saved 10 map(s)"
+
+    def stop(self):
+        self.log.append("stop")
+        return True, "stopped"
+
+    def start(self):
+        self.log.append("start")
+        return True, "started"
+
+    def verify(self):
+        self.log.append("verify")
+        return True, {"island": True}
+
+
+def _stale_store(build="25117056", **kw):
+    """What `staging_mode: always` writes as routine bookkeeping: a verified primed
+    record for the build already running, with nothing queued behind it."""
+    st_ = real_store(**kw)
+    updates.remember(st_, primed={"ok": True, "build": build, "loaded": LOADED})
+    return st_
+
+
+def _apply(st_, spy, ark=ARK, **kw):
+    """apply_batch with every destructive step replaced by a counter."""
+    _r, _rename = moved_nothing()
+    kw.setdefault("installed", "25117056")
+    return updates.apply_batch(
+        st_, ark, warn=spy.warn, save=spy.save, stop_all=spy.stop, start_all=spy.start,
+        verify=spy.verify, players=lambda: (0, {}, []), rename=_rename,
+        exists=tree_exists(), now=lambda: 1000, **kw), _r
+
+
+st = _stale_store()
+spy = _Spy()
+(ok, msg, detail), renamed = _apply(st, spy)
+check("pressing Apply on a rehearsal of the running build refuses", not ok, msg)
+check("and names the build it refused over", "25117056" in msg, msg)
+check("and says it is the one already running", "already running" in msg, msg)
+check("the cluster was never stopped, saved, warned or started - not one of the four",
+      spy.log == [], spy.log)
+check("nothing was renamed either", renamed == [], renamed)
+check("and the detail is empty, the way every pre-flight refusal is", detail == {},
+      detail)
+check("the staged record is left alone for whenever it does become an update",
+      updates.primed(st) is not None)
+
+# force is a judgement about players, never about whether there is anything to do.
+# Restarting ten servers to install the build they are running is wrong with players
+# on and wrong with nobody on, so the no-op gate sits above the force switch.
+st = _stale_store()
+spy = _Spy()
+(ok, msg, _d), renamed = _apply(st, spy, force=True)
+check("force does not buy a restart that changes nothing", not ok, msg)
+check("force refuses in the same words", "already running" in msg, msg)
+check("and force stopped, saved, warned and started nothing either", spy.log == [],
+      spy.log)
+
+# Over-tightening this would be its own outage. These still apply.
+st = real_store()
+updates.remember(st, primed={"ok": True, "build": "25200000", "loaded": LOADED})
+spy = _Spy()
+(ok, msg, _d), renamed = _apply(st, spy)
+check("a genuinely newer staged build still applies", ok, msg)
+check("with the whole restart it has always done",
+      spy.log == ["save", "stop", "start", "verify"], spy.log)
+check("and the files swapped",
+      ("/ark/ServerFiles.staging", "/ark/ServerFiles") in renamed, renamed)
+
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+spy = _Spy()
+(ok, msg, _d), renamed = _apply(st, spy)
+check("a queued setting with nothing staged still applies - the gate is about the "
+      "build, not about needing one", ok, msg)
+check("and it did restart to land it", "stop" in spy.log and "start" in spy.log,
+      spy.log)
+
+st = _stale_store(build="25200000")
+_pend.stage(st, {"max_players": 250})
+spy = _Spy()
+(ok, msg, _d), renamed = _apply(st, spy, installed="25300000")
+check("a stale primed record next to a real setting change does not block the change",
+      ok, msg)
+check("but the 12 GB of install is left exactly where it is", renamed == [], renamed)
+check("and the staged tree is still staged", updates.primed(st) is not None)
+
+# "Not newer" covers two shapes and the second is worse than a no-op.
+st = _stale_store(build="25117056")
+spy = _Spy()
+(ok, msg, _d), renamed = _apply(st, spy, installed="25200000")
+check("a staged build OLDER than the running one is refused - that is a downgrade",
+      not ok, msg)
+check("and it stopped nothing to find that out", spy.log == [], spy.log)
+
+# Not knowing what is running is not a reason to restart ten servers on the chance
+# the staged thing is newer. worth_applying has taken that stance for a while; the
+# button takes it now too.
+st = _stale_store(build="25200000")
+spy = _Spy()
+(ok, msg, _d), renamed = _apply(st, spy, ark="/nowhere-at-all", installed=None)
+check("an unreadable installed build refuses rather than restarting", not ok, msg)
+check("and says that is what happened", "could not be read" in msg, msg)
+check("and stopped nothing", spy.log == [], spy.log)
+
+
+# ---- the button and the engine answer with one function, not two
+#
+# ui.py carried `bool(ready) and owns` - character for character the weaker test
+# apply_batch carried - so the page rendered an enabled Apply for a no-op and the
+# engine refused it when pressed. Two implementations of one question is how this
+# survived; there is one now, and this is what holds it to one.
+from . import ui as _ui
+
+for _label, _st, _ark, _installed in (
+        ("a rehearsal of the running build", _stale_store("25117056"), ARK, "25117056"),
+        ("a downgrade", _stale_store("25117056"), ARK, "25200000"),
+        ("an unreadable installed build", _stale_store("25200000"),
+         "/nowhere-at-all", None)):
+    _ans = updates.staged_worth_applying(_st, installed=_installed, ark_root=_ark)
+    _spy = _Spy()
+    (_ok, _msg, _), _rn = _apply(_st, _spy, ark=_ark, installed=_installed)
+    _page = _ui.render_ark_update(_st, {"build": {"running": "25117056"}},
+                                  ready=updates.primed(_st), owns=True,
+                                  applicable=_ans)
+    check("the engine refuses %s" % _label, not _ok, _msg)
+    check("the button is disabled for %s" % _label, "disabled>Apply now" in _page,
+          _page[_page.find("Apply now") - 140:])
+    check("for the same reason and in the same words - %s" % _label,
+          _msg == _ans[1], (_msg, _ans[1]))
+    check("and the page carries that reason - %s" % _label,
+          "Nothing to apply." in _page and _ans[1] in _page, _page)
+
+# The strongest form of "the same function": swap the function out and the page has
+# to follow. A parallel implementation left behind in ui.py would be untouched by
+# this and would fail here.
+_real_swa = updates.staged_worth_applying
+try:
+    updates.staged_worth_applying = lambda *a, **k: (False, "SENTINEL asked the engine")
+    _page = _ui.render_ark_update(_stale_store(), {"build": {"running": "25117056"}},
+                                  ready={"ok": True, "build": "25200000",
+                                         "loaded": LOADED}, owns=True)
+    check("the panel asks updates.staged_worth_applying rather than re-deriving it",
+          "disabled>Apply now" in _page and "SENTINEL asked the engine" in _page,
+          _page[_page.find("Apply now") - 240:])
+finally:
+    updates.staged_worth_applying = _real_swa
+
+# And the unattended triggers ask it through worth_applying, so all three paths come
+# from one comparison rather than three copies of one.
+check("worth_applying is built on the same function the apply refuses with",
+      "staged_worth_applying(store, installed=installed, ark_root=ark_root)"
+      in _src.split("def worth_applying(")[-1])
+check("and apply_batch asks it itself rather than trusting its callers to have asked",
+      "staged_worth_applying(store, installed, ark_root)" in _apply_body, _apply_body[:0])
+
+
 # ---- the window is a backstop, not a second schedule
 #
 # Empty is the primary trigger, and a ten-map cluster usually has an idle hour every
@@ -1126,7 +1302,7 @@ st = real_store(update_apply_in_window=True)
 _pend.stage(st, {"max_players": 250})
 c = Cluster(gates=False)
 _, rename = moved_nothing()
-updates.apply_batch(st, ARK, warn=c.warn, save=c.save, stop_all=c.stop,
+updates.apply_batch(st, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop,
                     start_all=c.start, verify=c.verify,
                     players=lambda: (0, {}, []), rename=rename,
                     exists=tree_exists(), now=lambda: _five_am - 3600)
@@ -1140,7 +1316,7 @@ check("so a failed batch still holds the window off - the servers did restart",
 st = real_store(update_apply_in_window=True)
 _pend.stage(st, {"max_players": 250})
 _, rename = moved_nothing()
-updates.apply_batch(st, ARK, players=lambda: (3, {"island": 3}, []),
+updates.apply_batch(st, ARK, installed=OLD_BUILD, players=lambda: (3, {"island": 3}, []),
                     rename=rename, exists=tree_exists(), now=lambda: _five_am - 3600)
 check("a batch refused before it stopped anything records no restart",
       not updates.state(st).get("last_apply"), updates.state(st))
@@ -1164,7 +1340,7 @@ def flaky_rename(src, dst):
 
 
 ok, msg, detail = updates.apply_update(
-    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=flaky_rename,
     exists=lambda p: p in tree, now=lambda: 1000)
 check("a swap that fails part way fails the apply", not ok, msg)
@@ -1184,7 +1360,7 @@ updates.remember(s, primed=ready)
 c = Cluster(stop_ok=False)
 calls, rename = moved_nothing()
 ok, msg, _ = updates.apply_update(
-    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a cluster that would not stop is never swapped under", not ok and calls == [],
@@ -1197,7 +1373,7 @@ updates.remember(s, primed=ready)
 c = Cluster(gates=False)
 _, rename = moved_nothing()
 ok, msg, detail = updates.apply_update(
-    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("a map that fails verification fails the apply", not ok, msg)
@@ -1226,7 +1402,7 @@ def verify_with_reasons():
 
 
 ok, msg, detail = updates.apply_update(
-    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=verify_with_reasons, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 _fail = [i for i in drain() if i["event"] == "ark.update_failed"]
@@ -1247,7 +1423,7 @@ updates.remember(s, primed=ready)
 c = Cluster(gates=False)
 _, rename = moved_nothing()
 ok, msg, detail = updates.apply_update(
-    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 _fail2 = [i for i in drain() if i["event"] == "ark.update_failed"]
@@ -1274,7 +1450,7 @@ for _shape, _label in ((False, "a bare False"),
     c = Cluster()
     _, rename = moved_nothing()
     ok, msg, _d = updates.apply_update(
-        s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+        s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
         verify=(lambda shape=_shape: shape), players=lambda: (0, {}, []),
         rename=rename, exists=tree_exists(), now=lambda: 1000)
     _ev = [i for i in drain() if i["event"] == "ark.update_failed"]
@@ -1290,7 +1466,7 @@ updates.remember(s, primed=ready)
 c = Cluster()
 _, rename = moved_nothing()
 ok, msg, _d = updates.apply_update(
-    s, ARK, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
+    s, ARK, installed=OLD_BUILD, warn=c.warn, save=c.save, stop_all=c.stop, start_all=c.start,
     verify=None, players=lambda: (0, {}, []), rename=rename,
     exists=tree_exists(), now=lambda: 1000)
 check("an apply with no verify step at all still applies", ok, msg)
@@ -1466,7 +1642,7 @@ def with_gate(health, force=False, primed_=None):
     started_ = []
     disk_ = _Disk(_QUIET)
     ok_, msg_, detail_ = updates.apply_batch(
-        st_, ARK, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
+        st_, ARK, installed=OLD_BUILD, warn=c_.warn, stop_all=c_.stop, start_all=c_.start, verify=c_.verify,
         save=lambda: _cl.save_and_settle(
             st_, ARK, rcon=lambda h, p, cmd: None, now=clk_.now, stat=disk_.stat,
             exists=disk_.exists, wait=clk_.wait, budget=60),
@@ -1654,7 +1830,7 @@ c_z = Cluster()
 _ren_z, rename_z = moved_nothing()
 disk_z = _Disk(_QUIET)
 updates.apply_batch(
-    st_z, ARK, warn=c_z.warn, stop_all=c_z.stop, start_all=c_z.start, verify=c_z.verify,
+    st_z, ARK, installed=OLD_BUILD, warn=c_z.warn, stop_all=c_z.stop, start_all=c_z.start, verify=c_z.verify,
     save=lambda: _cl.save_and_settle(
         st_z, ARK, rcon=lambda h, p, cmd: None, now=clk_z.now, stat=disk_z.stat,
         exists=disk_z.exists, wait=clk_z.wait, budget=60),
@@ -1700,7 +1876,7 @@ _c_ns = Cluster(stop_ok=False)
 _calls_ns, _rename_ns = moved_nothing()
 _started_ns = []
 _ok_ns, _msg_ns, _d_ns = updates.apply_batch(
-    _st_ns, ARK, warn=_c_ns.warn, save=_c_ns.save, stop_all=_c_ns.stop,
+    _st_ns, ARK, installed=OLD_BUILD, warn=_c_ns.warn, save=_c_ns.save, stop_all=_c_ns.stop,
     start_all=_c_ns.start, verify=_c_ns.verify,
     check_worlds=lambda: (_ for _ in ()).throw(
         AssertionError("the world gate must not be reached after a refused stop")),

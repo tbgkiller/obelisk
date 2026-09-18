@@ -654,7 +654,7 @@ def render_version(info):
 
 
 def render_ark_update(store, status, ready=None, job=None, owns=True,
-                      staging_on=True, target=""):
+                      staging_on=True, target="", applicable=None):
     """Running against latest, for the build and for every mod, with the buttons inline.
 
     Three states per row and not two. "Newer" and "current" are the easy ones; the third
@@ -738,13 +738,27 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
         buttons = ('<div class=note>Working: %s <span class=help>This page updates '
                    'itself.</span></div>' % (step or "starting"))
     else:
-        can_apply = bool(ready) and owns
+        # Not re-derived here. `bool(ready) and owns` is what used to stand in this
+        # line, and it is the same too-weak test the apply itself used to carry: it
+        # renders an enabled button for a rehearsal of the build already running, and
+        # pressing it stops ten servers to install what they are already on. The page
+        # asks the engine's own question instead, so the button is disabled exactly
+        # when the apply would refuse, and says the reason the apply would have given.
+        from . import updates as updatesctl
+        can_apply, why_not = (applicable if applicable is not None
+                              else updatesctl.staged_worth_applying(store))
         buttons = (
             '<button type=submit formaction="/admin/update/prime"%s>Prime update</button> '
             '<button type=submit formaction="/admin/update/apply"%s>Apply now</button> '
             % ("" if staging_on else " disabled", "" if can_apply else " disabled"))
         buttons += ('<label class=inline><input type=checkbox name=force value=1> '
                     'apply even with players online</label>')
+        if ready and not can_apply and owns:
+            # Only when something IS staged. With nothing staged the panel already
+            # says so above, and a second sentence explaining why the button for it is
+            # off would be answering a question nobody asked.
+            buttons += ('<div class=note><b>Nothing to apply.</b> %s</div>'
+                        % _e(why_not))
 
     warn = ""
     if not staging_on:

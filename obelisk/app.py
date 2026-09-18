@@ -588,7 +588,12 @@ def build_app(store, docker=None):
                 store, ARK_UPDATE, ready=updatesctl.primed(store), job=ujob,
                 owns=updatesctl.owns_updates(store),
                 staging_on=stagingctl.enabled(store),
-                target=updatesctl.target_key(ARK_UPDATE))
+                target=updatesctl.target_key(ARK_UPDATE),
+                # The same question the apply refuses with, asked against the same
+                # Ark root. Handed in rather than looked up again so the button and
+                # the engine cannot answer differently about one cluster.
+                applicable=updatesctl.staged_worth_applying(
+                    store, ark_root=_ark_root()))
         except Exception as e:                       # noqa: BLE001 - never a blank page
             log.warning("could not render the update panel: %s", e)
             return ""

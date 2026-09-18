@@ -862,6 +862,7 @@ _status = {
     "mods_newer": [], "any_newer": True, "unknown": True,
 }
 from . import ui
+from . import updates as _upd
 from . import bot as _bot_ui
 from . import bans as _bans
 from . import cap as _cap
@@ -883,7 +884,11 @@ check("with nothing staged, Apply is disabled", "disabled>Apply now" in _p)
 
 _ready = {"ok": True, "build": "25200000", "when": 1757260000,
           "loaded": {"929110": "7738786", "929420": "8210044"}}
-_p2 = ui.render_ark_update(_ps, _status, ready=_ready)
+_ps2 = _PanelStore()
+_ps2.data["ark_update"] = {"primed": _ready}
+_p2 = ui.render_ark_update(
+    _ps2, _status, ready=_ready,
+    applicable=_upd.staged_worth_applying(_ps2, installed="25117056"))
 check("a staged update says so", "Staged and verified" in _p2)
 check("with the timestamp of the boot that proved it",
       "verified by staging boot at" in _p2)
