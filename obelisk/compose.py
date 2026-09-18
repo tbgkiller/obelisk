@@ -104,7 +104,17 @@ def generate_compose(store, project="ark", in_use_ports=None, wait_for_master=No
             "  %s:" % instance,
             "    image: %s" % image,
             "    container_name: %s" % naming.container_name(project, instance),
-            "    restart: unless-stopped",
+            # No `restart:` key at all, so Docker's default of `no` applies. This is not
+            # an omission. A deliberate DoExit does not leave a map down: POK sees the
+            # server process gone, classifies it as a self-restart and exits the whole
+            # container on purpose so that a restart policy will bring it back - which
+            # was observed on The Center on 2026-09-18 as a map restart-looping two
+            # minutes after a hand-driven DoExit. With no policy, that deliberate exit
+            # is the end of it and the map stays down until Obelisk starts it again.
+            #
+            # The cost is that a genuine crash also stays down, because POK routes its
+            # own restarts through the same policy. Obelisk's launch() / start_one() is
+            # now the ONLY thing that brings a map up.
             "    stop_grace_period: 210s",
             "    mem_limit: %s" % mem,
             "    networks: [%s]" % net,

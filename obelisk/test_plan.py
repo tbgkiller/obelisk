@@ -116,11 +116,28 @@ check("the full preset totals what you'd expect", p["total_memory"] == "220g", p
 # ---- nothing unbootable ever reaches the generator
 from .compose import generate_compose
 try:
-    generate_compose(store(maps="island,center", mem_limit="20g"), in_use_ports=[])
+    _yml = generate_compose(store(maps="island,center", mem_limit="20g"),
+                            in_use_ports=[])
     ok = True
 except ValueError:
-    ok = False
+    _yml, ok = "", False
 check("a good plan generates", ok)
+
+# ---- and it carries no restart policy
+#
+# The one thing that makes a DoExit stick. Observed at The Center on 2026-09-18: the
+# server exits, POK finds no server process, classifies that as a self-restart and
+# exits the whole container on purpose so Docker's policy restarts it - so a map that
+# was deliberately closed comes straight back up and loops. With no `restart:` key the
+# default is `no`, POK's deliberate exit is the last thing that happens, and the map
+# stays down until launch() brings it back.
+#
+# Asserted on the generated text rather than on the emitter line, because the property
+# is about what Docker is handed.
+check("the generated compose has no restart policy for the ARK services",
+      "restart:" not in _yml, _yml[:600])
+check("and still carries the grace period the image's own stop needs",
+      "stop_grace_period: 210s" in _yml, _yml[:600])
 try:
     generate_compose(store(maps="island,center,scorched", mem_limit="90g",
                            host_ram_gb=32), in_use_ports=[])
