@@ -15,7 +15,7 @@
       "updates": "python -m obelisk.test_updates",
       "plan": "python -m obelisk.test_plan",
       "intent": "python -m obelisk.test_intent",
-      "app": "python -m obelisk.test_app"
+      "watch": "python -m obelisk.test_watch"
     }
   },
   "guards": [
@@ -184,7 +184,7 @@
       "file": "obelisk/app.py",
       "guard": "    if (policy or composectl.restart_policy)(store) == \"unless-stopped\":",
       "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
-      "expected_test": "app",
+      "expected_test": "watch",
       "why": "the restart policy is an operator setting now, so it can be turned back on - and with it on, Docker is already restarting these containers. Two independent things restarting one map is a relaunch storm nobody can attribute afterwards: Docker brings it up, the watch sees it down on the pass before that and brings it up again, and the budget burns through on a map that was never really failing to start. Docker owns recovery in that configuration and Obelisk does not get a second vote. Without this branch the watch runs anyway and silently races it"
     },
     {
@@ -192,7 +192,7 @@
       "file": "obelisk/app.py",
       "guard": "        if (got.get(name) or {}).get(\"state\") not in clusterctl.NOT_RUNNING:",
       "disable": "        if (got.get(name) or {}).get(\"state\") == \"running\":  # GUARD DISABLED BY MUTATION CHECK",
-      "expected_test": "app",
+      "expected_test": "watch",
       "why": "container_details drops any container whose `docker inspect` returned an error, so a Docker hiccup, a container that has been removed, and a container that is genuinely stopped all arrive differently and only the last is evidence. The disable text is the negation somebody writes instead, and it reads an unanswerable Docker AND a `restarting` container as maps to start - so a manager that cannot reach the socket for one pass would issue `compose up` at ten maps that are fine. Same rule the stop path keeps one module over: the state has to be there and it has to say so"
     },
     {
