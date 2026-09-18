@@ -1042,6 +1042,148 @@ check("while the map that really did close is named as one that is down until La
       "removed and no build was swapped." in msg_w, msg_w)
 check("nothing was signalled on the strength of a contradiction", calls == [], calls)
 
+# ---- what a stop and a launch WRITE DOWN, so the crash watch can tell them apart
+#
+# There is no restart policy on the ARK containers by default any more, so the crash
+# watch is what brings a map back - and the only thing between "bring back a map that
+# fell over" and "keep restarting ten maps an apply just closed" is this record. These
+# pin the two ends of it: the moment a stop is decided, and a launch that succeeded.
+from . import intent as _intent                                   # noqa: E402
+
+_ist, _ = fresh()
+
+# 1. every map a stop touches is written DOWN, BEFORE the DoExit goes out.
+_order_i = []
+
+
+def _rcon_i(host, port, cmd):
+    if cmd == "DoExit":
+        _order_i.append(("doexit", _Fleet._key(host),
+                         _intent.read(_ist, _Fleet._key(host)).get("intent")))
+        return "Exiting..."
+    raise OSError("connection refused")
+
+
+_fleet_i = _Fleet({"island": {"server": 1, "exits": 2},
+                   "ragnarok": {"server": 1, "exits": 2}})
+clusterctl.exit_worlds(_ist, running=lambda s: TARGETS_X, rcon=_rcon_i,
+                       now=ClockX().now, wait=lambda s: None, procs=_fleet_i.procs,
+                       details=_fleet_i.details, stop_container=_fleet_i.stop,
+                       settle=_settled, by="apply")
+check("a stop writes every map down",
+      not _intent.wants_up(_ist, "island") and not _intent.wants_up(_ist, "ragnarok"),
+      _ist.data.get(_intent.STATE))
+# The ordering is the safety property, not a detail: a manager killed between the write
+# and the send must come back knowing the map was meant to be down, not read it as one
+# that fell over and start it again.
+check("and it is written BEFORE the DoExit is sent, not after",
+      _order_i and all(was == "down" for _e, _k, was in _order_i), _order_i)
+check("with who decided it recorded", _intent.read(_ist, "island")["by"] == "apply",
+      _intent.read(_ist, "island"))
+
+# 2. a map that will not even take DoExit is still a map this stop means to bring down.
+#    Reading one of those as a crash is how the watch would fight an apply.
+_ist2, _ = fresh()
+clusterctl.exit_worlds(_ist2, running=lambda s: TARGETS_X, rcon=refuses,
+                       now=ClockX().now, wait=lambda s: None, budget=30,
+                       procs=lambda n: [_SERVER_LINE],
+                       details=details_for({"island": "running", "ragnarok": "running"}),
+                       stop_container=lambda k: (True, "stopped"), settle=_settled)
+check("a map that refused DoExit is still written down - it is not a crash",
+      not _intent.wants_up(_ist2, "island"), _ist2.data.get(_intent.STATE))
+
+# 3. an apply that CALLS THE STOP OFF puts the still-running maps back to up.
+#
+# Without this the maps that were still serving would carry a "down" written by a stop
+# that then changed its mind, and the watch would leave one of them down if it fell over
+# before the next Launch. The ones that really did close keep their "down".
+_ist3, _ = fresh()
+clusterctl.dockerctl = FakeDocker()
+calls.clear()
+_fleet_3 = _Fleet({"island": {"server": 1, "exits": 2}})
+
+
+def _rcon_3(host, port, cmd):
+    if _Fleet._key(host) == "ragnarok":
+        raise OSError("connection refused")       # mid-boot: never becomes operational
+    if cmd == "DoExit":
+        return "Exiting..."
+    raise OSError("connection refused")
+
+
+_ok3, _msg3 = clusterctl.stop(
+    _ist3, running=lambda s: TARGETS_X, rcon=_rcon_3, now=ClockX().now,
+    wait=lambda s: None, budget=30, procs=_fleet_3.procs,
+    details=details_for({"island": "exited", "ragnarok": "running"}),
+    stop_container=lambda k: (True, "stopped"), settle=_settled,
+    say=lambda *a, **k: None, require_ready=True)
+check("the apply refused, so nothing was removed", not _ok3 and calls == [], _msg3)
+check("the map that never came down is meant to be up again",
+      _intent.wants_up(_ist3, "ragnarok"), _ist3.data.get(_intent.STATE))
+check("while the one that really did close stays down",
+      not _intent.wants_up(_ist3, "island"), _ist3.data.get(_intent.STATE))
+
+# 4. an operator's Stop reaches `down`, which removes every container - including a map
+#    that was never asked to exit. All of them are meant to be down after that.
+_ist4, _ = fresh()
+clusterctl.dockerctl = FakeDocker()
+calls.clear()
+_ok4, _msg4 = clusterctl.stop(
+    _ist4, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
+    wait=lambda s: None, budget=30, procs=lambda n: [_SERVER_LINE],
+    details=details_for({"island": "running", "ragnarok": "running"}),
+    stop_container=lambda k: (True, "stopped"), settle=_settled,
+    say=lambda *a, **k: None)
+check("an operator's Stop runs down", _ok4 and any(a[2] == ["down"] for a in calls),
+      calls)
+check("and every map in the cluster is meant to be down afterwards",
+      not any(_intent.wants_up(_ist4, k) for k in ("island", "ragnarok")),
+      _ist4.data.get(_intent.STATE))
+check("recorded as the operator's decision, not an apply's",
+      _intent.read(_ist4, "island")["by"] == "operator", _intent.read(_ist4, "island"))
+
+# 5. start_one records an intent - and the crash watch's own relaunch does NOT.
+#
+# This is the one line keeping the watch bounded. Recording an intent is a clean slate,
+# so a watch that recorded its own relaunches would hand itself a fresh budget every
+# time and become the restart loop this change exists to remove, inside Obelisk.
+_ist5, _ = fresh()
+clusterctl.dockerctl = FakeDocker()
+_intent.remember(_ist5, "island", _intent.UP, "start")
+for _i in range(_intent.BUDGET):
+    _intent.record_relaunch(_ist5, "island")
+_spent_before = _intent.relaunches(_ist5, "island")
+clusterctl.start_one(_ist5, "island", record=False)
+check("a watch relaunch does not reset the map's relaunch budget",
+      _intent.relaunches(_ist5, "island") == _spent_before,
+      _intent.read(_ist5, "island"))
+check("and the budget really was spent, so this is not a vacuous pass",
+      not _intent.may_relaunch(_ist5, "island")[0], _intent.read(_ist5, "island"))
+clusterctl.start_one(_ist5, "island")
+check("an operator starting it by hand DOES reset it",
+      _intent.relaunches(_ist5, "island") == 0, _intent.read(_ist5, "island"))
+check("and it is up again either way", _intent.wants_up(_ist5, "island"),
+      _intent.read(_ist5, "island"))
+
+# 6. stop_one writes down, and writes it before the command.
+_ist6, _ = fresh()
+_seen6 = []
+clusterctl.dockerctl = FakeDocker()
+_real_compose_6 = clusterctl._compose
+clusterctl._compose = lambda store, *a, **k: (
+    _seen6.append(_intent.read(_ist6, "island").get("intent")) or (0, ""))
+try:
+    clusterctl.start_one(_ist6, "island")
+    _seen6.clear()
+    clusterctl.stop_one(_ist6, "island")
+finally:
+    clusterctl._compose = _real_compose_6
+check("stopping one map writes it down before the stop is sent",
+      _seen6 == ["down"], _seen6)
+check("and it stays down afterwards", not _intent.wants_up(_ist6, "island"),
+      _intent.read(_ist6, "island"))
+
+
 clusterctl.dockerctl = fake
 
 s = clusterctl.status(st)

@@ -19,7 +19,7 @@ a button here does by accident.
 
 import logging, os, re, time
 
-from . import dockerctl, layout, stack
+from . import dockerctl, intent, layout, stack
 from . import naming
 from .compose import generate_compose, install_present
 from .plan import build_plan
@@ -139,6 +139,13 @@ def launch(store, in_use_ports=None):
     rc, out = _compose(store, "up", "-d", "--remove-orphans")
     if rc != 0:
         return False, "docker compose up failed:\n%s" % out[-1500:]
+
+    # A LAUNCH THAT SUCCEEDED, which is the mirror of a stop being decided: from here
+    # these maps are meant to be up, and the crash watch may bring one back if it is
+    # not. Written after `up` returned 0 and never before it - intent is a record of
+    # what happened, not of what was attempted.
+    intent.remember_many(store, [r["instance"] for r in plan["maps"]],
+                         intent.UP, "start")
 
     _join_network(store)
     n = len(plan["maps"])
@@ -406,7 +413,8 @@ def _close_the_door(one, label, stop_container):
 
 def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
                 interval=EXIT_INTERVAL, running=None, on_exited=None, details=None,
-                stop_container=None, procs=None, ark_root=None, settle=None):
+                stop_container=None, procs=None, ark_root=None, settle=None,
+                by="operator"):
     """Ask every running map to close itself. {label: {exited, why, state, clean}}.
 
     DoExit and nothing else. No SaveWorld in front of it: the server writes its own save
@@ -461,10 +469,15 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
         seen[label] = {"at": (host, port), "name": cname, "key": key, "state": None,
                        "exited": False, "why": "", "sent": None, "gone": False,
                        "revived": False, "clean": None}
+        # THE MOMENT A STOP IS DECIDED FOR THIS MAP. Written BEFORE the DoExit goes
+        # out, and written for every target rather than only the ones that take it: a
+        # map that refuses the command is still a map this stop means to bring down,
+        # and the crash watch must not read it as one that fell over. The write is
+        # first so that a manager killed between here and the send still knows.
+        if key:
+            intent.remember(store, key, intent.DOWN, by)
         if _ask_to_exit(seen[label], rcon, details):
-            # THE MOMENT A STOP IS DECIDED FOR THIS MAP, recorded per map. The disk
-            # check below measures the world against it, and it is the one point a
-            # persisted "down" intent would be written from.
+            # The DoExit instant. The disk check below measures the world against it.
             seen[label]["sent"] = now()
 
     started = now()
@@ -996,6 +1009,10 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
     if not os.path.isfile(compose_path(store)):
         return False, "No compose file yet - this cluster has never been launched."
 
+    # An apply and an operator's Stop mean the same thing to a map and different things
+    # to whoever reads the record later, so the record says which.
+    kw.setdefault("by", "apply" if require_ready else "operator")
+
     closed = {}
     if close_worlds:
         # The stop takes minutes and used to say nothing for all of them. Whoever
@@ -1049,6 +1066,17 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
     # stop needs the RCON it has not opened yet, hangs past its grace period, is killed,
     # and is revived to boot again.
     if not_ready and require_ready:
+        # The stop is being called off, so every map still up is meant to be up again.
+        # Without this the maps that were still serving would carry a "down" written by
+        # a stop that then changed its mind, and the crash watch would leave one of them
+        # down if it fell over before the next Launch. The ones that DID close keep
+        # their "down" - they are down, and deliberately.
+        _names_ir = _exit_names(store)
+        for _l_ir, _c_ir in closed.items():
+            if not _c_ir.get("exited"):
+                _k_ir = (_names_ir.get(_l_ir) or (None, None))[1]
+                if _k_ir:
+                    intent.remember(store, _k_ir, intent.UP, "apply")
         # What the hold may honestly claim depends on what has already happened, and on
         # the incident's own shape - some maps closed, one was still booting - several
         # maps are already saved, closed and stopped by the time this decides. Saying
@@ -1141,6 +1169,11 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
             level="warning",
             detail="\n".join("%-14s %s" % (l, closed[l].get("why") or "")
                              for l in not_ready))
+
+    # `down` removes every container, including any map that was never asked to exit
+    # because it was still booting. They are all meant to be down from here, so say so
+    # before the command rather than after it.
+    intent.remember_many(store, _map_keys(store), intent.DOWN, kw.get("by") or "operator")
 
     rc, out = _compose(store, "down")
     if rc != 0:
@@ -1750,20 +1783,35 @@ def stop_one(store, map_key):
     ok, why = dockerctl.available()
     if not ok:
         return False, "Docker isn't reachable. %s" % why
+    # A stop that is decided here too. Written first, for the same reason it is written
+    # first in exit_worlds: a manager that dies mid-command must not come back and read
+    # this map as one that fell over on its own.
+    intent.remember(store, map_key, intent.DOWN, "operator")
     rc, out = _compose(store, "stop", map_key, timeout=420)
     if rc != 0:
         return False, "could not stop %s: %s" % (map_key, out[-400:])
     return True, "stopped"
 
 
-def start_one(store, map_key):
-    """Bring a single map back up, without touching the others. (ok, message)."""
+def start_one(store, map_key, record=True):
+    """Bring a single map back up, without touching the others. (ok, message).
+
+    `record=False` is for the crash watch, and it is the one thing keeping that watch
+    bounded. Recording an intent is a clean slate - it clears the relaunch budget - so a
+    watch that recorded its own relaunches would hand itself a fresh budget every time
+    and become the restart loop this whole change exists to remove, inside Obelisk,
+    where it is harder to see than Docker's was. The watch is not changing its mind
+    about the map; the intent is already "up" and that is why it acted.
+    """
     ok, why = dockerctl.available()
     if not ok:
         return False, "Docker isn't reachable. %s" % why
     rc, out = _compose(store, "up", "-d", "--no-deps", map_key, timeout=420)
     if rc != 0:
         return False, "could not start %s: %s" % (map_key, out[-400:])
+    if record:
+        # A LAUNCH THAT SUCCEEDED, one map at a time.
+        intent.remember(store, map_key, intent.UP, "start")
     return True, "started"
 
 
