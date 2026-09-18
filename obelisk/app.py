@@ -3252,6 +3252,11 @@ def crash_pass(store, details=None, start=None, say=None, locked=None, policy=No
                 "starting it again failed: %s" % (label, why_s), level="error")
             continue
         out["relaunched"].append(key)
+        # Start the two-pass count again rather than carrying "it was down" forward. A
+        # container that has just been told to come up is not yet a container that is
+        # up, and reading the gap between those as a second confirmed sighting would
+        # spend the whole budget in three passes on a map that was starting normally.
+        out["down"].discard(key)
         say("cluster.map_relaunched",
             "%s was down and Obelisk had it recorded as a map that should be up, so it "
             "has been started again (%d of %d allowed in %d hours). If you stopped this "

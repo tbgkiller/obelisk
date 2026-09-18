@@ -1147,6 +1147,15 @@ check("a map seen down for the first time is watched, not acted on", _s_1.calls 
       _s_1.calls)
 check("but it is remembered, so the next pass can act", "island" in _o_1["down"], _o_1)
 
+# ...and the count starts again after a relaunch. A container that has just been told to
+# come up is not yet a container that is up, and reading that gap as a second confirmed
+# sighting would spend the whole budget in three passes on a map that was starting
+# normally.
+_intent2.remember(_cw_store, "island", _intent2.UP, "start")
+_o_2, _s_2 = _cw_pass(_cw_store, _DOWN_BOTH)
+check("a map that was just relaunched is not counted as still seen down",
+      _s_2.calls == [("island", False)] and "island" not in _o_2["down"], _o_2)
+
 # 5. an apply is in flight. It stops ten maps on purpose and takes minutes over it.
 _o_l, _s_l = _cw_pass(_cw_store, _DOWN_BOTH, locked=True)
 check("nothing is relaunched while an apply holds the lock", _s_l.calls == [],
