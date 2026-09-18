@@ -355,6 +355,43 @@ SETTINGS = [
          target="obelisk:restart_notice_minutes", apply="recreate",
          help="Minutes of in-game warning before a scheduled restart or update."),
 
+    # ---- what Docker does when a map's container exits
+    #
+    # Default `no`, and that is the whole point of the setting existing. A deliberate
+    # DoExit does NOT leave a map down while a policy is there: observed at The Center
+    # on 2026-09-18 and then read back out of the container log, POK finds no server
+    # process, classifies it as a self-restart and exits the WHOLE CONTAINER on purpose
+    # so that Docker's policy brings it back - so a map that was just closed boots for
+    # ten minutes and closes again, which is the restart loop. With no policy that
+    # deliberate exit is the end of it.
+    #
+    # Editable rather than removed, because the cost is real: POK routes its own
+    # restarts through the same policy, so `no` also means a genuine crash leaves the
+    # map down. Obelisk's crash watch is what replaces that, and it stands down when
+    # this is set back to unless-stopped - Docker owns recovery in that configuration
+    # and two things restarting one map is a storm nobody can attribute.
+    dict(key="restart_policy", label="Container restart policy", group="Cluster",
+         type="choice", default="no", choices=["no", "unless-stopped"],
+         target="obelisk:restart_policy", apply="recreate",
+         help="What Docker does when a map's container exits. no: nothing - the map "
+              "stays down until Obelisk starts it, which is the only way a deliberate "
+              "stop actually sticks (the server image reads its own server exiting as "
+              "a restart and exits the container on purpose, so a policy turns every "
+              "stop into a boot loop). unless-stopped: Docker restarts it, which brings "
+              "that loop back but does recover a genuine crash without Obelisk. "
+              "CHANGING THIS DOES NOTHING TO A RUNNING CONTAINER - a container keeps "
+              "the policy it was created with, so the maps have to be recreated "
+              "(Launch, or Apply and restart) before the new setting is live."),
+
+    dict(key="crash_watch", label="Bring a crashed map back", group="Cluster",
+         type="bool", default=True, target="obelisk:crash_watch", apply="none",
+         help="With the restart policy set to no, nothing brings a map back after a "
+              "crash. This watches for a map that is down when Obelisk meant it to be "
+              "up, and starts it again - at most 3 times in 6 hours per map, and it "
+              "announces every one. A map Obelisk stopped on purpose is never started "
+              "by it. Stands down entirely while the restart policy is "
+              "unless-stopped, because Docker is doing the job then."),
+
     dict(key="curseforge_api_key", label="CurseForge API key", group="Advanced",
          type="password", default="", target="obelisk:curseforge_api_key",
          apply="none", max_len=200,

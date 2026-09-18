@@ -29,6 +29,25 @@ def _q(v):
     return '"%s"' % s.replace('\\', '\\\\').replace('"', '\\"')
 
 
+# What Docker may do when a map's container exits. Docker's own words, so the setting,
+# the help text and the generated file all say the same thing and nothing has to be
+# translated between them.
+POLICIES = ("no", "unless-stopped")
+
+
+def restart_policy(store):
+    """The restart policy for the ARK containers. Docker's default, `no`, unless told.
+
+    Same shape as the staging server's, deliberately - one spelling of "read a policy
+    out of a setting" rather than two. An unreadable or unrecognised value falls to
+    `no`, which is the safe direction: `no` can leave a crashed map down, and the crash
+    watch is what covers that; `unless-stopped` turns every deliberate stop into the
+    boot loop observed at The Center, and nothing covers that.
+    """
+    value = str(store.get("restart_policy") or "no").strip().lower()
+    return value if value in POLICIES else "no"
+
+
 def install_present(store, installed_build=None):
     """Are the shared game files already on disk, as this container sees them?
 
@@ -104,17 +123,20 @@ def generate_compose(store, project="ark", in_use_ports=None, wait_for_master=No
             "  %s:" % instance,
             "    image: %s" % image,
             "    container_name: %s" % naming.container_name(project, instance),
-            # No `restart:` key at all, so Docker's default of `no` applies. This is not
-            # an omission. A deliberate DoExit does not leave a map down: POK sees the
-            # server process gone, classifies it as a self-restart and exits the whole
-            # container on purpose so that a restart policy will bring it back - which
-            # was observed on The Center on 2026-09-18 as a map restart-looping two
-            # minutes after a hand-driven DoExit. With no policy, that deliberate exit
-            # is the end of it and the map stays down until Obelisk starts it again.
+            # Whatever the operator chose, defaulting to `no`. A deliberate DoExit does
+            # not leave a map down while a policy is there: POK sees the server process
+            # gone, classifies it as a self-restart and exits the whole container on
+            # purpose so that a restart policy will bring it back - which was observed
+            # at The Center on 2026-09-18 as a map restart-looping two minutes after a
+            # hand-driven DoExit. With `no`, that deliberate exit is the end of it and
+            # the map stays down until Obelisk starts it again.
             #
             # The cost is that a genuine crash also stays down, because POK routes its
-            # own restarts through the same policy. Obelisk's launch() / start_one() is
-            # now the ONLY thing that brings a map up.
+            # own restarts through the same policy - so with `no`, launch() /
+            # start_one() and the crash watch are the only things that bring a map up.
+            # That is why this is a setting and not a deletion, and why it is emitted
+            # from the same shape the staging server already uses.
+            "    restart: %s" % restart_policy(store),
             "    stop_grace_period: 210s",
             "    mem_limit: %s" % mem,
             "    networks: [%s]" % net,

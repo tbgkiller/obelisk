@@ -123,21 +123,52 @@ except ValueError:
     _yml, ok = "", False
 check("a good plan generates", ok)
 
-# ---- and it carries no restart policy
+# ---- the restart policy is a setting, and it defaults to the safe value
 #
 # The one thing that makes a DoExit stick. Observed at The Center on 2026-09-18: the
 # server exits, POK finds no server process, classifies that as a self-restart and
 # exits the whole container on purpose so Docker's policy restarts it - so a map that
-# was deliberately closed comes straight back up and loops. With no `restart:` key the
-# default is `no`, POK's deliberate exit is the last thing that happens, and the map
-# stays down until launch() brings it back.
+# was deliberately closed comes straight back up and loops. With `restart: no` POK's
+# deliberate exit is the last thing that happens and the map stays down until launch()
+# brings it back.
 #
-# Asserted on the generated text rather than on the emitter line, because the property
-# is about what Docker is handed.
-check("the generated compose has no restart policy for the ARK services",
-      "restart:" not in _yml, _yml[:600])
+# Editable, because `no` also means a genuine crash stays down. Asserted on the
+# generated text rather than on the emitter line, because the property is about what
+# Docker is handed.
+from .compose import restart_policy as _rp
+
+check("a cluster that has never been told carries no restart policy",
+      _rp(store(maps="island,center", mem_limit="20g")) == "no")
+check("and the generated compose says so, once per map",
+      _yml.count("restart: no") == 2 and "unless-stopped" not in _yml, _yml[:800])
 check("and still carries the grace period the image's own stop needs",
       "stop_grace_period: 210s" in _yml, _yml[:600])
+
+# An operator who turns it back on gets it, verbatim, in every map's block.
+_st_rp = store(maps="island,center", mem_limit="20g")
+_st_rp.patch({"restart_policy": "unless-stopped"})
+_yml_rp = generate_compose(_st_rp, in_use_ports=[])
+check("an operator who asks for unless-stopped gets it on every map",
+      _yml_rp.count("restart: unless-stopped") == 2, _yml_rp[:800])
+
+# ...and a value nobody recognises falls to the safe one rather than being passed
+# through to Docker, which would refuse the whole stack over one typo.
+_st_bad = store(maps="island", mem_limit="20g")
+_st_bad.data["cluster"]["restart_policy"] = "alwyas"
+check("an unrecognised policy falls back to no, not to Docker's error",
+      _rp(_st_bad) == "no", _rp(_st_bad))
+
+# The setting has to say that changing it does nothing until the containers are
+# recreated. A setting that silently fails to apply is a lie the system tells.
+from .schema import SETTINGS as _SET
+
+_rp_def = [s for s in _SET if s["key"] == "restart_policy"][0]
+check("the restart policy is declared as needing a recreate",
+      _rp_def["apply"] == "recreate", _rp_def["apply"])
+check("and its help says so in words an operator will read",
+      "recreated" in _rp_def["help"] and "RUNNING CONTAINER" in _rp_def["help"],
+      _rp_def["help"])
+check("its default is the safe one", _rp_def["default"] == "no", _rp_def["default"])
 try:
     generate_compose(store(maps="island,center,scorched", mem_limit="90g",
                            host_ram_gb=32), in_use_ports=[])
