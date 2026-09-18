@@ -1239,7 +1239,7 @@ for _label, _st, _ark, _installed in (
     check("for the same reason and in the same words - %s" % _label,
           _msg == _ans[1], (_msg, _ans[1]))
     check("and the page carries that reason - %s" % _label,
-          "Nothing to apply." in _page and _ans[1] in _page, _page)
+          "Nothing to apply" in _page and _ans[1] in _page, _page)
 
 # The strongest form of "the same function": swap the function out and the page has
 # to follow. A parallel implementation left behind in ui.py would be untouched by

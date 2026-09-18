@@ -757,7 +757,10 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
             # Only when something IS staged. With nothing staged the panel already
             # says so above, and a second sentence explaining why the button for it is
             # off would be answering a question nobody asked.
-            buttons += ('<div class=note><b>Nothing to apply.</b> %s</div>'
+            # The engine's sentence verbatim, not a paraphrase of it. It is written
+            # as a fragment ("the staged build ... is the one already running"), so it
+            # is joined rather than started after a full stop.
+            buttons += ('<div class=note><b>Nothing to apply</b> &mdash; %s.</div>'
                         % _e(why_not))
 
     warn = ""
