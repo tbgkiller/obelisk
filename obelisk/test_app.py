@@ -7822,6 +7822,71 @@ else:
     os.environ["OBELISK_ARK"] = _2pwas
 
 
+# ---- an announcement from something that is not this process
+#
+# The gap this closes: announce.say() puts the Discord half on an in-process queue, so
+# work driven from a shell - the ten-container recreate on 2026-09-20, a restore, a
+# hand-run repair - left no trace in the admin channel at all. The route is the door.
+# What it must NOT be is a way to forge the voice of the system itself.
+async def _announce(data, is_authed=True):
+    st = Store(os.path.join(tempfile.mkdtemp(), "s.json"))
+    st.data["cluster"] = {"admin_token": "tok", "maps": "island", "mem_limit": "20g"}
+    client = TestClient(TestServer(build_app(st, docker=DOCKER_UP)))
+    await client.start_server()
+    if is_authed:
+        client.session.cookie_jar.update_cookies({COOKIE: "tok"})
+    said = []
+    was = _appmod.announce.say
+    _appmod.announce.say = lambda ev, text, **k: said.append((ev, text, k))
+    try:
+        r = await client.post("/admin/announce", data=data, allow_redirects=False)
+        return r.status, (await r.json()), said
+    finally:
+        _appmod.announce.say = was
+        await client.close()
+
+
+async def _announce_tests():
+    st_, body, said = await _announce({"text": "recreated island"})
+    check("an announcement is accepted", st_ == 200 and body.get("ok") is True,
+          (st_, body))
+    check("and it goes through say(), so it reaches the log, the feed and Discord",
+          len(said) == 1 and said[0][1] == "recreated island", said)
+    check("under an event name the caller does not get to choose",
+          bool(said) and said[0][0] == "admin.note", said)
+
+    # The whole point of pinning the name. A shell script that could pass
+    # ark.update_failed could put a line in the channel that an operator cannot tell
+    # apart from something Obelisk itself concluded.
+    st_, body, said = await _announce({"text": "x", "event": "ark.update_failed"})
+    check("a caller cannot forge a system event even by asking for one",
+          bool(said) and said[0][0] == "admin.note", said)
+
+    st_, body, said = await _announce({"text": "careful", "level": "warning"})
+    check("severity is honoured",
+          bool(said) and said[0][2].get("level") == "warning", said)
+    st_, body, said = await _announce({"text": "x", "level": "catastrophe"})
+    check("but an unknown severity falls back to info rather than through",
+          bool(said) and said[0][2].get("level") == "info", said)
+
+    st_, body, said = await _announce({"text": "   "})
+    check("an empty announcement is refused rather than posted blank",
+          st_ == 400 and not said, (st_, said))
+
+    st_, body, said = await _announce({"text": "hello"}, is_authed=False)
+    check("and an unauthenticated caller cannot reach the channel at all",
+          st_ == 403 and not said, (st_, said))
+
+    st_, body, said = await _announce({"text": "z" * 5000, "detail": "d" * 20000})
+    check("a runaway message is capped rather than posted whole",
+          bool(said) and len(said[0][1]) == 1000
+          and len(said[0][2].get("detail")) == 4000,
+          bool(said) and (len(said[0][1]), len(said[0][2].get("detail"))))
+
+
+asyncio.run(_announce_tests())
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall app tests passed")
 sys.exit(1 if fails else 0)
 

@@ -2058,6 +2058,44 @@ def build_app(store, docker=None):
         out["elapsed"] = int(time.time() - sjob["started"]) if sjob.get("started") else 0
         return out
 
+    # ---- an announcement from something that is not this process
+    #
+    # announce.say() writes the log and the feed and then puts the message on an
+    # IN-PROCESS queue that the Discord relay drains. So only code running inside
+    # Obelisk can reach the admin channel, and that held until the ten-container
+    # recreate on 2026-09-20, which was driven from a shell: every map was stopped,
+    # rebuilt and restarted, one world was corrupted and restored, and the channel
+    # that is supposed to be the record of what happens to this fleet said nothing,
+    # because nothing that did any of it was running in here. A record with a hole in
+    # it exactly where the unusual work happened is worse than no record.
+    #
+    # THE EVENT NAME IS NOT THE CALLER'S TO CHOOSE. It is always `admin.note`. An
+    # outside caller gets to write the sentence and pick the severity, and that is all:
+    # letting one pass `ark.update_failed` would let a shell script post a line the
+    # operator cannot tell apart from something Obelisk itself concluded, which is the
+    # one kind of lie this product treats as a defect rather than a rough edge.
+    ANNOUNCE_TEXT_CAP = 1000
+    ANNOUNCE_DETAIL_CAP = 4000
+
+    async def admin_announce(request):
+        if not authed(request):
+            return web.json_response({"ok": False, "why": "denied"}, status=403)
+        form = await request.post()
+        text = str(form.get("text") or "").strip()
+        if not text:
+            return web.json_response({"ok": False, "why": "no text"}, status=400)
+        level = str(form.get("level") or "info").strip().lower()
+        if level not in ("info", "warning", "error"):
+            level = "info"
+        detail = str(form.get("detail") or "").strip()
+        # say() scrubs registered secrets and never raises, so there is nothing to
+        # catch here - the announcement is best-effort by design, and the caller is
+        # told it was accepted rather than that Discord received it, because say()
+        # cannot promise the second one either.
+        announce.say("admin.note", text[:ANNOUNCE_TEXT_CAP], level=level,
+                     detail=detail[:ANNOUNCE_DETAIL_CAP])
+        return web.json_response({"ok": True, "event": "admin.note", "level": level})
+
     async def cluster_status(request):
         if not authed(request):
             return web.json_response({"state": "denied"}, status=403)
@@ -2738,6 +2776,7 @@ def build_app(store, docker=None):
     app.router.add_get("/admin/cluster", cluster_page)
     app.router.add_post("/admin/maps", cluster_maps)
     app.router.add_post("/admin/maps/catalogue", catalogue_edit)
+    app.router.add_post("/admin/announce", admin_announce)
     app.router.add_post("/admin/launch", cluster_launch)
     app.router.add_post("/admin/stop", cluster_stop)
     app.router.add_post("/admin/player/message", player_message)
