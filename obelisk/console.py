@@ -82,17 +82,31 @@ GATED_PREFIXES = ("destroy",)
 # What sending it will actually do, said in the confirmation. Keyed by the same verb. A question that only names the command is a question nobody can answer without
 # already knowing the answer.
 EFFECTS = {
-    # Not "and the map stays down". It was driven by hand at The Center on 2026-09-18
-    # and it does not: the server exits, and about a minute later its container starts
-    # another one, which went into a restart loop. So the confirmation says what was
-    # actually seen, and points at the one route that puts a map down and keeps it down.
-    "doexit": ("stop %s. The server exits and everyone on it is disconnected - and it "
-               "does not stay down: the container starts it again, often into a restart "
-               "loop. Stopping the cluster is what puts a map down and keeps it down"),
-    "shutdown": ("stop %s. The server exits and everyone on it is disconnected - and it "
-                 "does not stay down: the container starts it again, often into a "
-                 "restart loop. Stopping the cluster is what puts a map down and keeps "
-                 "it down"),
+    # Not "and the map stays down", and not "and it comes back" either - neither is true
+    # in every configuration, and this sentence has already been wrong once.
+    #
+    # Driven by hand at The Center on 2026-09-18 under `restart: unless-stopped`: the
+    # server exited, and about a minute later the container started another one and went
+    # into a restart loop. Under `restart: no` that same DoExit leaves the container
+    # exited. But the crash watch then reads a container that is down against what
+    # Obelisk meant that map to be doing, and a map recorded `up` is brought back - which
+    # is its job. So three things decide whether the map stays down: the restart policy,
+    # the crash watch, and what Obelisk has recorded for that map.
+    #
+    # Rather than assert one of them, this says what is certain - the server exits and
+    # the players are dropped - and points at the route that is reliable whatever the
+    # settings say. Obelisk's own Stop is reliable precisely because it RECORDS that you
+    # meant it, and an intent of `down` is the one thing the crash watch will not undo.
+    "doexit": ("stop %s. The server exits and everyone on it is disconnected. Whether "
+               "the map then stays down depends on this cluster's restart policy and "
+               "crash watch, so it may be started again on its own. Obelisk's own Stop "
+               "is what puts a map down and keeps it down, because that records that "
+               "you meant it"),
+    "shutdown": ("stop %s. The server exits and everyone on it is disconnected. Whether "
+                 "the map then stays down depends on this cluster's restart policy and "
+                 "crash watch, so it may be started again on its own. Obelisk's own Stop "
+                 "is what puts a map down and keeps it down, because that records that "
+                 "you meant it"),
     "kick": "disconnect somebody from %s. They can rejoin straight away",
     "kickplayer": "disconnect somebody from %s. They can rejoin straight away",
     "ban": ("ban somebody from %s. ARK keeps a ban list per server, so this is %s and "
