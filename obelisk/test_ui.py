@@ -1533,6 +1533,32 @@ check("the canonical setting still lives in the schema, so there is one definiti
       BY_KEY["curseforge_api_key"]["group"] == "Advanced")
 check("and its help now points at the other door",
       "Mods page" in BY_KEY["curseforge_api_key"]["help"])
+
+# ---- Add to cluster has to reach the handler that adds
+#
+# 2026-09-20, caught live adding 942024: Look up resolved the mod and drew its card,
+# and "Add to cluster" answered "paste a CurseForge address or a mod id" and added
+# nothing. The id was never lost - the button has always carried it in `value`. The
+# card is rendered INSIDE the lookup form, so the button was posting to
+# /admin/mods/find, which reads `ref` (the text box, left empty by the lookup that
+# produced the card) and has never looked at `addmod`. A refusal telling you to paste
+# an id, directly under a card naming the mod it had just resolved.
+_found_card = {"id": "942024", "name": "Test Mod", "summary": "s",
+               "authors": ["a"], "downloads": 5, "url": "", "thumbnail": ""}
+_mods_found = uimod.render_mods(store(), {}, found=_found_card)
+check("the resolved mod offers an Add button",
+      "Add to cluster" in _mods_found, _mods_found[-400:])
+check("carrying the resolved id, so nothing has to be retyped",
+      'name=addmod value="942024"' in _mods_found,
+      _window(_mods_found, "addmod", 200))
+# The bug, pinned: without an explicit target this button inherits the lookup form.
+check("and aimed at the handler that edits the list, not the one that looks mods up",
+      'name=addmod value="942024" formaction="/admin/mods">' in _mods_found,
+      _window(_mods_found, "addmod", 260))
+check("a mod already on the list offers no Add at all",
+      "Add to cluster" not in uimod.render_mods(
+          store(mod_ids="942024"), {}, found=_found_card))
+
 check("it is still a secret", BY_KEY["curseforge_api_key"]["type"] == "password")
 from obelisk.backup import SECRET_KEYS as _SK
 

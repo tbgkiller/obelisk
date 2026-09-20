@@ -3121,7 +3121,21 @@ def _mod_card(card, listed):
     if already:
         action = '<span class=current>already in this cluster</span>'
     else:
-        action = ('<button type=submit name=addmod value="%s">Add to cluster</button>'
+        # formaction, and it is the whole fix for the bug this card had.
+        #
+        # This card is rendered INSIDE the lookup form, because visually it belongs
+        # under the "Add a mod" legend beside the box you typed in. That form posts to
+        # /admin/mods/find. So this button - which has always carried the resolved id
+        # in its value, and still does - was submitting it to the handler that looks
+        # mods UP, which reads `ref` and has never once looked at `addmod`. `ref` is
+        # the text box, and the lookup that produced this card left it empty, so the
+        # operator got "paste a CurseForge address or a mod id" from a card sitting
+        # directly above the message, naming the mod it had just resolved for them.
+        #
+        # The id was never lost. The button was aimed at the wrong endpoint. So it is
+        # pointed at the one that edits the list, and the card stays where it reads.
+        action = ('<button type=submit name=addmod value="%s" '
+                  'formaction="/admin/mods">Add to cluster</button>'
                   % _e(card["id"]))
     return ('<div class=card>%s<div style="flex:1 1 auto;min-width:0">'
             '<div><b>%s</b> <span class=help>%s</span></div>'

@@ -210,6 +210,14 @@
       "disable": "    if True:  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "recording an intent is a clean slate - it clears the relaunch history and any stand-down, because somebody deciding a map should be up is the \"until a human acts\" in \"do not try again until a human acts\". The crash watch is not a human acting, so it relaunches through start_one(record=False). The disable text makes the watch record its own relaunches, which hands it a fresh budget every single time and turns a bounded three-in-six-hours into an unbounded loop - the restart policy rebuilt inside Obelisk, which is the one thing this whole change exists to avoid"
+    },
+    {
+      "id": "add-to-cluster-reaches-the-handler-that-adds",
+      "file": "obelisk/ui.py",
+      "guard": "                  'formaction=\"/admin/mods\">Add to cluster</button>'",
+      "disable": "                  '>Add to cluster</button>'  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "ui",
+      "why": "the resolved mod card is rendered INSIDE the lookup form, because that is where it reads - under the Add a mod legend, beside the box you typed in. So without an explicit target this button inherits action=/admin/mods/find, which reads `ref` and has never looked at `addmod`. `ref` is the text box, and the lookup that drew the card left it empty, so the operator gets \"paste a CurseForge address or a mod id\" from a refusal sitting directly under a card naming the mod it just resolved for them, and the mod is not added. Caught live adding 942024 on 2026-09-20. The id was never the problem - the button carries it and always did - so a future fix that \"carries the id harder\" changes nothing and this guard is what says so. The disable text is the button as it shipped broken. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
     }
   ]
 }
