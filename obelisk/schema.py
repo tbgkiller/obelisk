@@ -123,7 +123,11 @@ SETTINGS = [
     dict(key="mod_ids", label="Mods (CurseForge IDs)", group="Mods",
          type="csv", default="", target="env:MOD_IDS", apply="recreate",
          item_pattern=r"^\d{4,8}$", stacking_first=True,
-         help="Comma-separated CurseForge project IDs, applied to all ten maps. "
+         # "all ten maps" until 2026-09-20. This cluster runs ten; the product does not,
+         # and the help an operator reads should not quietly assert the author's fleet
+         # size back at them. Every other count a person sees here is computed.
+         help="Comma-separated CurseForge project IDs, applied to every map in this "
+              "cluster. "
               "ORDER MATTERS: a mod earlier in the list wins conflicting remaps, which "
               "is why stacking mods go first. Blank means vanilla."),
 

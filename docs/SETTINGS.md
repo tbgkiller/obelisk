@@ -106,7 +106,7 @@ web UI after it is running.
 | Mods (CurseForge IDs) | `mod_ids` | csv | `` | UI | recreate |
 | Passive mods | `passive_mods` | csv | `` | UI | recreate |
 
-**Mods (CurseForge IDs)** - Comma-separated CurseForge project IDs, applied to all ten maps. ORDER MATTERS: a mod earlier in the list wins conflicting remaps, which is why stacking mods go first. Blank means vanilla.
+**Mods (CurseForge IDs)** - Comma-separated CurseForge project IDs, applied to every map in this cluster. ORDER MATTERS: a mod earlier in the list wins conflicting remaps, which is why stacking mods go first. Blank means vanilla.
 
 **Passive mods** - Mods the server loads but clients aren't forced to download.
 
