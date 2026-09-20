@@ -188,14 +188,27 @@ import re as _reo                                                     # noqa: E4
 
 
 def _form_owner(html, at):
-    """The action of the form that owns the control at `at`, or None.
+    """Where the control at `at` actually posts, or None if it posts nowhere.
 
-    The rule a browser applies: the nearest enclosing form, unless the control carries
-    a form= attribute naming one by id. Nothing else counts - being next to a form, or
-    between two of them, is not being in one.
+    The rule a browser applies, in order: the control's own formaction wins outright;
+    otherwise the nearest enclosing form, unless the control carries a form= attribute
+    naming one by id. Nothing else counts - being next to a form, or between two of
+    them, is not being in one.
+
+    formaction was missing from this until 2026-09-20 and that is the second bug of
+    this exact shape. "Add to cluster" sat inside the lookup form, so it posted the mod
+    id it was carrying to the handler that looks mods UP, which reads a different field
+    - the text box, left empty by the lookup that drew the card - and refused with
+    "paste a CurseForge address or a mod id". The route that adds was never reached,
+    and the test that posts to that route directly passed throughout. Same as the
+    forget button. A harness that models ownership but not the attribute that overrides
+    it would have called the fixed button broken and the broken one fine.
     """
     tag_end = html.index(">", at)
     tag = html[at:tag_end]
+    overridden = _reo.search(r'\bformaction="([^"]*)"', tag)
+    if overridden:
+        return overridden.group(1)
     named = _reo.search(r'\bform=["\']?([\w-]+)', tag)
     if named:
         m = _reo.search(r'<form[^>]*\bid=["\']?%s\b[^>]*>' % _reo.escape(named.group(1)),
@@ -219,7 +232,15 @@ def _submitters(html):
     out = []
     for m in _reo.finditer(r"<(?:button|input)[^>]*>", html):
         tag = m.group(0)
-        if "type=submit" not in tag and 'type="submit"' not in tag:
+        explicit = "type=submit" in tag or 'type="submit"' in tag
+        # A <button> with no type= IS a submit button - that is the HTML default, and
+        # it is what the mod list's row buttons are. Requiring the attribute meant this
+        # harness could not see up/down/Remove at all, which is the same blindness it
+        # exists to remove: a control that submits and is not modelled is a control
+        # nobody notices pointing at the wrong route.
+        implicit = (tag.startswith("<button")
+                    and not _reo.search(r"\btype=", tag))
+        if not (explicit or implicit):
             continue
         name = (_reo.search(r"\bname=([\w-]+)", tag) or [None, "?"])[1]
         value = (_reo.search(r'\bvalue="([^"]*)"', tag) or [None, ""])[1]
@@ -260,6 +281,21 @@ _orphaned = _ownform_html.replace(
 check("a button between two forms is reported as owned by neither",
       [o for n, o in _submitters(_orphaned) if n.startswith("stray")] == [None],
       [x for x in _submitters(_orphaned) if x[0].startswith("stray")])
+# The helper models formaction, so it can say where a button REALLY goes rather than
+# only which form it sits in. Both directions, because a harness that got this wrong
+# would have called the fixed Add button broken and the broken one fine.
+_fa = ('<form method=post action="/a">'
+       '<button type=submit name=plain value=1>p</button>'
+       '<button type=submit name=sent value=1 formaction="/b">s</button></form>')
+check("a button with no formaction posts to the form it is in",
+      [o for n, o in _submitters(_fa) if n.startswith("plain")] == ["/a"],
+      _submitters(_fa))
+check("and one with formaction posts there instead, whatever form it sits in",
+      [o for n, o in _submitters(_fa) if n.startswith("sent")] == ["/b"],
+      _submitters(_fa))
+
+
+
 check("and one carrying form= pointing at nothing is too",
       _form_owner('<form id=real action="/x"></form>'
                   '<button type=submit form=ghost name=b>b</button>', 39) is None,
@@ -1558,6 +1594,33 @@ check("and aimed at the handler that edits the list, not the one that looks mods
 check("a mod already on the list offers no Add at all",
       "Add to cluster" not in uimod.render_mods(
           store(mod_ids="942024"), {}, found=_found_card))
+
+# ---- the same sweep over the Mods page, which is where the second one of these shipped
+#
+# The maps editor got this harness after the forget button. The mods page did not, and
+# then "Add to cluster" shipped posting to the lookup route. Sweeping both is the only
+# version of this that catches the third one.
+# A populated list as well as a resolved card, so the sweep covers the row buttons
+# (up/down/remove) and not just the two at the top.
+_modsweep = uimod.render_mods(store(mod_ids="111111,222222"), {}, found={
+    "id": "942024", "name": "Test Mod", "summary": "s", "authors": ["a"],
+    "downloads": 5, "url": "", "thumbnail": ""})
+_msubs = _submitters(_modsweep)
+check("every button on the mods page that submits is inside a form",
+      not [n for n, o in _msubs if o is None], _msubs)
+check("the mods page has buttons to check, so that was not a vacuous pass",
+      len(_msubs) >= 6, _msubs)
+check("and the list's own row buttons post to the list route",
+      set(o for n, o in _msubs if n.split("=")[0] in ("up", "down", "drop"))
+      == {"/admin/mods"}, _msubs)
+check("Add to cluster posts to the route that edits the list",
+      [o for n, o in _msubs if n.startswith("addmod=")] == ["/admin/mods"], _msubs)
+check("and Look up still posts to the route that looks mods up",
+      "/admin/mods/find" in [o for n, o in _msubs], _msubs)
+check("while the key box keeps its own route",
+      set(o for n, o in _msubs if n.split("=")[0] in ("apikey", "clearkey", "None"))
+      <= {"/admin/mods/key", "/admin/mods/find"}, _msubs)
+
 
 check("it is still a secret", BY_KEY["curseforge_api_key"]["type"] == "password")
 from obelisk.backup import SECRET_KEYS as _SK
