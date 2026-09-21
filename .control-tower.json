@@ -282,6 +282,14 @@
       "disable": "    still_alive = maps_still_alive(store, procs=kw.get(\"procs\"),  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "this is the wiring, and it is the whole difference between a gate that covers `down` and one that covers most of it. `down` runs against the compose file on disk; that file is rewritten only by launch, so between taking a map out of the settings and the next Launch it still names that map as a service and `down` still SIGTERMs it. maps_still_alive reads the settings, so it no longer knows the container is there - it returns clean and the refusal never fires. project_still_alive asks Docker which containers carry this project's label, which covers the maps the settings list AND the ones they have stopped listing, and excludes the staging server structurally because staging runs under `<cluster>-staging`. The disable text is the narrower call, which is exactly what a later \"these two functions look the same, use the older one\" tidy-up would write, and it is silent: every ordinary stop still passes. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "one-map-is-never-recreated-while-its-server-lives",
+      "file": "obelisk/cluster.py",
+      "guard": "    live = [w for _l, k, w in alive if k == map_key]",
+      "disable": "    live = []  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "start_one runs `up -d --no-deps <map>`, and that is the last `up` in this module. It recreates for exactly the reason the whole-cluster one does: `up` brings a service to the configuration its compose file describes, and when the container already running it does not match, getting there is SIGTERM then rm - one map instead of ten, the same orphaned journal, the same world ARK cannot reopen. Every caller today has already established the map is down (the crash watch needs two positive sightings of a stopped container, the restore paths run close_one first, start_some only names maps it just stopped), but that is caller discipline and caller discipline is what failed at every other site in this mechanism - _close_the_door was documented as safe and the restore paths were assumed safe. It is also getting less true rather than more: launch's partial apply deliberately leaves the new compose file on disk with the old containers running, which is precisely the drift that turns this line into a recreate. The disable text drops the evidence so the refusal can never fire, which is the shape a \"this check never does anything\" cleanup would take - and it is silent, because every ordinary start still passes. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
     }
   ]
 }

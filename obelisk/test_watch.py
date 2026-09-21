@@ -180,6 +180,14 @@ check("a relaunch that would not start is reported as a failure",
 check("to the channel, in red",
       any(e == "cluster.relaunch_failed" and l == "error" for e, _t, l in _cw_said),
       _cw_said)
+# The reason travels with it, which is what tells a map that would not start from one
+# that Obelisk REFUSED to start. start_one now declines to `up` a map whose ARK server
+# is alive or unproven - `up` recreates a drifted container, and a recreate is a signal
+# into a live server - and that sentence has to reach the channel rather than being
+# flattened into "starting it again failed".
+check("carrying the reason the start verb gave, whatever that reason was",
+      any(e == "cluster.relaunch_failed" and "docker said no" in t
+          for e, t, _l in _cw_said), _cw_said)
 check("and it still spent a try, so a map that cannot start cannot loop forever",
       intent.relaunches(_cw_store, "island") == 1,
       intent.read(_cw_store, "island"))

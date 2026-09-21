@@ -2125,7 +2125,7 @@ def close_one(store, map_key, **kw):
                    or "its container could not be proved to have stopped")
 
 
-def start_one(store, map_key, record=True):
+def start_one(store, map_key, record=True, procs=None, details=None, existing=None):
     """Bring a single map back up, without touching the others. (ok, message).
 
     `record=False` is for the crash watch, and it is the one thing keeping that watch
@@ -2134,10 +2134,53 @@ def start_one(store, map_key, record=True):
     and become the restart loop this whole change exists to remove, inside Obelisk,
     where it is harder to see than Docker's was. The watch is not changing its mind
     about the map; the intent is already "up" and that is why it acted.
+
+    It refuses to start a map whose ARK server is alive or unproven - see the gate
+    below, which is the same rule launch and stop keep, scoped to one map.
     """
     ok, why = dockerctl.available()
     if not ok:
         return False, "Docker isn't reachable. %s" % why
+
+    # ---- THE GATE ON `up -d --no-deps`, the last `up` in this module.
+    #
+    # It recreates for exactly the reason the whole-cluster one does: `up` brings a
+    # service to the configuration its compose file describes, and when the container
+    # already running it does not match, getting there is SIGTERM then rm. One map
+    # instead of ten, the same orphaned journal, the same world ARK cannot reopen.
+    #
+    # Every caller today has already established this map is down - the crash watch
+    # needs two positive sightings of a stopped container, the restore paths run
+    # close_one first, and the apply's start_some only names maps it has just stopped.
+    # That is caller discipline, and caller discipline is what failed at every other
+    # site in this mechanism: _close_the_door was documented as safe, the restore paths
+    # were assumed safe. It is also getting less true rather than more - launch's
+    # partial apply deliberately leaves the new compose file on disk with the old
+    # containers running, which is precisely the drift that turns this line into a
+    # recreate.
+    #
+    # So it is re-established here, at the moment the command goes out, and about the
+    # one map being started rather than the project - a live map elsewhere is not a
+    # reason to leave this one down. Refusing costs nothing real: a map whose server is
+    # alive is a map that is already up, which is what the caller wanted.
+    named = map_containers(store)
+    target = [l for l, (_n, k) in named.items() if k == map_key]
+    if not target:
+        # No container could be derived for this key - an unresolvable plan, or a key
+        # that is not a map here. Neither is evidence its server has stopped.
+        return False, ("Obelisk could not work out which container %s runs in, so it "
+                       "could not prove that map's server had stopped and nothing was "
+                       "started" % map_key)
+    alive = maps_still_alive(store, procs=procs, details=details, existing=existing)
+    live = [w for _l, k, w in alive if k == map_key]
+    if live:
+        return False, ("%s was NOT started: %s. `up` recreates a container whose "
+                       "configuration has moved, and a recreate is SIGTERM then rm - a "
+                       "signal into a live ARK server, which orphans that world's save "
+                       "journal and is the damage ARK cannot undo. If it really needs "
+                       "restarting, ask it to exit over RCON first."
+                       % (target[0], live[0]))
+
     rc, out = _compose(store, "up", "-d", "--no-deps", map_key, timeout=420)
     if rc != 0:
         return False, "could not start %s: %s" % (map_key, out[-400:])

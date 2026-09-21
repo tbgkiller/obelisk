@@ -3357,6 +3357,81 @@ _ok_s3, _msg_s3 = clusterctl.stop_one(_ist_s1, "island", procs=lambda n: [],
 check("but a container whose server process is gone is stopped, as it always was",
       _ok_s3 and calls and calls[-1][2] == ["stop", "island"], (_ok_s3, calls))
 
+# 4b. start_one - the LAST `up` in this module, and it recreates for the same reason
+#     the whole-cluster one does. `up` brings a service to the configuration its
+#     compose file describes, and when the container running it does not match, that
+#     is SIGTERM then rm. Every caller today has already established the map is down,
+#     which is caller discipline rather than a gate - and it is getting less true, not
+#     more: launch's partial apply deliberately leaves new compose on disk with old
+#     containers running, which is exactly the drift that turns this into a recreate.
+_ist_u1, _ = fresh()
+clusterctl.dockerctl = FakeDocker()
+calls.clear()
+_ok_u1, _msg_u1 = clusterctl.start_one(_ist_u1, "island", procs=lambda n: [_SERVER_LINE],
+                                       details=lambda ns: {},
+                                       existing=FakeDocker._launched)
+check("start_one REFUSES to `up` a map whose ARK server is alive",
+      not _ok_u1 and calls == [], (_ok_u1, _msg_u1, calls))
+check("and it says why, so nobody reads it as a map that would not start",
+      "recreate" in _msg_u1 and "journal" in _msg_u1, _msg_u1)
+check("and it does not record the map up for a start it never sent",
+      _intent.read(_ist_u1, "island").get("intent") != "up",
+      _intent.read(_ist_u1, "island"))
+calls.clear()
+_ok_u2, _msg_u2 = clusterctl.start_one(_ist_u1, "island", procs=lambda n: None,
+                                       details=lambda ns: {},
+                                       existing=FakeDocker._launched)
+check("an unreadable process listing is not permission either",
+      not _ok_u2 and calls == [], (_ok_u2, calls))
+calls.clear()
+_ok_u3, _msg_u3 = clusterctl.start_one(_ist_u1, "island", procs=_raises,
+                                       details=lambda ns: {},
+                                       existing=FakeDocker._launched)
+check("nor is a Docker that raised", not _ok_u3 and calls == [], (_ok_u3, calls))
+calls.clear()
+_ok_u4, _msg_u4 = clusterctl.start_one(_ist_u1, "notamap", procs=lambda n: [],
+                                       details=lambda ns: {}, existing=lambda: {})
+check("a key with no container behind it is a refusal, not a start",
+      not _ok_u4 and calls == [], (_ok_u4, _msg_u4, calls))
+_real_mc_u = clusterctl.map_containers
+try:
+    clusterctl.map_containers = lambda store: {}
+    calls.clear()
+    _ok_u5, _msg_u5 = clusterctl.start_one(_ist_u1, "island", procs=lambda n: [],
+                                           details=lambda ns: {}, existing=lambda: {})
+finally:
+    clusterctl.map_containers = _real_mc_u
+check("and a plan whose container names could not be worked out refuses too",
+      not _ok_u5 and calls == [], (_ok_u5, _msg_u5, calls))
+
+# The other half, and the one that would deadlock every ordinary start if the reading
+# were wrong: `down` REMOVES containers, so the normal thing to start is a map with no
+# container to inspect at all. A name missing from a `docker ps -a` that SUCCEEDED is
+# positive evidence of absence, exactly as it is on the stop path.
+calls.clear()
+_ok_u6, _msg_u6 = clusterctl.start_one(_ist_u1, "island", procs=_raises,
+                                       details=lambda ns: {}, existing=lambda: {})
+check("a map whose container does not exist starts, as it always did",
+      _ok_u6 and calls[-1][2] == ["up", "-d", "--no-deps", "island"], (_ok_u6, calls))
+calls.clear()
+_ok_u7, _msg_u7 = clusterctl.start_one(
+    _ist_u1, "island", procs=lambda n: [],
+    details=details_for({"island": "exited", "ragnarok": "exited"}),
+    existing=FakeDocker._launched)
+check("and so does one whose container is there with its server gone",
+      _ok_u7 and calls[-1][2] == ["up", "-d", "--no-deps", "island"], (_ok_u7, calls))
+check("which is the start that records the map up",
+      _intent.read(_ist_u1, "island").get("intent") == "up",
+      _intent.read(_ist_u1, "island"))
+calls.clear()
+_ok_u8, _msg_u8 = clusterctl.start_one(
+    _ist_u1, "island",
+    procs=(lambda n: [] if n.endswith("island") else [_SERVER_LINE]),
+    details=details_for({"island": "exited", "ragnarok": "running"}),
+    existing=FakeDocker._launched)
+check("a live map ELSEWHERE is no reason to leave this one down - it asks about one",
+      _ok_u8 and calls[-1][2] == ["up", "-d", "--no-deps", "island"], (_ok_u8, calls))
+
 # 5. close_one: what the restore paths call now. DoExit first, the door only after the
 #    server process has been seen gone - close_map's sequence, not a second spelling.
 _rig_c1 = _Rig(linger=1)
