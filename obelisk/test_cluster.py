@@ -3268,6 +3268,72 @@ _ok_cw2, _msg_cw2 = clusterctl.stop(
 check("while the same caller downs a cluster whose servers are gone",
       _ok_cw2 and calls[-1][2] == ["down"], (_ok_cw2, calls))
 
+# 3b. THE GATE READS THE PROJECT, NOT THE SETTINGS - and on the `down` that matters
+#     for a reason the launch path does not share. `down` runs against the compose
+#     file ON DISK, and that file is rewritten only by launch. So take a map out of
+#     the settings and press Stop before the next Launch: the file still names it as
+#     a service, `down` still SIGTERMs it, and a gate reading the settings no longer
+#     knows the container is there. Same corruption mechanism, different button.
+_st_ds, _ = fresh(maps="island")           # ragnarok dropped, no Launch since
+_ds_procs = (lambda n: [] if n.endswith("island") else [_SERVER_LINE])
+_ds_details = details_for({"island": "exited", "ragnarok": "running"})
+_ds_missed = clusterctl.maps_still_alive(_st_ds, procs=_ds_procs, details=_ds_details,
+                                         existing=FakeDocker._launched)
+check("the settings-keyed gate is blind to a dropped map on the stop path too",
+      _ds_missed == [], _ds_missed)
+clusterctl.dockerctl = FakeDocker()
+calls.clear()
+_ok_ds, _msg_ds = clusterctl.stop(
+    _st_ds, close_worlds=False, procs=_ds_procs, details=_ds_details,
+    existing=FakeDocker._launched, say=lambda *a, **k: None)
+check("so a dropped map with a live server REFUSES the down, and nothing is signalled",
+      not _ok_ds and calls == [], (_ok_ds, calls))
+check("and it is named by the container, the only name it has left",
+      "asa-testcluster-ragnarok" in _msg_ds, _msg_ds)
+calls.clear()
+_ok_ds2, _msg_ds2 = clusterctl.stop(
+    _st_ds, close_worlds=False, procs=lambda n: [],
+    details=details_for({"island": "exited", "ragnarok": "exited"}),
+    existing=FakeDocker._launched, say=lambda *a, **k: None)
+check("while a leftover whose server is gone does not hold the stop open",
+      _ok_ds2 and calls[-1][2] == ["down"], (_ok_ds2, calls))
+calls.clear()
+_ok_ds3, _msg_ds3 = clusterctl.stop(
+    st, close_worlds=False, procs=lambda n: [],
+    details=details_for({"island": "exited", "ragnarok": "exited"}),
+    existing=lambda: None, say=lambda *a, **k: None)
+check("and a `docker ps -a` that failed cannot rule a leftover out, so it blocks",
+      not _ok_ds3 and calls == [], (_ok_ds3, calls))
+
+# THE STAGING SERVER must never hold a stop open. It is the same image and the same
+# kind of SQLite world, so a gate that matched on "looks like an ARK container" would
+# catch it - and a Stop that refused for ever because of a throwaway is the failure
+# mode that gets a safety gate switched off. It is excluded STRUCTURALLY: staging has
+# one compose seam and every command through it carries a project of its own.
+from . import staging as _staging
+_cl_proj = clusterctl.project(st)
+check("staging runs under a compose project of its own - that is what excludes it",
+      _staging.project_name(_cl_proj) != _cl_proj, _staging.project_name(_cl_proj))
+_staged = dict(FakeDocker._launched())
+_staged[_staging.container_name(_cl_proj)] = _staging.project_name(_cl_proj)
+calls.clear()
+_ok_sg, _msg_sg = clusterctl.stop(
+    st, close_worlds=False, procs=lambda n: [_SERVER_LINE],
+    details=details_for({"island": "exited", "ragnarok": "exited",
+                         "staging": "running"}),
+    existing=lambda: _staged, say=lambda *a, **k: None)
+check("so a live staging server never holds the cluster's stop open",
+      _ok_sg and calls[-1][2] == ["down"], (_ok_sg, _msg_sg, calls))
+_stray = dict(FakeDocker._launched())
+_stray["somebodys-hand-built-ark"] = ""          # no compose label at all
+calls.clear()
+_ok_st, _msg_st = clusterctl.stop(
+    st, close_worlds=False, procs=lambda n: [_SERVER_LINE],
+    details=details_for({"island": "exited", "ragnarok": "exited"}),
+    existing=lambda: _stray, say=lambda *a, **k: None)
+check("nor does a container carrying no compose project label at all",
+      _ok_st and calls[-1][2] == ["down"], (_ok_st, _msg_st, calls))
+
 # 4. stop_one is a primitive that signals, so it establishes the server is gone first.
 _ist_s1, _ = fresh()
 clusterctl.dockerctl = FakeDocker()
@@ -3417,13 +3483,13 @@ _missed = clusterctl.maps_still_alive(_st_drop, procs=_drop_procs,
                                       existing=FakeDocker._launched)
 check("the down-gate cannot see a dropped map at all - the settings no longer list it",
       _missed == [], _missed)
-_caught = clusterctl.launch_would_signal(_st_drop, procs=_drop_procs,
+_caught = clusterctl.project_still_alive(_st_drop, procs=_drop_procs,
                                          details=_drop_details,
                                          existing=FakeDocker._launched)
 check("so launch asks Docker instead, and finds the live one by its container name",
       [l for l, _k, _w in _caught] == ["asa-testcluster-ragnarok"], _caught)
-check("with a reason that says it was about to be removed",
-      any("would have been removed" in w for _l, _k, w in _caught), _caught)
+check("with a reason that says the settings are what stopped seeing it",
+      any("the settings no longer list it" in w for _l, _k, w in _caught), _caught)
 calls.clear()
 _ok_l6, _msg_l6 = clusterctl.launch(_st_drop, procs=_drop_procs,
                                     details=_drop_details,

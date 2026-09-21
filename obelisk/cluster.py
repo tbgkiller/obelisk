@@ -157,7 +157,7 @@ def launch(store, in_use_ports=None, procs=None, details=None, existing=None):
     # is already there. The cost is a PARTIAL apply, which is said out loud below,
     # because an operator who pressed "Apply and restart" and was told it worked would
     # otherwise go looking for a setting that never reached the server.
-    risky = launch_would_signal(store, procs=procs, details=details, existing=existing)
+    risky = project_still_alive(store, procs=procs, details=details, existing=existing)
     if risky:
         args = ("up", "-d", "--no-recreate")
     else:
@@ -1073,31 +1073,42 @@ def maps_still_alive(store, procs=None, details=None, existing=None):
     return alive
 
 
-def launch_would_signal(store, procs=None, details=None, existing=None):
-    """Everything `up -d --remove-orphans` could signal that is not provably dead.
+def project_still_alive(store, procs=None, details=None, existing=None):
+    """Every container in THIS PROJECT that cannot be proved to have no live server.
 
-    The gate in front of launch's `up`, and it has to be WIDER than maps_still_alive
-    because `up` reaches two sets of containers where `down` reaches one.
+    The gate in front of both of the commands that signal a whole stack - launch's
+    `up -d --remove-orphans` and stop's `down` - and it has to be WIDER than
+    maps_still_alive, because both of those reach containers the settings no longer
+    mention and maps_still_alive reads the settings.
 
-    The first set is the maps this cluster defines, which maps_still_alive already
-    answers for: `up -d` recreates any service whose configuration differs from the
-    container running it, and a recreate is SIGTERM then rm.
+    The first set is the maps this cluster defines, which maps_still_alive answers for.
+    `up -d` recreates any service whose configuration differs from the container
+    running it, and a recreate is SIGTERM then rm; `down` signals every service in the
+    compose file at once.
 
     The second set is the one maps_still_alive CANNOT see, and it is the reason this
-    function exists rather than a call to that one. `--remove-orphans` removes a
-    container in this project that the new compose file no longer defines - a map taken
-    out of the settings - and maps_still_alive reads the maps the settings still list,
-    so the dropped map is invisible to it by construction. The only place that map still
-    exists is Docker, so Docker is asked, by the name and project label it carries.
+    function exists rather than a call to that one. Take a map out of the settings and
+    it is no longer a map this cluster defines - so the dropped map is invisible to
+    that gate by construction, while remaining a running container with an open world
+    in it. Both commands still reach it: `--remove-orphans` removes it because the
+    regenerated compose file no longer defines it, and `down` signals it because the
+    compose file ON DISK still does - that file is rewritten only by launch, so it
+    lags the settings until the next one. The only place that map reliably still
+    exists is Docker, so Docker is asked, by the project label the container carries.
 
-    Empty means no container in this project has a live or unproven ARK server, so the
-    full form of `up` can only reach things there is nothing left to interrupt.
+    The label is what makes this safe to point at a whole project. The staging server
+    is the same image and the same SQLite world, but it is deliberately its own compose
+    project - `<cluster>-staging`, set on every staging command through staging's one
+    compose seam - so it never carries this label and can never hold a stop open. Nor
+    can another cluster on the same host, nor a container with no compose label at all.
+
+    Empty means nothing in this project has a live or unproven ARK server, so a signal
+    at the whole stack can only reach things there is nothing left to interrupt.
     Positive evidence each time, the same rule as everywhere else here: a `docker ps -a`
-    that could not be read cannot enumerate orphans, so it blocks rather than concluding
-    there are none. Blocking is cheap - the safe form of `up` still starts everything
-    that is missing - so the unknown costs a partial apply and never a world.
+    that could not be read cannot enumerate this project's containers, so it blocks
+    rather than concluding there are none.
 
-    Returns [(label, key, why)]. An orphan has no label left in the settings and no key
+    Returns [(label, key, why)]. A leftover has no label left in the settings and no key
     worth writing intent against, so it is named by the container, which is the only
     name anybody could still look it up by.
     """
@@ -1108,7 +1119,7 @@ def launch_would_signal(store, procs=None, details=None, existing=None):
         there = ask()
     except Exception as e:                          # noqa: BLE001 - reported, not fatal
         log.warning("could not ask Docker which containers exist (%s) - a live map "
-                    "this launch no longer defines cannot be ruled out", e)
+                    "the settings no longer list cannot be ruled out", e)
         there = None
     # One listing for both halves. maps_still_alive reads None as "decides nothing" and
     # judges every map the long way, which is exactly right for its half.
@@ -1117,18 +1128,22 @@ def launch_would_signal(store, procs=None, details=None, existing=None):
     if there is None:
         blocked.append(("this project", None,
                         "Docker would not list its containers, so Obelisk could not "
-                        "rule out a live map that this launch no longer defines"))
+                        "rule out a live map the settings no longer list"))
         return blocked
     mine = set(name for name, _key in map_containers(store).values())
     proj = project(store)
     for name in sorted(there):
+        # The project LABEL, never the name. Staging is the same image and the same
+        # kind of world, and it is excluded here because it runs under its own compose
+        # project rather than because anybody remembered to spell it out.
         if there.get(name) != proj or name in mine:
-            continue                    # another project's, or one this launch defines
+            continue                    # another project's, or one the settings list
         state, why = process_state(name, procs, details)
-        if state not in SIGNAL_OK:      # not proved gone: it blocks `--remove-orphans`
+        if state not in SIGNAL_OK:      # not proved gone: it blocks the whole signal
             blocked.append((name, None,
-                            "%s, and this launch no longer defines it, so it would "
-                            "have been removed" % why))
+                            "%s, and the settings no longer list it - a leftover of "
+                            "this project that `--remove-orphans` would remove and "
+                            "`down` would signal" % why))
     return blocked
 
 
@@ -1168,7 +1183,7 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
     that never became operational, because that is a thing worth knowing.
 
     What `require_ready` is NOT is the safety gate. Whether `docker compose down` may
-    run at all is decided by `maps_still_alive`, on the `down` itself, so that every
+    run at all is decided by `project_still_alive`, on the `down` itself, so that every
     caller inherits it - including ones written later, and including the operator's own
     Stop, which is precisely the button that used to reach `down` with nothing in its
     way. `down` SIGTERMs a live ARK server, and that orphans its world's journal.
@@ -1358,10 +1373,18 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
     # given" - `require_ready` answered that one, and it is the wrong question for this
     # - it is "is there a live ARK server anywhere in this project right now". If there
     # is, or if that cannot be established, nothing is signalled at all.
+    #
+    # Asked about the PROJECT rather than about the maps the settings list, because
+    # `down` runs against the compose file on disk and that file is rewritten only by
+    # launch. Take a map out of the settings and press Stop before the next Launch:
+    # the file still names it as a service, so `down` still signals it, while a gate
+    # reading the settings no longer knows it exists. A container carrying this
+    # project's label with a live server blocks the stop whether or not the settings
+    # still list it.
     # `existing` is popped rather than read, because it is this gate's seam alone and
     # exit_worlds has no parameter of that name to be handed one.
-    still_alive = maps_still_alive(store, procs=kw.get("procs"),
-                                   details=kw.get("details"), existing=_existing)
+    still_alive = project_still_alive(store, procs=kw.get("procs"),
+                                      details=kw.get("details"), existing=_existing)
     if still_alive:
         # Whatever this stop wrote about those maps, they are up and they are staying
         # up, so their intent has to say so - otherwise the crash watch reads the

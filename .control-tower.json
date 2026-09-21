@@ -260,12 +260,12 @@
       "why": "`docker compose up -d --remove-orphans` reads like \"start whatever is not started\" and is not. It RECREATES any service whose configuration no longer matches the container running it, and a recreate is SIGTERM then rm - the same signal into a live ARK server that orphaned six journals out of six on 2026-09-20 and left Aberration as a database ARK could not open. The configuration moves for entirely ordinary reasons: the first-install wait flips once the game files land, the image changes, a host port is reassigned, and any edit to compose.py arrives on its own because a push to main redeploys the manager through Watchtower. The UI renders this very button as \"Apply and restart\", so it is operator-reachable by design. When anything in the project has a live or unproven ARK server, `up` may only run in the form that creates what is missing and touches nothing already there. The disable text restores the unconditional recreate, which is exactly what a later \"why are we not applying the settings\" change would reach for. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
     },
     {
-      "id": "a-dropped-map-is-not-an-orphan-to-be-removed",
+      "id": "a-dropped-map-is-still-a-live-map",
       "file": "obelisk/cluster.py",
-      "guard": "        if state not in SIGNAL_OK:      # not proved gone: it blocks `--remove-orphans`",
+      "guard": "        if state not in SIGNAL_OK:      # not proved gone: it blocks the whole signal",
       "disable": "        if False:  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
-      "why": "`--remove-orphans` stops and removes any container in this project that the regenerated compose file no longer defines - which is a map taken out of the settings, still running, with a world open and players on it. maps_still_alive cannot see that map by construction: it reads the maps the settings still list, and this one is no longer one of them. So the only place it still exists is Docker, and Docker is asked here, by the container name and the project label it carries. Positive evidence as everywhere else - a `docker ps -a` that could not be read cannot enumerate orphans, so it blocks too, and blocking is cheap because the safe form of `up` still starts everything missing. The disable text reads every orphan as safe to remove, which puts back \"drop a map from the settings, press Apply and restart, lose that world\". NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+      "why": "a map taken out of the settings is still a running container with an open world in it, and BOTH of the commands that signal a whole stack still reach it. `--remove-orphans` removes it because the regenerated compose file no longer defines it; `down` signals it because the compose file ON DISK still does - that file is rewritten only by launch, so it lags the settings until the next one. maps_still_alive cannot see it either way, by construction: it reads the maps the settings still list, and this one is no longer one of them. So the only place it reliably still exists is Docker, and Docker is asked here, by the project LABEL the container carries - which is also what keeps the staging server out, since staging runs under a compose project of its own rather than because anybody remembered to name it. Positive evidence as everywhere else: a `docker ps -a` that could not be read cannot enumerate this project, so it blocks too. The disable text reads every leftover as safe to signal, which puts back \"drop a map from the settings, press Apply and restart or Stop, lose that world\". NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
     },
     {
       "id": "a-partial-apply-says-it-was-partial",
@@ -274,6 +274,14 @@
       "disable": "        pass  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "taking the safe form of `up` means the launch deliberately did LESS than the button promised: every container that was already there is still running the configuration it started with, and only the missing ones came up with the new one. An operator who pressed \"Apply and restart\" and was handed the ordinary \"Cluster up\" would believe the settings had landed and go looking for the bug somewhere else - or, worse, conclude the setting does nothing and change something that does. So the partial apply has to name the maps that held it back and the two steps that finish it. The disable text drops the telling and keeps the safety, which is the shape any tidy-up of this function would take. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "the-down-gate-asks-about-the-project-not-the-settings",
+      "file": "obelisk/cluster.py",
+      "guard": "    still_alive = project_still_alive(store, procs=kw.get(\"procs\"),",
+      "disable": "    still_alive = maps_still_alive(store, procs=kw.get(\"procs\"),  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "this is the wiring, and it is the whole difference between a gate that covers `down` and one that covers most of it. `down` runs against the compose file on disk; that file is rewritten only by launch, so between taking a map out of the settings and the next Launch it still names that map as a service and `down` still SIGTERMs it. maps_still_alive reads the settings, so it no longer knows the container is there - it returns clean and the refusal never fires. project_still_alive asks Docker which containers carry this project's label, which covers the maps the settings list AND the ones they have stopped listing, and excludes the staging server structurally because staging runs under `<cluster>-staging`. The disable text is the narrower call, which is exactly what a later \"these two functions look the same, use the older one\" tidy-up would write, and it is silent: every ordinary stop still passes. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
     }
   ]
 }
