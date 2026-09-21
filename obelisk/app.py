@@ -3449,7 +3449,9 @@ async def ark_update_watch(store, interval=1800, panel=None):
                 log.info("staging ahead: %s", why)
                 await asyncio.to_thread(upd.prime, store, root,
                                         target=upd.target_key(status))
-            elif status.get("any_newer"):
+            elif status.get("any_newer") or status.get("any_missing"):
+                # A decision not to stage has to be visible, and an added mod is now
+                # one of the things that can be refused here.
                 log.info("not staging: %s", why)
 
             due, why = upd.due(store)

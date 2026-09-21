@@ -298,6 +298,13 @@ def status(serverfiles, mod_ids, opener=None, listdir=None, read=None,
         "mods": rows,
         "mods_newer": [r for r in rows if r["newer"]],
         "any_newer": bool(build_newer) or any(r["newer"] for r in rows),
+        # A different question from any_newer, in the same shape, and the pipeline
+        # needs both. "Is anything newer" cannot see a mod that has never been on
+        # disk: such a row has no `running`, so `newer` is None - "could not find
+        # out" - and None is falsy. `latest` is required here so a mod CurseForge
+        # could not be asked about does not read as missing; that is an unknown, and
+        # `unknown` below is what carries it.
+        "any_missing": any(bool(r["latest"]) and not r["running"] for r in rows),
         "unknown": (build_newer is None) or any(r["newer"] is None for r in rows),
     }
 

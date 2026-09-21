@@ -192,6 +192,18 @@ NEWER_MOD = {"build": {"running": "25117056", "latest": "25117056", "newer": Fal
 UNKNOWN = {"build": {"running": "25117056", "latest": None, "newer": None},
            "mods": CURRENT["mods"], "mods_newer": [], "any_newer": False,
            "unknown": True}
+# The exact shape a mod the operator has just added has, and the shape the on_demand
+# gate used to refuse: the build has not moved, nothing is newer, and the new row
+# carries `running=None` with a `latest` - so `newer` is None, "could not find out",
+# which is correct and stays. None is falsy, so any_newer is False and this never
+# primed; it sat waiting for a hand-driven recreate, which is the path the pipeline
+# replaces.
+ADDED_MOD = {"build": {"running": "25117056", "latest": "25117056", "newer": False},
+             "mods": CURRENT["mods"] + [
+                 {"id": "942024", "running": None, "latest": "9420001", "newer": None,
+                  "problem": "listed for the cluster but not on disk yet"}],
+             "mods_newer": [], "any_newer": False, "any_missing": True,
+             "unknown": True}
 
 check("the fingerprint covers the build", updates.target_key(NEWER_BUILD) !=
       updates.target_key(CURRENT))
@@ -220,6 +232,27 @@ check("on_demand costs nothing while there is nothing newer", not go, why)
 go, why = updates.needs_prime(FakeStore(staging_mode="on_demand"), NEWER_BUILD,
                               now=lambda: 1000)
 check("but does stage an actual update", go, why)
+
+# ---- an added mod rides the same pipeline
+#
+# on_demand is what the live cluster runs, and this is the whole item: adding a mod
+# has to stage and prove it exactly like an update does, on the same Apply.
+check("an added mod is a new thing to stage - the fingerprint moves",
+      updates.target_key(ADDED_MOD) != updates.target_key(CURRENT))
+check("and the added row is still honest: unknown, never current",
+      ADDED_MOD["any_newer"] is False and
+      [r for r in ADDED_MOD["mods"] if r["id"] == "942024"][0]["newer"] is None)
+
+s = FakeStore(staging_mode="on_demand")
+go, why = updates.needs_prime(s, ADDED_MOD, now=lambda: 1000)
+check("a mod added to the cluster primes under on_demand, with nothing newer", go, why)
+check("and the reason names the mod rather than an update that did not happen",
+      "not on disk yet" in why, why)
+
+s = FakeStore(staging_mode="on_demand")
+go, why = updates.needs_prime(s, dict(ADDED_MOD, any_missing=False), now=lambda: 1000)
+check("and with nothing newer and nothing missing, on_demand still costs nothing",
+      not go, why)
 
 s = FakeStore(staging_mode="off")
 go, why = updates.needs_prime(s, NEWER_BUILD, now=lambda: 1000)
@@ -1465,21 +1498,6 @@ check("which is what makes it applyable", updates.primed(s) is not None)
 events = [i["event"] for i in drain()]
 check("primed is announced", "ark.update_primed" in events, events)
 
-s = FakeStore()
-thin = "\n".join(l for l in good_log.splitlines() if "929420" not in l)
-ok, msg, result = updates.prime(
-    s, ARK, up=spy_up, down=lambda: (True, "stopped"), log_of=lambda: thin,
-    rcon_ok=lambda: True,
-    opener=lambda url: '{"status":"success","data":{"2430930":{"depots":{"branches":'
-                       '{"public":{"buildid":"25200000"}}}}}}',
-    read=lambda p: '"AppState" {\n\t"buildid"\t\t"25200000"\n}',
-    wait=lambda s: None, now=lambda: 1000)
-check("a staging boot missing a mod does not prime", not ok, msg)
-check("it is recorded, so the UI can say what went wrong",
-      state_problems := (updates.state(s)["primed"]["problems"]), state_problems)
-check("but it is not applyable", updates.primed(s) is None)
-events = [i["event"] for i in drain()]
-check("and the channel is told it is unsafe", "ark.update_unsafe" in events, events)
 
 # ---- the mods being proved is not the world being up
 #

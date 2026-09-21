@@ -84,6 +84,14 @@
       "why": "a refused RCON connection has two opposite meanings - the world has closed, or the server has not opened its RCON port yet - and only the container tells them apart. Reading a refusal from a RUNNING container as \"exited\" is what let a stop signal three booting servers into a kill-revive-boot loop, so exited may only ever be true for a map whose container is gone"
     },
     {
+      "id": "an-added-mod-is-something-to-do",
+      "file": "obelisk/updates.py",
+      "guard": "                                                   or status.get(\"any_missing\")):",
+      "disable": "                                                   or False):  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "the disable text is the exact on_demand gate needs_prime used to carry, and it cannot see an added mod. A mod that has never been on disk has running=None, so compare() gives newer=None - \"could not find out\", which is correct and must stay, because a row that is not current must never render as up to date - and None is falsy, so any_newer stayed False. Under staging_mode: on_demand, which is what the live cluster runs, the staging server therefore never primed an added mod: it sat in pending waiting for a hand-driven recreate, which is the path this pipeline exists to replace. The question the gate needs is \"is there anything to do\", not \"is anything newer\", and any_missing is the other half of it"
+    },
+    {
       "id": "a-primed-build-is-not-an-update",
       "file": "obelisk/updates.py",
       "guard": "    swap_files, why_build = staged_worth_applying(store, installed, ark_root)",

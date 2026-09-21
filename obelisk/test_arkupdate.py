@@ -210,6 +210,38 @@ check("mods we could not ask about are unknown, all of them",
 check("while the build is still answered - one source failing is not both",
       st["build"]["newer"] is False, st["build"])
 
+# ---- a mod listed for the cluster that has never been fetched
+#
+# The row stays unknown - `newer=None` means "could not find out", and a row that is
+# not current must never render as up to date. But the update pipeline still has to
+# learn there is something to do, and any_newer structurally cannot tell it: None is
+# falsy, so an added mod left it False and the staging server never primed.
+listdir, read = fs(mods={k: v for k, v in LIVE.items() if k != "929420"})
+st = arkupdate.status("/ark/ServerFiles", IDS, opener=opener_for(),
+                      listdir=listdir, read=read)
+row = [r for r in st["mods"] if r["id"] == "929420"][0]
+check("a mod that is not on disk yet is unknown, not current",
+      row["newer"] is None and row["running"] is None and row["latest"], row)
+check("and any_newer still cannot see it - that is the shape, not a bug",
+      st["any_newer"] is False, st["any_newer"])
+check("so the status says something is missing, which is the other question",
+      st["any_missing"] is True, st)
+
+listdir, read = fs()
+st = arkupdate.status("/ark/ServerFiles", IDS, opener=opener_for(),
+                      listdir=listdir, read=read)
+check("a cluster with every listed mod on disk has nothing missing",
+      st["any_missing"] is False, st)
+
+# ...and silence is not absence. A mod CurseForge could not be asked about has no
+# `latest` to be missing against, so it is an unknown and `unknown` is what says so.
+listdir, read = fs(mods={k: v for k, v in LIVE.items() if k != "929420"})
+st = arkupdate.status("/ark/ServerFiles", IDS, opener=opener_for(fail="cfwidget"),
+                      listdir=listdir, read=read)
+check("a mod we could not ask about does not read as missing",
+      st["any_missing"] is False, st)
+check("it reads unknown instead", st["unknown"] is True, st)
+
 # ---- leftovers on disk are not this page's business
 listdir, read = fs(mods=dict(LIVE, **{"111111": "222222"}))
 st = arkupdate.status("/ark/ServerFiles", IDS, opener=opener_for(),

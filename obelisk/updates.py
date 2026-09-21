@@ -168,8 +168,19 @@ def needs_prime(store, status, now=None):
     # an actual update. `always` is running anyway and its whole point is to be ahead,
     # so it stages whatever the current target is - including the first one, which warms
     # the tree and proves the path before anybody is relying on it.
-    if staging.mode(store) == "on_demand" and not status.get("any_newer"):
-        return False, "nothing newer, and the staging server only runs on demand"
+    #
+    # There is something to do is the question, and it is not the same as is anything
+    # newer. A mod that has just been added to the cluster has never been on disk, so
+    # its row carries `newer=None` - "could not find out", which is the honest answer
+    # and must stay - and None is falsy, so `any_newer` stayed False and an added mod
+    # never primed under on_demand. It waited for a hand-driven recreate, which is the
+    # path this pipeline exists to replace. `any_missing` is the other half of the
+    # question, asked here; on_demand is honoured rather than widened, because a mod
+    # the operator just added IS something to do.
+    if staging.mode(store) == "on_demand" and not (status.get("any_newer")
+                                                   or status.get("any_missing")):
+        return False, ("nothing newer and nothing waiting to be staged, and the "
+                       "staging server only runs on demand")
 
     tried = (state(store).get("attempts") or {}).get(key) or {}
     count = int(tried.get("count") or 0)
@@ -181,8 +192,14 @@ def needs_prime(store, status, now=None):
     if last and now - last < wait:
         return False, ("waiting %d more minute(s) before trying again"
                        % int((wait - (now - last)) / 60))
-    return True, "there is something newer to stage" if status.get("any_newer") else \
-                 "nothing is staged yet"
+    # Three cases, and the operator reads this sentence, so it has to tell them
+    # apart: something published a new version, a mod is listed but has never been
+    # fetched, or this is simply the first rehearsal.
+    if status.get("any_newer"):
+        return True, "there is something newer to stage"
+    if status.get("any_missing"):
+        return True, "a mod is listed for the cluster but is not on disk yet"
+    return True, "nothing is staged yet"
 
 
 def note_attempt(store, key, ok, now=None):
