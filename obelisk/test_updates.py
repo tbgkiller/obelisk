@@ -233,6 +233,77 @@ go, why = updates.needs_prime(FakeStore(staging_mode="on_demand"), NEWER_BUILD,
                               now=lambda: 1000)
 check("but does stage an actual update", go, why)
 
+# ---- look() rehearses the list that is ABOUT to be applied
+#
+# The gate below is unreachable without this. A mod added to a RUNNING cluster is
+# queued rather than written - pending is an overlay and never a write - so
+# store.get("mod_ids") still answers the list without it, status() never draws a row
+# for it, and nothing downstream can see it at all.
+_CF_FILES = {"929110": "7738786", "940003": "6830549", "942024": "9420001"}
+
+
+def _look_fs(on_disk=("929110", "940003")):
+    def listdir(_path):
+        return ["%s_%s" % (p, _CF_FILES[p]) for p in on_disk]
+
+    def read(path):
+        if path.endswith(".acf"):
+            return '"AppState" {\n\t"buildid"\t\t"25117056"\n}'
+        raise OSError("not there")
+
+    def opener(url):
+        if "steamcmd" in url:
+            return ('{"data":{"2430930":{"depots":{"branches":{"public":'
+                    '{"buildid":"25117056"}}}}}}')
+        p = url.rsplit("/", 1)[-1]
+        return ('{"id":%s,"title":"Mod %s","download":{"id":%s}}'
+                % (p, p, _CF_FILES[p]))
+
+    return dict(opener=opener, listdir=listdir, read=read)
+
+
+def _queue(store, mod_ids):
+    store.data["pending"] = {"cluster": {"mod_ids": mod_ids}, "maps": {}, "clears": {}}
+    return store
+
+
+_plain = updates.look(FakeStore(mod_ids="929110,940003"), ARK, **_look_fs())
+check("with nothing queued, the committed list is what is rehearsed",
+      [r["id"] for r in _plain["mods"]] == ["929110", "940003"], _plain["mods"])
+check("and a cluster that is up to date has nothing missing",
+      _plain["any_missing"] is False and _plain["any_newer"] is False, _plain)
+
+_added = updates.look(_queue(FakeStore(mod_ids="929110,940003"),
+                             "929110,940003,942024"), ARK, **_look_fs())
+check("a queued mod add is rehearsed - the row exists at all",
+      "942024" in [r["id"] for r in _added["mods"]],
+      [r["id"] for r in _added["mods"]])
+check("and it is the thing that is missing, with nothing newer",
+      _added["any_missing"] is True and _added["any_newer"] is False, _added)
+# Indexed defensively on purpose: if the row is not there this has to FAIL, not
+# raise. A test that dies instead of failing takes the whole module's verdict line
+# with it, and a mutation check scores a crash as nothing proved.
+_row942 = ([r for r in _added["mods"] if r["id"] == "942024"] or [{}])[0]
+check("its row is still honest: not on disk, so unknowable, never current",
+      bool(_row942) and _row942["newer"] is None and _row942["running"] is None
+      and bool(_row942["latest"]), _row942)
+_go, _why = updates.needs_prime(FakeStore(staging_mode="on_demand"), _added,
+                                now=lambda: 1000)
+check("which is what finally puts an added mod onto the on_demand prime", _go, _why)
+
+_vanilla = updates.look(_queue(FakeStore(mod_ids="929110,940003"), ""), ARK,
+                        **_look_fs())
+# Membership, not `or`: a queued "" is a deliberate "run vanilla", and reading it as
+# "nothing queued" would rehearse mods the operator has just removed. The tell is that
+# CurseForge is never asked, so no row carries a latest. (The rows themselves are the
+# leftovers still on disk - status() only filters those when a list is configured,
+# which is its own long-standing behaviour and not this.)
+check("a queued empty list means vanilla - nothing is asked of CurseForge",
+      all(r["latest"] is None for r in _vanilla["mods"]), _vanilla["mods"])
+check("which is not what falling back to the committed list would have answered",
+      all(r["latest"] for r in _plain["mods"]), _plain["mods"])
+
+
 # ---- an added mod rides the same pipeline
 #
 # on_demand is what the live cluster runs, and this is the whole item: adding a mod
@@ -564,6 +635,8 @@ st = real_store()
 ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename, exists=tree_exists())
 check("with nothing waiting at all it refuses", not ok, msg)
 check("and says there is nothing to do", "nothing is waiting" in msg, msg)
+
+
 
 # ---- a failure after the settings land puts BOTH halves back
 drain()

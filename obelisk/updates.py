@@ -226,11 +226,25 @@ def look(store, ark_root, opener=None, listdir=None, read=None, source=None):
     cache. This is the answer that decides whether a staging prime starts, so it is
     worth asking the source when we can.
     """
-    from . import curseforge, layout
+    from . import curseforge, layout, pending
     serverfiles = layout.ark_paths(ark_root)["serverfiles"]
     if source is None and curseforge.has_key(store):
         source = lambda ids: curseforge.batch(store, ids)     # noqa: E731 - one line
-    return arkupdate.status(serverfiles, store.get("mod_ids"), opener=opener,
+    # The mod list the cluster is ABOUT to run, which is not always the one it is
+    # running. A mod added to a running cluster is QUEUED rather than written -
+    # pending is an overlay and never a write, by design - so `store.get("mod_ids")`
+    # still answers the list without it, and every question below would be asked
+    # about a cluster one mod out of date. The staging server exists to rehearse what
+    # is about to be applied, so the queued list is the one to rehearse; rehearsing
+    # the committed one while an add sits in the queue is the wrong question, and it
+    # is why an added mod never reached the prime it was meant to ride.
+    #
+    # Membership rather than `or`: a queued value of "" is a deliberate "run vanilla",
+    # and falling back to the committed list there would rehearse mods the operator
+    # has just removed. When nothing is queued these are the same string.
+    queued = pending.queued(store)["cluster"]
+    ids = queued["mod_ids"] if "mod_ids" in queued else store.get("mod_ids")
+    return arkupdate.status(serverfiles, ids, opener=opener,
                             listdir=listdir, read=read, source=source)
 
 

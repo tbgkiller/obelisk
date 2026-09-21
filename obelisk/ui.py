@@ -665,6 +665,17 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
     def cell(running, latest, newer):
         run = '<code>%s</code>' % _e(running or "—")
         if newer is None:
+            # Not on disk YET is not "could not check", and the difference is the
+            # whole of how this row reads. A mod the operator has just added has no
+            # installed file id to compare against, so `newer` is None - but
+            # CurseForge answered, `latest` is the version that will be fetched, and
+            # the staging server is what fetches it. Rendering that as an unanswered
+            # question makes a mod being prepared look like a fault the operator has
+            # to go and investigate. Amber, like an update, because that is what it
+            # is: something here is about to change, and nothing is wrong.
+            if latest and not running:
+                return ('→ <code>%s</code> <span class=newer>to be staged</span>'
+                        % _e(latest))
             return ('%s <span class=unknown>? could not check</span>' % run)
         if newer:
             return ('%s → <code>%s</code> <span class=newer>update available</span>'
@@ -955,7 +966,12 @@ def render_mod_chips(rows=None, loaded=None, expected=None):
                              '✕ %s <b>did not load</b></span>' % _e(mod_id))
     else:
         for row in rows or []:
-            if row.get("newer") is None:
+            if row.get("newer") is None and row.get("latest") \
+                    and not row.get("running"):
+                # Listed and not fetched yet - see cell() in render_ark_update. The
+                # same distinction, because the same rows are drawn here.
+                cls, mark, tail = "chip new", "→", "to be staged"
+            elif row.get("newer") is None:
                 cls, mark, tail = "chip unk", "?", "unknown"
             elif row.get("newer"):
                 cls, mark, tail = "chip new", "⬆", "%s available" % (row.get("latest") or "")

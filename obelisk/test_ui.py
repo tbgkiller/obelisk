@@ -929,6 +929,49 @@ check("every configured mod gets a row",
       all(i in _p for i in ("929110", "929420", "928621")))
 check("with nothing staged, Apply is disabled", "disabled>Apply now" in _p)
 
+# ---- a mod that is queued and not fetched yet is not a fault
+#
+# Now that look() rehearses the list about to be applied, a mod the operator has just
+# added appears here before it has ever been on disk. Its `newer` is None for the
+# honest reason - there is no installed file id to compare - but CurseForge ANSWERED,
+# so rendering it as "? could not check" would put an unanswered-question colour on a
+# mod that is simply being prepared, and send the operator looking for a fault.
+def _ascii(text):
+    """Failure details go to a Windows console that is not UTF-8, and the panel this
+    block renders is full of arrows and ticks. A check that cannot PRINT its failure
+    dies instead of failing, and a mutation check scores a crash as nothing proved."""
+    return str(text).encode("ascii", "replace").decode("ascii")
+
+
+_added_status = dict(_status, mods=_status["mods"] + [
+    {"id": "942024", "name": "Just Added", "running": None, "latest": "9420001",
+     "newer": None, "url": "",
+     "problem": "listed for the cluster but not on disk yet"}])
+_pa = ui.render_ark_update(_ps, _added_status)
+check("a listed mod that is not on disk yet reads as being prepared",
+      "to be staged</span>" in _pa, _ascii(_pa[_pa.find("942024") - 200:][:400]))
+check("and never as a question nobody answered - that row IS answered",
+      _pa.count("could not check</span>") == 1, _pa.count("could not check</span>"))
+check("the version it will be fetched at is shown, so the claim can be checked",
+      "9420001" in _pa)
+check("and it is not dressed as current either",
+      _pa.count("class=current") == 1, _pa.count("class=current"))
+check("the honest reason still travels with the row",
+      "listed for the cluster but not on disk yet" in _pa)
+
+# A mod CurseForge could not answer about keeps the unknown state - that one really is
+# a question nobody answered, and it must not be swept into the prepared colour.
+_unk_only = dict(_status, mods=[
+    {"id": "928621", "name": "Utilities Plus", "running": None, "latest": None,
+     "newer": None, "url": "", "problem": "could not ask CurseForge"}])
+_pu = ui.render_ark_update(_ps, _unk_only)
+check("a mod with no latest at all is still unknown, not 'to be staged'",
+      "could not check</span>" in _pu and "to be staged" not in _pu, _ascii(_pu))
+
+_chips = ui.render_mod_chips(rows=_added_status["mods"])
+check("the chips read the same way", "to be staged" in _chips, _ascii(_chips))
+check("and still mark a genuine unknown as one", "unknown" in _chips, _ascii(_chips))
+
 _ready = {"ok": True, "build": "25200000", "when": 1757260000,
           "loaded": {"929110": "7738786", "929420": "8210044"}}
 _ps2 = _PanelStore()
