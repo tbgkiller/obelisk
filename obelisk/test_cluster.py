@@ -3492,6 +3492,15 @@ clusterctl.dockerctl = FakeDocker()
 _ark_was = os.environ.get("OBELISK_ARK")
 os.environ["OBELISK_ARK"] = os.path.join(tempfile.mkdtemp(), "ark")
 
+# And prepare() hands those folders to uid 7777, which only root can do. On the CI
+# runner the chown fails, launch refuses on not_writable_by_server, and every test
+# below measures a refusal instead of the branch it is about. That check is a real
+# precondition and is tested where it belongs; here it stands between these tests and
+# the thing they exist to measure, which is WHICH `up` arguments a live map produces.
+# So it is stubbed for this section only, and put back at the end of the module.
+_writable_was = layout.not_writable_by_server
+layout.not_writable_by_server = lambda _root: []
+
 
 def _up_args():
     """The arguments of the last `up` this launch actually sent to compose."""
@@ -3627,8 +3636,9 @@ _pcheck("exit_worlds sends no SaveWorld either", _SAVE_CMD not in _esrc, _esrc[:
 _pcheck("and the disk reading it does afterwards issues nothing over RCON",
         "rcon(" not in _esrc.split("the passive reading")[1], _esrc[-1500:])
 
-# Put the environment back the way this module found it, so a later module is never
-# handed this one's temporary Ark root.
+# Put the environment and the stubbed check back the way this module found them, so a
+# later module is never handed this one's temporary Ark root or its relaxed gate.
+layout.not_writable_by_server = _writable_was
 if _ark_was is None:
     os.environ.pop("OBELISK_ARK", None)
 else:
