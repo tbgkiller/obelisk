@@ -161,7 +161,7 @@
       "guard": "        present, known = _server_seen(one[\"name\"], procs)",
       "disable": "        present, known = True, True  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
-      "why": "`compose stop` is the one signal this path can still send, and it may only ever go at a server POSITIVELY observed still running after the grace period - a genuinely stuck server, where SIGTERM lands on the image's own verified two-stage shutdown inside its 210s grace. The disable text is the fail-OPEN reading: a process listing that could not be read, or a map whose server is already gone, becomes something to signal. Reading 'I could not ask' as 'it is still running' is how a Docker hiccup comes to stop a container mid-write, and it is the same unknown the rest of this mechanism already refuses to act on NOTE this needle is deliberately ONE line: the repo's blobs carry CRLF and a Windows checkout materialises them that way, so a multi-line needle stored with LF matches zero times and the guard silently reports NOT CHECKED instead of failing. A one-line needle has no newline to disagree about."
+      "why": "the state a LATE map is given, and the sentence an operator reads, both turn on this. `compose stop` used to be sent from here, on the argument that SIGTERM lands on the image's own verified two-stage shutdown inside its 210s grace rather than on a kill. That argument was measured FALSE on the live fleet on 2026-09-20 - POK verifies the saves and THEN kills the Proton process, orphaning the world's journal, 6 times out of 6 - so no signal is sent from here at all any more and the map is reported and left running. What is left to protect is the honesty of the report: the disable text is the fail-OPEN reading, where a process listing nobody could read becomes \"it was still running\", and an operator is told a definite thing about a question that was never answered. Reading 'I could not ask' as a fact is the same inference the rest of this mechanism exists to refuse NOTE this needle is deliberately ONE line: the repo's blobs carry CRLF and a Windows checkout materialises them that way, so a multi-line needle stored with LF matches zero times and the guard silently reports NOT CHECKED instead of failing. A one-line needle has no newline to disagree about."
     },
     {
       "id": "the-post-exit-disk-reading-reports-and-never-gates",
@@ -218,6 +218,38 @@
       "disable": "                  '>Add to cluster</button>'  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "ui",
       "why": "the resolved mod card is rendered INSIDE the lookup form, because that is where it reads - under the Add a mod legend, beside the box you typed in. So without an explicit target this button inherits action=/admin/mods/find, which reads `ref` and has never looked at `addmod`. `ref` is the text box, and the lookup that drew the card left it empty, so the operator gets \"paste a CurseForge address or a mod id\" from a refusal sitting directly under a card naming the mod it just resolved for them, and the mod is not added. Caught live adding 942024 on 2026-09-20. The id was never the problem - the button carries it and always did - so a future fix that \"carries the id harder\" changes nothing and this guard is what says so. The disable text is the button as it shipped broken. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "a-live-map-blocks-the-down",
+      "file": "obelisk/cluster.py",
+      "guard": "        if state not in SIGNAL_OK:              # not proved gone: it blocks the down",
+      "disable": "        if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "`docker compose down` SIGTERMs every container in the project at once, including a map that was never asked to exit because it was still booting. POK answers a signal by verifying the saves and THEN killing the Proton process - after the saves verify, before SQLite checkpoints - which orphans the world's rollback journal, and ARK cannot reopen its own orphaned journal. Measured on the live fleet 2026-09-20: 6 orphaned journals out of 6 compose stops, 0 out of 2 DoExits, and Aberration had to be restored. So a map is only safe to signal in the two states that say its server process is provably gone. The disable text reads every map as safe, which puts the operator's plain Stop back to downing a mid-boot map - the 2026-09-12 incident class. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "the-down-refusal-actually-refuses",
+      "file": "obelisk/cluster.py",
+      "guard": "    if still_alive:",
+      "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "the gate is worth nothing if what it finds is only logged. This is the branch that turns \"a map is still alive\" into a refusal: no `down`, no intent rewritten to down, the cluster left exactly as it stands and every live map named. It sits on the `down` itself rather than on `require_ready` so that every caller inherits it - the operator's plain Stop defaults require_ready to False, and it was the one caller with nothing in its way. The disable text keeps the evidence and drops the refusal, which is the shape a later \"just warn about it\" change would take. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "one-map-is-never-signalled-while-its-server-lives",
+      "file": "obelisk/cluster.py",
+      "guard": "    if state not in SIGNAL_OK:                  # not proved gone: nothing is sent",
+      "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "stop_one is the one primitive in this module that signals a container, and it used to be called straight from the restore paths with no DoExit anywhere in front of it - a `compose stop` into a serving map at the exact moment its world matters most. It re-establishes that the ARK server process is gone rather than trusting its caller, because callers are where the next mistake will be written. Gone has to be established, never assumed: an unreadable process listing refuses too. The disable text restores the old unconditional stop. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "a-ps-that-failed-is-not-an-empty-host",
+      "file": "obelisk/cluster.py",
+      "guard": "        if there is not None and name not in there:",
+      "disable": "        if name not in (there or {}):  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "this is the one absence the down-gate accepts without reading a process listing, and it has to be, or the gate deadlocks the ordinary cases: `down` removes containers, so a cluster that is already down and a map that was never launched both have nothing to inspect and nothing to `docker top`. What makes it evidence rather than a shrug is that `docker ps -a` SUCCEEDED and lists stopped containers too - a name missing from that answer is a container that is not there. `existing_containers` returns None when the listing failed, and the disable text reads that None as an empty host, which waves every map in the cluster past the gate on the strength of a question nobody answered. Same rule the rest of this mechanism keeps, on the one line where getting it wrong is silent. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
     }
   ]
 }
