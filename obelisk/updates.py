@@ -412,6 +412,26 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
     if install_failure or died:
         ok = False
 
+    # ---- the fingerprint has to be a claim this boot can actually back
+    #
+    # `target` is written into the store as what the staged tree HOLDS, and
+    # needs_prime reads it straight back as "the staged tree already holds this,
+    # verified". So a fingerprint naming a mod the staging server never loaded is a
+    # record that lies, and it does not merely mislead: staged_target then equals
+    # target_key, so the mod it names can never be staged again. Nothing downstream
+    # can catch that, because every downstream reader trusts this record.
+    #
+    # Pinned here, where the claim is WRITTEN, rather than at the three places the
+    # mod list is read. The readers drifting apart is what broke it this time; the
+    # next way to break it will not be the same way, and this catches those too.
+    unrehearsed = [m for m in _target_mods(fingerprint)
+                   if m not in (detail.get("loaded") or {})]
+    if unrehearsed:
+        problems = ["the target claims mod(s) the staging server never loaded: %s - "
+                    "nothing may be recorded as staged and verified on that"
+                    % ", ".join(unrehearsed)] + list(problems)
+        ok = False
+
     result = {"ok": ok, "build": target, "loaded": detail.get("loaded") or {},
               "problems": problems, "when": int(now()),
               "target": str(fingerprint or ""),

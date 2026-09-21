@@ -132,6 +132,14 @@
       "why": "this is what read_boot_log grades the staging server's log against, and up() has just written the container's compose file from the SAME answer. The disable text is the committed list, which is a different list the moment an add is queued - and grading a boot against a list the container was never given fails both ways: a mod that was never asked for passes as rehearsed, and one that was asked for goes unnoticed. Three readers of this list have to agree - the decision (look), the verification (here) and the container (staging.compose_text) - and the round that shipped only the first of the three recorded that a mod had been staged and verified when the container had never seen it"
     },
     {
+      "id": "a-fingerprint-never-claims-more-than-was-rehearsed",
+      "file": "obelisk/updates.py",
+      "guard": "    if unrehearsed:",
+      "disable": "    if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "`target` is written into the store as what the staged tree HOLDS, and needs_prime reads it straight back as \"the staged tree already holds this, verified\". So a fingerprint naming a mod the staging server never loaded is not merely misleading - it is a LOCK: staged_target then equals target_key, so that mod can never be staged again, and no downstream reader can catch it because every one of them trusts this record. Measured: the container booted 929110,940003 while the store recorded 942024 as staged and verified. Pinned where the claim is WRITTEN rather than at the three places the mod list is read, because the readers drifting apart is only the way it broke this time and the next way will be different. Claiming LESS than was proved stays safe and simply re-primes"
+    },
+    {
       "id": "the-staging-container-is-told-the-list-being-rehearsed",
       "file": "obelisk/staging.py",
       "guard": "        \"      MOD_IDS: %s\" % _q(_updates().effective_mod_ids(store)),",

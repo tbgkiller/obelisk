@@ -727,6 +727,55 @@ check("only now is it 'already staged' - because now it really is",
       updates.needs_prime(_e2e, _e2e_status, now=lambda: 9999))
 
 
+# ---- a fingerprint never claims more than was rehearsed
+#
+# The target is written into the store as what the staged tree HOLDS, and needs_prime
+# reads it straight back as "already holds this, verified". A fingerprint naming a mod
+# the server never loaded is therefore a record that lies AND a lock: staged_target
+# equals target_key, so that mod can never be staged again. Pinned where the claim is
+# written, because the next way the readers drift apart will not be this way.
+drain()
+_liar = FakeStore()
+_short_log = "\n".join(
+    ["LogCFCore: Mod valid: Mod %s (%s)" % (p, p) for p in LOADED]
+    + ["UShooterEngine::LoadGameMods with 3 mods"]
+    + ["UShooterEngine::LoadGameMods Loading Mod "
+       "ShooterGame/Mods/83374/%s_%s/a.uasset : %s" % (p, f, p)
+       for p, f in LOADED.items()])
+_ok_l, _msg_l, _res_l = updates.prime(
+    _liar, ARK, up=lambda: (True, "starting"), down=lambda: (True, "stopped"),
+    log_of=lambda: _short_log, rcon_ok=lambda: True,
+    opener=lambda url: '{"status":"success","data":{"2430930":{"depots":{"branches":'
+                       '{"public":{"buildid":"25200000"}}}}}}',
+    read=lambda p: '"AppState" {\n\t"buildid"\t\t"25200000"\n}',
+    wait=lambda s: None, now=lambda: 1000,
+    target="25200000|929110=7738786,940003=6830549,929420=8160173,999999=1")
+check("a target naming a mod the server never loaded does not pass", not _ok_l, _msg_l)
+check("and the reason names the mod, not something vaguer",
+      any("999999" in p for p in (_res_l.get("problems") or [])),
+      _res_l.get("problems"))
+check("nothing is recorded as staged and verified on it",
+      updates.primed(_liar) is None, _liar.data)
+_ev_l = [i["event"] for i in drain()]
+check("and the channel is told it is unsafe rather than ready",
+      "ark.update_unsafe" in _ev_l and "ark.update_primed" not in _ev_l, _ev_l)
+
+# ...and a target that claims only what loaded is untouched, including one that names
+# fewer mods than booted - claiming LESS than was proved is safe, and re-primes.
+drain()
+_honest = FakeStore()
+_ok_h, _msg_h, _res_h = updates.prime(
+    _honest, ARK, up=lambda: (True, "starting"), down=lambda: (True, "stopped"),
+    log_of=lambda: _short_log, rcon_ok=lambda: True,
+    opener=lambda url: '{"status":"success","data":{"2430930":{"depots":{"branches":'
+                       '{"public":{"buildid":"25200000"}}}}}}',
+    read=lambda p: '"AppState" {\n\t"buildid"\t\t"25200000"\n}',
+    wait=lambda s: None, now=lambda: 1000,
+    target="25200000|929110=7738786")
+check("a target that claims only what was loaded still passes", _ok_h, _msg_h)
+drain()
+
+
 # ---- the staging server has to be GONE before anything is renamed
 #
 # down() returns False only after `rm -f` failed too, so what is left is a container
