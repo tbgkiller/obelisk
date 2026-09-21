@@ -400,7 +400,7 @@ class _Fleet:
     def __init__(self, maps):
         self.maps = {k: dict(v) for k, v in maps.items()}
         self.turn = {k: 0 for k in self.maps}
-        self.stopped, self.events = [], []
+        self.events = []
 
     @staticmethod
     def _key(name):
@@ -433,12 +433,6 @@ class _Fleet:
             out[n] = {"state": "exited" if down else "running", "health": "starting",
                       "restarts": 0, "uptime_seconds": 30}
         return out
-
-    def stop(self, key):
-        self.stopped.append(key)
-        self.events.append("stop:%s" % key)
-        return True, "stopped"
-
 
 def _settled(sent):
     """Every world proved written after its own DoExit - the ordinary case.
@@ -487,6 +481,7 @@ class ClockX:
 fleet_x = _Fleet({"island": {"server": 1, "exits": 2},
                   "ragnarok": {"server": 1, "exits": 2}})
 clk_x = ClockX()
+calls.clear()
 out_x = clusterctl.exit_worlds(st, running=lambda s: TARGETS_X, rcon=rcon_x,
                                now=clk_x.now, wait=clk_x.wait, procs=fleet_x.procs,
                                details=fleet_x.details,
@@ -507,7 +502,7 @@ check("and the reason names both halves of the evidence",
       all("process is gone" in o["why"] and "not running" in o["why"]
           for o in out_x.values()), out_x)
 check("nothing was stopped by Obelisk - the container went down on its own",
-      fleet_x.stopped == [], fleet_x.stopped)
+      calls == [], calls)
 
 # THE DISPROVEN DISCRIMINATOR, pinned as disproven. RCON silent, container still Online,
 # server process still in the listing: this is the one-minute gap measured by hand, and
@@ -553,6 +548,7 @@ check("and the reason says why, so nobody restores the fallback later",
 # is for POK's own exit, which is what takes the container down now.
 fleet_h = _Fleet({"island": {"server": 0, "exits": None},
                   "ragnarok": {"server": 0, "exits": None}})
+calls.clear()
 out_h = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
     wait=lambda sec: None, budget=30, procs=fleet_h.procs, details=fleet_h.details,
@@ -561,8 +557,7 @@ check("a process gone with the container still up is not a closed map",
       not any(o["exited"] for o in out_h.values()), out_h)
 check("and the reason says which half is missing",
       all("container never confirmed" in o["why"] for o in out_h.values()), out_h)
-check("nothing is stopped on half the evidence either", fleet_h.stopped == [],
-      fleet_h.stopped)
+check("nothing is stopped on half the evidence either", calls == [], calls)
 
 # FAIL CLOSED: a process listing nobody could read is not a server that has exited, and
 # it is not a server that is still running either. It establishes nothing, so the
@@ -570,12 +565,13 @@ check("nothing is stopped on half the evidence either", fleet_h.stopped == [],
 # whose world is live.
 fleet_u = _Fleet({"island": {"server": None, "exits": None},
                   "ragnarok": {"server": None, "exits": None}})
+calls.clear()
 out_up = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
     wait=lambda sec: None, budget=30, procs=fleet_u.procs, details=fleet_u.details,
     settle=_settled)
 check("an unreadable process listing never reaches the fallback stop",
-      fleet_u.stopped == [], fleet_u.stopped)
+      calls == [], calls)
 check("nor is it ever called closed", not any(o["exited"] for o in out_up.values()),
       out_up)
 check("and it says that nothing could be established, not that something was",
@@ -585,6 +581,7 @@ check("and it says that nothing could be established, not that something was",
 # is the incident. Never signalled, and it holds an apply rather than letting one run.
 fleet_r = _Fleet({"island": {"server": 1, "exits": None, "revives": 3},
                   "ragnarok": {"server": 1, "exits": 2}})
+calls.clear()
 out_rv = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=rcon_exits(), now=ClockX().now,
     wait=lambda sec: None, budget=60, procs=fleet_r.procs, details=fleet_r.details,
@@ -593,8 +590,7 @@ check("a map whose server came back is never called closed",
       not out_rv["The Island"]["exited"], out_rv)
 check("it is not-ready - booting, which is the state that holds an apply",
       out_rv["The Island"]["state"] == clusterctl.NOT_READY, out_rv)
-check("and nothing was signalled at it", "island" not in fleet_r.stopped,
-      fleet_r.stopped)
+check("and nothing was signalled at it", calls == [], calls)
 check("while the map beside it still closed normally",
       out_rv["Ragnarok"]["exited"], out_rv)
 
@@ -865,7 +861,7 @@ def refuses(host, port, cmd):
 
 
 # 1. refused, and its container is up: a server mid-boot. Never "exited".
-stopped_n = []
+calls.clear()
 out_n = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
     wait=lambda s: None, budget=30, procs=lambda n: [_SERVER_LINE],
@@ -876,11 +872,11 @@ check("a map that refuses RCON while its container is running is NEVER called ex
 check("it is not-ready - still starting, not gone",
       all(o["state"] == clusterctl.NOT_READY for o in out_n.values()), out_n)
 check("and nothing is stopped on the strength of a refused connection",
-      stopped_n == [], stopped_n)
+      calls == [], calls)
 # The bounded fallback must never reach one of these. A map that never answered RCON is
 # a server mid-boot, and stopping one of those IS the 2026-09-12 incident.
 check("and the bounded fallback never fires at a map that was never asked to exit",
-      stopped_n == [], stopped_n)
+      calls == [], calls)
 check("and every one of them is named in the result, not quietly dropped",
       sorted(out_n) == ["Ragnarok", "The Island"], sorted(out_n))
 check("with a reason that says only what was actually established about it",
@@ -908,7 +904,7 @@ check("and the reason names both halves of the evidence",
 # whole section exists to delete one layer up. An unknown is possibly-up, so it is
 # not-ready, so an apply holds: a held apply costs a window, and the other way cost two
 # hours and three maps in a restart loop.
-stopped_u = []
+calls.clear()
 out_u = clusterctl.exit_worlds(
     st, running=lambda s: TARGETS_X, rcon=refuses, now=ClockX().now,
     wait=lambda s: None, budget=30, procs=lambda n: None,
@@ -919,7 +915,7 @@ check("a container Docker could not be asked about is NEVER called exited",
 check("an unknown is not-ready - possibly up, which is not the same as gone",
       all(o["state"] == clusterctl.NOT_READY for o in out_u.values()), out_u)
 check("and nothing is stopped on the strength of a question nobody answered",
-      stopped_u == [], stopped_u)
+      calls == [], calls)
 check("while Docker ANSWERING that nothing is there still means already-gone",
       all(o["state"] == clusterctl.ALREADY_GONE for o in out_g.values()), out_g)
 check("so it is only the unanswerable ask that was tightened, not the empty answer",
