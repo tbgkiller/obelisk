@@ -496,7 +496,7 @@ def _staging_answers(store, probe=None):
 
 def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
                 verify=None, players=None, on_step=None, force=False,
-                check_worlds=None, start_some=None,
+                check_worlds=None, start_some=None, stop_staging=None,
                 rename=None, exists=None, now=None, installed=None,
                 staged_build=None):
     """Apply everything that is waiting, in one restart. (ok, message, detail).
@@ -637,6 +637,39 @@ def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
     # its own save on the way out, and then reports what the disk showed afterwards
     # rather than refusing on it. The gate that stayed is worlds_intact, below.
     step("stopping the cluster and the staging server")
+    # ---- the staging server has to be GONE before anything is renamed
+    #
+    # `down()` returns False only after `rm -f` has failed too, so what is left is a
+    # container that still has ServerFiles.staging bind-mounted - by inode, not by
+    # name. The swap renames that very directory into place as the live tree, and the
+    # mount follows the files: a surviving staging server would write into the LIVE
+    # tree while ten maps boot on it. Worse, it would keep FETCHING into it - the
+    # staging compose sets UPDATE_SERVER "TRUE" and CHECK_FOR_UPDATE_INTERVAL "1", so
+    # its own updater re-downloads over its server files hourly, by design. That is
+    # migration lesson staging.py cites by name: never rewrite files a running server
+    # is using.
+    #
+    # Both callers did this themselves and neither refused - one logged a warning, the
+    # other discarded the answer entirely - which is what a gate at the callers always
+    # becomes. It lives with the verb now, where arriving from somewhere else cannot
+    # skip it. Refused only when files are actually moving: with nothing to rename a
+    # stuck staging container cannot reach the live tree, and failing a settings-only
+    # batch over it would refuse work that was never in danger.
+    if stop_staging:
+        ok_s, why_s = stop_staging()
+        if not ok_s and swap_files:
+            announce.say("ark.update_failed",
+                         "Refused to apply: the staging server could not be stopped "
+                         "(%s), and it still has the staged files open. Swapping them "
+                         "in underneath it would leave it writing into the live "
+                         "install - and its own updater re-downloading over it. "
+                         "Nothing was stopped, nothing was moved, and the cluster is "
+                         "untouched." % why_s, level="error")
+            return False, ("did not apply: the staging server could not be stopped "
+                           "(%s), so the staged files are still open" % why_s), {}
+        if not ok_s:
+            log.warning("the staging server did not stop cleanly (%s) - nothing is "
+                        "being swapped, so the batch goes on", why_s)
     ok, detail = stop_all()
     if not ok:
         # This branch is the one that changed shape when the restart policy went. A

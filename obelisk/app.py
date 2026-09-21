@@ -831,9 +831,10 @@ def build_app(store, docker=None):
             time.sleep(minutes * 60)
 
         def stop_all():
-            ok_s, msg_s = stagingctl.down(store)
-            if not ok_s:
-                log.warning("the staging server did not stop cleanly: %s", msg_s)
+            # The staging server is stopped through apply_batch's own stop_staging
+            # hook rather than here. It used to be this line, and the answer was
+            # logged and then ignored - a staging container that survived kept the
+            # staged files open while the swap renamed them into place.
             # require_ready: an apply must never signal a map that is still
             # booting. A server mid-boot cannot take the image's safe stop - it needs
             # the RCON it has not opened yet - so it hangs, is killed and is revived,
@@ -865,6 +866,10 @@ def build_app(store, docker=None):
         return updatesctl.apply_batch(
             store, _ark_root(), warn=warn,
             stop_all=stop_all,
+            # Asked before anything is renamed, and a refusal from it refuses the
+            # swap. Both apply paths hand in the same verb so neither can drift into
+            # treating a staging server that would not go away as a warning.
+            stop_staging=lambda: stagingctl.down(store),
             # The ONLY thing that brings a map up. There is no restart policy on the
             # ARK containers any more, so nothing else will - which is why every
             # non-refusing branch of apply_batch has to reach start_all or start_some.
@@ -3517,7 +3522,8 @@ def _scheduled_apply(store, force=False):
         time.sleep(minutes * 60)
 
     def stop_all():
-        stg.down(store)
+        # Stopped through apply_batch's stop_staging hook, the same as the button.
+        # This line used to call stg.down(store) and discard the result entirely.
         # The unattended apply gets the same refusal as the button, for the same reason
         # it gets the same world gate: an apply nobody is watching is the one that most
         # needs to refuse rather than stop into a server that is still starting.
@@ -3544,6 +3550,9 @@ def _scheduled_apply(store, force=False):
             store, layout.ark_root_of(store)),
         start_some=start_some,
         stop_all=stop_all,
+        # The same verb the button hands in, so a staging server that would not stop
+        # refuses the unattended swap too - the path with nobody watching it.
+        stop_staging=lambda: stg.down(store),
         # The only thing that brings a map up, here too.
         start_all=lambda: clusterctl.launch(store), verify=verify_all,
         players=lambda: clusterctl.players_online(store),

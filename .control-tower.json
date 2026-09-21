@@ -100,6 +100,14 @@
       "why": "the disable text is the committed list, which is what stood here, and it makes every gate downstream unreachable for the case the whole pipeline was built for. A mod added to a RUNNING cluster is QUEUED rather than written - pending is an overlay and never a write, by design - so store.get(\"mod_ids\") answers the list WITHOUT it, arkupdate.status never draws a row for it, target_key does not move and any_missing cannot see it. The staging server exists to rehearse what is about to be applied; rehearsing the committed list while an add sits in the queue is the wrong question, and it is silent - every ordinary poll still works, and only the added mod goes missing. Membership rather than `or`, because a queued \"\" is a deliberate run-vanilla and falling back there would rehearse mods the operator has just removed"
     },
     {
+      "id": "the-staging-server-is-gone-before-anything-is-renamed",
+      "file": "obelisk/updates.py",
+      "guard": "        if not ok_s and swap_files:",
+      "disable": "        if False and swap_files:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "staging.down() returns False only after `rm -f` has ALSO failed, so what is left is a container that still has ServerFiles.staging bind-mounted - by inode, not by name. The swap renames that very directory into place as the live tree and the mount follows the files, so a surviving staging server writes into the LIVE install while ten maps boot on it, and keeps re-downloading over it: the staging compose sets UPDATE_SERVER TRUE and CHECK_FOR_UPDATE_INTERVAL 1, so its own updater runs hourly by design and `staging_mode: always` never stops it. That is the migration lesson staging.py cites by name - never rewrite files a running server is using. The disable text is what both callers actually did: app.py's button logged a warning and carried on, and the unattended path discarded the return value entirely. Two callers, two different wrong answers, which is what a gate at the callers always becomes. Refused only when files are moving, because a stuck staging container cannot reach a live tree nobody is renaming"
+    },
+    {
       "id": "the-promoted-tree-is-the-tree-that-was-verified",
       "file": "obelisk/updates.py",
       "guard": "        if str(on_disk or \"\") != str(build or \"\"):",

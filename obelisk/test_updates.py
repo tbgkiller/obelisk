@@ -641,6 +641,68 @@ ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename, s
 check("with nothing waiting at all it refuses", not ok, msg)
 check("and says there is nothing to do", "nothing is waiting" in msg, msg)
 
+# ---- the staging server has to be GONE before anything is renamed
+#
+# down() returns False only after `rm -f` failed too, so what is left is a container
+# that still has ServerFiles.staging bind-mounted by inode. The swap renames that
+# directory into place as the live tree and the mount follows the files, so a
+# surviving staging server writes into the LIVE install while ten maps boot on it -
+# and keeps re-downloading over it, because the staging compose runs its own updater
+# hourly by design. Both callers used to do this themselves and neither refused.
+drain()
+s_f3 = FakeStore()
+updates.remember(s_f3, primed=ready)
+c_f3 = Cluster()
+_moved3, _rename3 = moved_nothing()
+ok, msg, _d = updates.apply_update(
+    s_f3, ARK, installed=OLD_BUILD, warn=c_f3.warn, stop_all=c_f3.stop,
+    start_all=c_f3.start, verify=c_f3.verify, players=lambda: (0, {}, []),
+    stop_staging=lambda: (False, "could not remove the staging server"),
+    rename=_rename3, staged_build=STAGED_BUILD, exists=tree_exists(),
+    now=lambda: 1000)
+check("a staging server that would not stop refuses the swap", not ok, msg)
+check("and says why, in the words the stop used",
+      "could not remove the staging server" in msg, msg)
+check("no map was even asked to exit", c_f3.log == [], c_f3.log)
+check("and nothing was renamed", _moved3 == [], _moved3)
+check("the staged build is still staged", updates.primed(s_f3) is not None)
+_ev3 = [i["event"] for i in drain()]
+check("the refusal reached the admin channel", "ark.update_failed" in _ev3, _ev3)
+
+# ...and the same failure with nothing being renamed is not a refusal. A staging
+# container that survives cannot reach a live tree nobody is moving, and failing a
+# settings-only batch over it would refuse work that was never in danger.
+drain()
+st_f3 = real_store()
+_pend.stage(st_f3, {"max_players": 250})
+c_f3b = Cluster()
+_moved3b, _rename3b = moved_nothing()
+ok, msg, _d = updates.apply_batch(
+    st_f3, ARK, installed=OLD_BUILD, warn=c_f3b.warn, stop_all=c_f3b.stop,
+    start_all=c_f3b.start, verify=c_f3b.verify, players=lambda: (0, {}, []),
+    stop_staging=lambda: (False, "could not remove the staging server"),
+    rename=_rename3b, staged_build=STAGED_BUILD, exists=tree_exists(),
+    now=lambda: 1000)
+check("a settings-only batch is not refused over it - nothing is being moved",
+      ok, msg)
+check("and it really did leave the files alone", _moved3b == [], _moved3b)
+
+# ...and the ordinary case still stops it, and still applies.
+drain()
+s_f3c = FakeStore()
+updates.remember(s_f3c, primed=ready)
+c_f3c = Cluster()
+_stopped = []
+_moved3c, _rename3c = moved_nothing()
+ok, msg, _d = updates.apply_update(
+    s_f3c, ARK, installed=OLD_BUILD, warn=c_f3c.warn, stop_all=c_f3c.stop,
+    start_all=c_f3c.start, verify=c_f3c.verify, players=lambda: (0, {}, []),
+    stop_staging=lambda: (_stopped.append("down"), (True, "stopped"))[1],
+    rename=_rename3c, staged_build=STAGED_BUILD, exists=tree_exists(),
+    now=lambda: 1000)
+check("a staging server that stops cleanly lets the apply through", ok, msg)
+check("and it was actually asked to stop", _stopped == ["down"], _stopped)
+
 
 # ---- the tree being promoted has to be the tree that was VERIFIED
 #
