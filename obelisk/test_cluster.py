@@ -3483,6 +3483,15 @@ check("they ask it to exit instead",
 #        defines - a map taken out of the settings, still running, with players on it.
 clusterctl.dockerctl = FakeDocker()
 
+# launch() calls prepare(), which really does makedirs the Ark root, and ark_root_of
+# reads OBELISK_ARK and falls back to the container mount /ark. An earlier section of
+# this module deletes that variable, so without setting it again these tests ask the
+# HOST for /ark: PermissionError on the Linux CI runner, and on Windows /ark resolves
+# against the current drive and silently creates a stray D:\ark that the run then
+# passes on top of. Same knob test_app already uses, restored at the end of the module.
+_ark_was = os.environ.get("OBELISK_ARK")
+os.environ["OBELISK_ARK"] = os.path.join(tempfile.mkdtemp(), "ark")
+
 
 def _up_args():
     """The arguments of the last `up` this launch actually sent to compose."""
@@ -3617,6 +3626,14 @@ _esrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),
 _pcheck("exit_worlds sends no SaveWorld either", _SAVE_CMD not in _esrc, _esrc[:400])
 _pcheck("and the disk reading it does afterwards issues nothing over RCON",
         "rcon(" not in _esrc.split("the passive reading")[1], _esrc[-1500:])
+
+# Put the environment back the way this module found it, so a later module is never
+# handed this one's temporary Ark root.
+if _ark_was is None:
+    os.environ.pop("OBELISK_ARK", None)
+else:
+    os.environ["OBELISK_ARK"] = _ark_was
+
 
 print("\nFAILURES: %s" % fails if fails else "\nall cluster tests passed")
 sys.exit(1 if fails else 0)
