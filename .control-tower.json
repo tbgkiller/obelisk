@@ -94,8 +94,8 @@
     {
       "id": "the-prime-rehearses-the-list-about-to-be-applied",
       "file": "obelisk/updates.py",
-      "guard": "    ids = queued[\"mod_ids\"] if \"mod_ids\" in queued else store.get(\"mod_ids\")",
-      "disable": "    ids = store.get(\"mod_ids\")  # GUARD DISABLED BY MUTATION CHECK",
+      "guard": "    return queued[\"mod_ids\"] if \"mod_ids\" in queued else store.get(\"mod_ids\")",
+      "disable": "    return store.get(\"mod_ids\")  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "updates",
       "why": "the disable text is the committed list, which is what stood here, and it makes every gate downstream unreachable for the case the whole pipeline was built for. A mod added to a RUNNING cluster is QUEUED rather than written - pending is an overlay and never a write, by design - so store.get(\"mod_ids\") answers the list WITHOUT it, arkupdate.status never draws a row for it, target_key does not move and any_missing cannot see it. The staging server exists to rehearse what is about to be applied; rehearsing the committed list while an add sits in the queue is the wrong question, and it is silent - every ordinary poll still works, and only the added mod goes missing. Membership rather than `or`, because a queued \"\" is a deliberate run-vanilla and falling back there would rehearse mods the operator has just removed"
     },
@@ -122,6 +122,30 @@
       "disable": "            if False:  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "ui",
       "why": "now that the prime rehearses the list about to be applied, a mod the operator has just added is drawn on this panel before it has ever been on disk. Its `newer` is None for the honest reason - there is no installed file id to compare against - but CurseForge ANSWERED and `latest` is the version that will be fetched. The disable text is the older reading, where every None is \"? could not check\", and it puts the unanswered-question colour on a mod that is simply being prepared: the operator is sent looking for a fault in the one state that is working exactly as designed. The distinction is positive evidence, not a guess - a mod with no `latest` at all really is unknown and still renders that way, which is the case this panel was built for"
+    },
+    {
+      "id": "the-boot-is-graded-against-the-list-that-booted",
+      "file": "obelisk/updates.py",
+      "guard": "    ids = effective_mod_ids(store)",
+      "disable": "    ids = store.get(\"mod_ids\")  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "this is what read_boot_log grades the staging server's log against, and up() has just written the container's compose file from the SAME answer. The disable text is the committed list, which is a different list the moment an add is queued - and grading a boot against a list the container was never given fails both ways: a mod that was never asked for passes as rehearsed, and one that was asked for goes unnoticed. Three readers of this list have to agree - the decision (look), the verification (here) and the container (staging.compose_text) - and the round that shipped only the first of the three recorded that a mod had been staged and verified when the container had never seen it"
+    },
+    {
+      "id": "the-staging-container-is-told-the-list-being-rehearsed",
+      "file": "obelisk/staging.py",
+      "guard": "        \"      MOD_IDS: %s\" % _q(_updates().effective_mod_ids(store)),",
+      "disable": "        \"      MOD_IDS: %s\" % _q(store.get(\"mod_ids\")),  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "the only line here that decides what the staging server ACTUALLY fetches. steamcmd cannot fetch mods - the ASA binary does it itself at startup from MOD_IDS - so a mod missing from this line is a mod that is never downloaded and never proved, whatever anything upstream believes. The disable text is the committed list, and it is what shipped: a mod added to a running cluster is QUEUED rather than written, so the container was started WITHOUT the very mod it was started to rehearse while look() had already decided to start it FOR that mod and the fingerprint afterwards claimed it had been staged and verified. The decision being right is not the thing that matters; what boots is"
+    },
+    {
+      "id": "a-listed-mod-not-on-disk-is-something-to-do",
+      "file": "obelisk/arkupdate.py",
+      "guard": "        \"any_missing\": any(bool(r[\"latest\"]) and not r[\"running\"] for r in rows),",
+      "disable": "        \"any_missing\": False,  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "the fact the whole added-mod path turns on, and any_newer structurally cannot supply it: a mod that has never been on disk has no running file id, so compare() leaves newer=None - \"could not find out\", which is correct and must stay - and None is falsy. The disable text is the constant that reads as \"nothing to do\", which is what stood here before there was a second question, and with it an added mod never primes under on_demand. Pinned by 'updates' rather than by test_arkupdate because test_arkupdate is not a named command: adding it was TRIED and measured, and it un-targets this very guard - 'arkupdate' FAILED as expected, but so did: updates FAILED - since test_updates exercises status() through look(). Requiring `latest` is the other half: a mod CurseForge could not be asked about is an unknown, not a missing one"
     },
     {
       "id": "a-primed-build-is-not-an-update",

@@ -118,6 +118,14 @@ def map_id(store):
     return entry["map_id"], entry["key"]
 
 
+def _updates():
+    """updates.py, imported at call time rather than at the top: updates imports
+    THIS module, so a module-level import here would be a cycle. Not a hot path -
+    this runs once per staging start."""
+    from . import updates
+    return updates
+
+
 def compose_text(store, project, ark_host_root):
     """The staging stack, as plain YAML for the same reason the cluster's is.
 
@@ -165,8 +173,12 @@ def compose_text(store, project, ark_host_root):
         # A cluster id of its own. Sharing the live one would list a server that cannot
         # be transferred to and has no cluster folder to transfer with.
         "      CLUSTER_ID: %s" % _q("%s-staging" % store.get("cluster_id")),
-        # The whole reason this instance exists.
-        "      MOD_IDS: %s" % _q(store.get("mod_ids")),
+        # The whole reason this instance exists - and the list ABOUT to be applied,
+        # which is the same answer the prime decision and the fingerprint are built
+        # from. A mod added to a running cluster is queued rather than written, so
+        # store.get() here booted the container WITHOUT the very mod it was started
+        # to rehearse, while everything upstream believed it had one.
+        "      MOD_IDS: %s" % _q(_updates().effective_mod_ids(store)),
         "      PASSIVE_MODS: %s" % _q(store.get("passive_mods")),
         "      BATTLEEYE: \"FALSE\"",
         "      ENABLE_MOTD: \"FALSE\"",

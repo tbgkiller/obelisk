@@ -219,19 +219,24 @@ check("while the build is still answered - one source failing is not both",
 listdir, read = fs(mods={k: v for k, v in LIVE.items() if k != "929420"})
 st = arkupdate.status("/ark/ServerFiles", IDS, opener=opener_for(),
                       listdir=listdir, read=read)
-row = [r for r in st["mods"] if r["id"] == "929420"][0]
+# Indexed defensively, and every key read through .get: if the row or the fact is
+# not there this has to FAIL, not raise. A module that dies never prints its
+# FAILURES line, so a mutation check reads the whole run as a crash and scores it as
+# nothing proved rather than as the regression it is.
+row = ([r for r in st["mods"] if r["id"] == "929420"] or [{}])[0]
 check("a mod that is not on disk yet is unknown, not current",
-      row["newer"] is None and row["running"] is None and row["latest"], row)
+      bool(row) and row["newer"] is None and row["running"] is None
+      and bool(row["latest"]), row)
 check("and any_newer still cannot see it - that is the shape, not a bug",
       st["any_newer"] is False, st["any_newer"])
 check("so the status says something is missing, which is the other question",
-      st["any_missing"] is True, st)
+      st.get("any_missing") is True, st)
 
 listdir, read = fs()
 st = arkupdate.status("/ark/ServerFiles", IDS, opener=opener_for(),
                       listdir=listdir, read=read)
 check("a cluster with every listed mod on disk has nothing missing",
-      st["any_missing"] is False, st)
+      st.get("any_missing") is False, st)
 
 # ...and silence is not absence. A mod CurseForge could not be asked about has no
 # `latest` to be missing against, so it is an unknown and `unknown` is what says so.
@@ -239,7 +244,7 @@ listdir, read = fs(mods={k: v for k, v in LIVE.items() if k != "929420"})
 st = arkupdate.status("/ark/ServerFiles", IDS, opener=opener_for(fail="cfwidget"),
                       listdir=listdir, read=read)
 check("a mod we could not ask about does not read as missing",
-      st["any_missing"] is False, st)
+      st.get("any_missing") is False, st)
 check("it reads unknown instead", st["unknown"] is True, st)
 
 # ---- leftovers on disk are not this page's business

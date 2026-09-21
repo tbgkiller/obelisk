@@ -28,7 +28,7 @@ def check(name, cond, detail=""):
 
 
 class FakeStore:
-    def __init__(self, **kw):
+    def __init__(self, queued=None, **kw):
         self.values = dict(
             staging_mode="always", staging_map="scorched", staging_memory="10g",
             ark_image="acekorneya/asa_server:2_1_latest", timezone="America/Chicago",
@@ -36,6 +36,14 @@ class FakeStore:
             admin_password="a-secret-nobody-should-see-twice",
             mod_ids="929110,940003,929420", passive_mods="")
         self.values.update(kw)
+        # The compose file carries the mod list the cluster is ABOUT to run, which
+        # means the queue is part of answering it - so a store double has to be able
+        # to hold one. `queued` here is the convenience: what pending would have
+        # written, without going through it.
+        self.data = {}
+        if queued is not None:
+            self.data["pending"] = {"cluster": {"mod_ids": queued}, "maps": {},
+                                    "clears": {}}
 
     def get(self, key, map_name=None):
         return self.values.get(key)
@@ -43,6 +51,28 @@ class FakeStore:
 
 ARK = "/ark"
 P = staging.paths(ARK)
+
+# ---- the container is told the list that is ABOUT to be applied
+#
+# The one that BOOTS is the only one that matters. A mod added to a running cluster
+# is queued rather than written, so reading the committed list here started the
+# staging server WITHOUT the very mod it was started to rehearse - while the
+# decision to start it, and the fingerprint written afterwards, both said otherwise.
+_plain_yaml = staging.compose_text(FakeStore(), "tbg", ARK)
+check("with nothing queued the committed list is what boots",
+      'MOD_IDS: "929110,940003,929420"' in _plain_yaml,
+      [l for l in _plain_yaml.splitlines() if "MOD_IDS" in l])
+
+_queued_yaml = staging.compose_text(
+    FakeStore(queued="929110,940003,929420,942024"), "tbg", ARK)
+check("a queued mod add reaches the container that has to fetch it",
+      'MOD_IDS: "929110,940003,929420,942024"' in _queued_yaml,
+      [l for l in _queued_yaml.splitlines() if "MOD_IDS" in l])
+
+_vanilla_yaml = staging.compose_text(FakeStore(queued=""), "tbg", ARK)
+check("and a queued empty list boots vanilla rather than falling back",
+      'MOD_IDS: ""' in _vanilla_yaml,
+      [l for l in _vanilla_yaml.splitlines() if "MOD_IDS" in l])
 
 # ---- the folders it owns, and the ones it must not
 check("the staged tree is beside the live one, never inside it",

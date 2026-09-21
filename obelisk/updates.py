@@ -123,6 +123,39 @@ PRIME_BACKOFF = (0, 2 * 3600, 6 * 3600)
 BACKSTOP_HOURS = 24
 
 
+def effective_mod_ids(store):
+    """The mod list the cluster is ABOUT to run - the queued one when there is one.
+
+    ONE answer, because three readers disagreeing is exactly the defect this
+    replaces. The decision to prime read the queued list, the staging container was
+    told the committed one, and the fingerprint written into the store then claimed
+    the queued list had been rehearsed. Measured end to end: the container booted
+    929110,940003 while the record said 942024 had been staged and verified - so the
+    mod was never downloaded or proved, the store held a claim nothing could back,
+    and because staged_target then equalled target_key the real mod could never be
+    staged again. A record that claims more than was proved is worse than no record.
+
+    A mod added to a RUNNING cluster is QUEUED rather than written - pending is an
+    overlay and never a write, by design, and mod_ids is recreate-class so split()
+    queues it every time - so store.get("mod_ids") answers the list without it. The
+    staging server exists to rehearse what is about to be applied, so that is what
+    every part of it has to read: the decision, the verification, and the container.
+
+    Membership rather than `or`: a queued "" is a deliberate "run vanilla", and
+    falling back to the committed list there would rehearse mods the operator has
+    just removed. With nothing queued the two are the same string.
+    """
+    from . import pending
+    queued = pending.queued(store)["cluster"]
+    return queued["mod_ids"] if "mod_ids" in queued else store.get("mod_ids")
+
+
+def _target_mods(fingerprint):
+    """The mod ids a fingerprint claims. `build|id=file,id=file` -> [id, ...]."""
+    _build, _sep, mods = str(fingerprint or "").partition("|")
+    return [p.split("=", 1)[0] for p in mods.split(",") if "=" in p]
+
+
 def target_key(status):
     """A fingerprint of what would be staged: the build, and every mod's newest file.
 
@@ -226,25 +259,14 @@ def look(store, ark_root, opener=None, listdir=None, read=None, source=None):
     cache. This is the answer that decides whether a staging prime starts, so it is
     worth asking the source when we can.
     """
-    from . import curseforge, layout, pending
+    from . import curseforge, layout
     serverfiles = layout.ark_paths(ark_root)["serverfiles"]
     if source is None and curseforge.has_key(store):
         source = lambda ids: curseforge.batch(store, ids)     # noqa: E731 - one line
-    # The mod list the cluster is ABOUT to run, which is not always the one it is
-    # running. A mod added to a running cluster is QUEUED rather than written -
-    # pending is an overlay and never a write, by design - so `store.get("mod_ids")`
-    # still answers the list without it, and every question below would be asked
-    # about a cluster one mod out of date. The staging server exists to rehearse what
-    # is about to be applied, so the queued list is the one to rehearse; rehearsing
-    # the committed one while an add sits in the queue is the wrong question, and it
-    # is why an added mod never reached the prime it was meant to ride.
-    #
-    # Membership rather than `or`: a queued value of "" is a deliberate "run vanilla",
-    # and falling back to the committed list there would rehearse mods the operator
-    # has just removed. When nothing is queued these are the same string.
-    queued = pending.queued(store)["cluster"]
-    ids = queued["mod_ids"] if "mod_ids" in queued else store.get("mod_ids")
-    return arkupdate.status(serverfiles, ids, opener=opener,
+    # The list about to be applied, not only the one running - and the SAME answer
+    # the staging container is told and the fingerprint is built from. See
+    # effective_mod_ids: this reader agreeing with those two is the whole point.
+    return arkupdate.status(serverfiles, effective_mod_ids(store), opener=opener,
                             listdir=listdir, read=read, source=source)
 
 
@@ -321,7 +343,11 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
     # It downloads ~12 GB and then generates a world, so this is tens of minutes. The
     # thing being waited for is the log saying the mods loaded, not the container
     # saying it started - those are a long way apart and only the second one is proof.
-    ids = store.get("mod_ids")
+    # The same list the staging container was just told to boot with - `up()`
+    # regenerates its compose file first, off this same answer. Grading the boot log
+    # against a different list is how a mod that was never asked for passed as
+    # rehearsed, and one that was asked for went unnoticed.
+    ids = effective_mod_ids(store)
     staged = staging.paths(ark_root)["staged"]
     # Counted rather than clocked, the same way wait_healthy is. A loop whose only exit
     # is "the wall clock passed a deadline" spins forever the moment anything hands it a

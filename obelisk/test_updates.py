@@ -641,6 +641,92 @@ ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename, s
 check("with nothing waiting at all it refuses", not ok, msg)
 check("and says there is nothing to do", "nothing is waiting" in msg, msg)
 
+# ---- END TO END: the queue, the container, the proof and the record
+#
+# The unit answers were all correct while this was broken, which is why it is here.
+# look() read the queued list, the staging container was told the COMMITTED one, and
+# the fingerprint was then written from the queued list - so the store recorded that
+# 942024 had been staged and verified when the container had never seen it, and
+# because staged_target then equalled target_key the mod could never be staged again.
+# The decision being right is not the thing that matters; what boots is.
+from . import staging as _stg
+
+_e2e = real_store(mod_ids="929110,940003", cluster_id="tbg",
+                  staging_mode="on_demand", staging_map="scorched")
+_pend.stage(_e2e, _pend.split({"mod_ids": "929110,940003,942024"}, _e2e)[1])
+_E2E_FILES = {"929110": "7738786", "940003": "6830549", "942024": "9420001"}
+
+
+def _e2e_fs():
+    def listdir(_p):                      # the LIVE cluster's disk: committed only
+        return ["929110_7738786", "940003_6830549"]
+
+    def read(path):
+        if path.endswith(".acf"):
+            return '"AppState" {\n\t"buildid"\t\t"25359944"\n}'
+        raise OSError("not there")
+
+    def opener(url):
+        if "steamcmd" in url:
+            return ('{"data":{"2430930":{"depots":{"branches":{"public":'
+                    '{"buildid":"25359944"}}}}}}')
+        p = url.rsplit("/", 1)[-1]
+        return ('{"id":%s,"title":"Mod %s","download":{"id":%s}}'
+                % (p, p, _E2E_FILES[p]))
+
+    return dict(opener=opener, listdir=listdir, read=read)
+
+
+check("the store still holds the committed list - the add is queued, not written",
+      _e2e.get("mod_ids") == "929110,940003", _e2e.get("mod_ids"))
+check("and the one effective answer is the list about to be applied",
+      updates.effective_mod_ids(_e2e) == "929110,940003,942024",
+      updates.effective_mod_ids(_e2e))
+
+_e2e_status = updates.look(_e2e, ARK, **_e2e_fs())
+check("the decision sees it", "942024" in [r["id"] for r in _e2e_status["mods"]],
+      [r["id"] for r in _e2e_status["mods"]])
+check("and decides to prime, with nothing newer",
+      updates.needs_prime(_e2e, _e2e_status, now=lambda: 1000)[0],
+      updates.needs_prime(_e2e, _e2e_status, now=lambda: 1000))
+
+_e2e_yaml = _stg.compose_text(_e2e, "tbg", ARK)
+_e2e_mod_line = [l.strip() for l in _e2e_yaml.splitlines()
+                 if l.strip().startswith("MOD_IDS")]
+check("THE CONTAINER IS TOLD IT - which is the half that was missing",
+      _e2e_mod_line and "942024" in _e2e_mod_line[0], _e2e_mod_line)
+
+# The boot log is built from the compose file rather than hand-written, so this can
+# never quietly prove a different cluster from the one that would really boot.
+_booted = [m.strip() for m in _e2e_mod_line[0].split('"')[1].split(",") if m.strip()]
+_e2e_log = "\n".join(
+    ["LogCFCore: Mod valid: Mod %s (%s)" % (m, m) for m in _booted]
+    + ["UShooterEngine::LoadGameMods with %d mods" % len(_booted)]
+    + ["UShooterEngine::LoadGameMods Loading Mod "
+       "ShooterGame/Mods/83374/%s_%s/a.uasset : %s" % (m, _E2E_FILES[m], m)
+       for m in _booted])
+
+drain()
+_e2e_ok, _e2e_msg, _e2e_result = updates.prime(
+    _e2e, ARK, up=lambda: (True, "starting"), down=lambda: (True, "stopped"),
+    log_of=lambda: _e2e_log, rcon_ok=lambda: True, wait=lambda s: None,
+    now=lambda: 1000, target=updates.target_key(_e2e_status), **_e2e_fs())
+check("the prime passes", _e2e_ok, _e2e_msg)
+check("and it actually rehearsed the added mod",
+      "942024" in (_e2e_result.get("mods") or []), _e2e_result.get("mods"))
+check("the record claims nothing it did not prove",
+      not [m for m in updates._target_mods(_e2e_result.get("target"))
+           if m not in (_e2e_result.get("mods") or [])],
+      (_e2e_result.get("target"), _e2e_result.get("mods")))
+_e2e_said = [i["text"] for i in drain() if i["event"] == "ark.update_primed"]
+check("and the operator is told what is ready by name",
+      _e2e_said and _e2e_said[0].startswith("New mod 942024 is staged and verified"),
+      _e2e_said)
+check("only now is it 'already staged' - because now it really is",
+      not updates.needs_prime(_e2e, _e2e_status, now=lambda: 9999)[0],
+      updates.needs_prime(_e2e, _e2e_status, now=lambda: 9999))
+
+
 # ---- the staging server has to be GONE before anything is renamed
 #
 # down() returns False only after `rm -f` failed too, so what is left is a container
