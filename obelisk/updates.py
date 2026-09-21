@@ -382,16 +382,18 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
     note_attempt(store, fingerprint, ok, now=now)
 
     if ok:
+        build_changed, added = _what_is_new(ark_root, result, read=read,
+                                            listdir=listdir)
         announce.say("ark.update_primed",
-                     "Build %s is staged and verified: it booted on the staging server "
-                     "with all %d mod(s) loaded. Apply it whenever you like."
-                     % (target, len(result["loaded"])),
+                     _primed_sentence(target, build_changed, added,
+                                      len(result["loaded"])),
                      build=target,
                      mods=",".join("%s=%s" % (m, f) for m, f
                                    in sorted(result["loaded"].items())),
                      detail="\n".join(
                          ["build %s staged and proved by a real boot" % target] +
-                         ["mod %s loaded from file %s" % (m, f)
+                         ["mod %s loaded from file %s%s"
+                          % (m, f, " - new to the cluster" if m in added else "")
                           for m, f in sorted(result["loaded"].items())]))
     else:
         # Discord gets the first three problems; the feed gets every one of them, plus
@@ -409,6 +411,49 @@ def prime(store, ark_root, on_step=None, up=None, down=None, alive=None,
         step("stopping the staging server")
         down()
     return ok, staging.summary(result), result
+
+
+def _what_is_new(ark_root, result, read=None, listdir=None):
+    """(is the staged build newer than the live one, [mod ids new to the cluster]).
+
+    Read off the live install rather than assumed, because the sentence built from it
+    is shown to the operator as what is ready.
+
+    An unreadable live tree claims nothing. No mods on disk at all is "could not find
+    out" exactly as much as it is "a vanilla cluster", and announcing seven new mods
+    because a share was not mounted is the confident wrong answer this whole module
+    exists to refuse. So the added list is only ever drawn against a live mod set we
+    actually read.
+    """
+    live = staging.paths(ark_root)["live"]
+    running, _why = arkupdate.installed_build(live, read=read)
+    was = arkupdate.installed_mods(live, listdir=listdir, read=read)
+    added = [m for m in (result.get("mods") or []) if m not in was] if was else []
+    return newer_build(running, result.get("build")), added
+
+
+def _primed_sentence(build, build_changed, added, loaded):
+    """What is actually ready, named: a build, the added mod(s), or both.
+
+    After an add with no build change this used to lead with a build that had not
+    moved and never mention the mod, so the operator was told a build was ready when
+    what was ready was their mod. With nothing known to be new it falls back to the
+    build, which is what it always said. "Apply it whenever you like" stays either
+    way - that sentence is the notification, and it was already right.
+    """
+    if added:
+        mods = ("new mod %s" % added[0] if len(added) == 1
+                else "%d new mods (%s)" % (len(added), ", ".join(added)))
+        if build_changed:
+            what, verb, it = "Build %s and %s" % (build, mods), "are", "they"
+        else:
+            what = mods[0].upper() + mods[1:]
+            verb, it = ("is", "it") if len(added) == 1 else ("are", "they")
+    else:
+        what, verb, it = "Build %s" % build, "is", "it"
+    return ("%s %s staged and verified: %s booted on the staging server with all "
+            "%d mod(s) loaded. Apply it whenever you like."
+            % (what, verb, it, loaded))
 
 
 def _progress(text):

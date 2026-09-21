@@ -1499,6 +1499,88 @@ events = [i["event"] for i in drain()]
 check("primed is announced", "ark.update_primed" in events, events)
 
 
+# ---- the primed announcement has to be true about what is ready
+#
+# After an add with no build change it led with a build that had not moved and never
+# named the mod, so the operator was told a build was ready when what was ready was
+# their mod. This is the "ready to apply" notification, so it has to say what is.
+def live_fs(mods, build="25200000"):
+    """A pretend live install. `.staging` is the tree prime just proved; the other is
+    the cluster's own, which is what "new" is measured against."""
+    def read(path):
+        if ".staging" in path.replace("\\", "/"):
+            return '"AppState" {\n\t"buildid"\t\t"25200000"\n}'
+        if path.endswith(".acf"):
+            return '"AppState" {\n\t"buildid"\t\t"%s"\n}' % build
+        raise OSError("not there")
+
+    def listdir(path):
+        if ".staging" in path.replace("\\", "/") or mods is None:
+            raise OSError("not there")
+        return ["%s_%s" % (p, f) for p, f in mods.items()]
+
+    return read, listdir
+
+
+def primed_text(mods, build="25200000"):
+    drain()
+    read, listdir = live_fs(mods, build)
+    updates.prime(FakeStore(), ARK, up=spy_up, down=lambda: (True, "stopped"),
+                  log_of=lambda: good_log, rcon_ok=lambda: True,
+                  opener=lambda url: '{"status":"success","data":{"2430930":{"depots":'
+                                     '{"branches":{"public":{"buildid":"25200000"}}}}}}',
+                  read=read, listdir=listdir, wait=lambda s: None, now=lambda: 1000)
+    said = [i for i in drain() if i["event"] == "ark.update_primed"]
+    return (said[0]["text"] if said else ""), (said[0].get("detail") if said else "")
+
+
+ON_DISK = {"929110": "7738786", "940003": "6830549"}       # 929420 is the added one
+
+text, detail = primed_text(ON_DISK)
+check("an added mod with no build change is announced as the mod, not the build",
+      text.startswith("New mod 929420 is staged and verified"), text)
+check("and does not lead with a build that did not move",
+      not text.startswith("Build "), text)
+check("and still says the thing the owner asked for",
+      "Apply it whenever you like." in text, text)
+check("the long version marks which mod is new",
+      "mod 929420 loaded from file 8160173 - new to the cluster" in detail, detail)
+check("and does not mark the mods that were already there",
+      "mod 929110 loaded from file 7738786\n" in detail + "\n", detail)
+
+text, _d = primed_text(ON_DISK, build="25117056")
+check("a build AND an added mod names both", text.startswith(
+    "Build 25200000 and new mod 929420 are staged and verified"), text)
+
+text, _d = primed_text({"929110": "7738786"})
+check("two added mods are counted and listed",
+      text.startswith("2 new mods (929420, 940003) are staged and verified"), text)
+
+text, _d = primed_text(None)                    # the live mods could not be read
+check("a live tree we could not read claims no new mods - it falls back to the build",
+      text.startswith("Build 25200000 is staged and verified"), text)
+
+text, _d = primed_text(dict(LOADED), build="25117056")
+check("a plain build update reads exactly as it always did",
+      text == "Build 25200000 is staged and verified: it booted on the staging server "
+              "with all 3 mod(s) loaded. Apply it whenever you like.", text)
+
+s = FakeStore()
+thin = "\n".join(l for l in good_log.splitlines() if "929420" not in l)
+ok, msg, result = updates.prime(
+    s, ARK, up=spy_up, down=lambda: (True, "stopped"), log_of=lambda: thin,
+    rcon_ok=lambda: True,
+    opener=lambda url: '{"status":"success","data":{"2430930":{"depots":{"branches":'
+                       '{"public":{"buildid":"25200000"}}}}}}',
+    read=lambda p: '"AppState" {\n\t"buildid"\t\t"25200000"\n}',
+    wait=lambda s: None, now=lambda: 1000)
+check("a staging boot missing a mod does not prime", not ok, msg)
+check("it is recorded, so the UI can say what went wrong",
+      state_problems := (updates.state(s)["primed"]["problems"]), state_problems)
+check("but it is not applyable", updates.primed(s) is None)
+events = [i["event"] for i in drain()]
+check("and the channel is told it is unsafe", "ark.update_unsafe" in events, events)
+
 # ---- the mods being proved is not the world being up
 #
 # These are minutes apart and the gap is where a real prime failed. On the live host the
