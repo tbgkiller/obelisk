@@ -133,6 +133,11 @@ def at(hour, minute=0):
 # test that wants an apply to fire has to say what it is newer *than*.
 OLD_BUILD = "25117056"
 ready = {"ok": True, "build": "25200000", "loaded": LOADED}
+# What the staged tree's OWN appmanifest says, which is a different fact from the
+# primed record and is now re-read immediately before the swap. Handed in here for the
+# same reason `installed` is: otherwise these tests read the real /ark, find nothing,
+# and every apply refuses.
+STAGED_BUILD = "25200000"
 
 s = FakeStore(update_apply_in_window=True)
 updates.remember(s, primed=ready)
@@ -389,14 +394,14 @@ def tree_exists(missing=()):
 s = FakeStore(ark_update_mode="automatic")
 updates.remember(s, primed=ready)
 calls, rename = moved_nothing()
-ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD, rename=rename, exists=tree_exists())
+ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD, rename=rename, staged_build=STAGED_BUILD, exists=tree_exists())
 check("apply refuses while the server image owns updates", not ok, msg)
 check("nothing was renamed", calls == [], calls)
 check("and it says how to change that", "Who applies ARK updates" in msg, msg)
 
 s = FakeStore()
 calls, rename = moved_nothing()
-ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD, rename=rename, exists=tree_exists())
+ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD, rename=rename, staged_build=STAGED_BUILD, exists=tree_exists())
 check("apply refuses with nothing staged", not ok, msg)
 check("still nothing renamed", calls == [], calls)
 
@@ -404,7 +409,7 @@ s = FakeStore()
 updates.remember(s, primed=ready)
 calls, rename = moved_nothing()
 ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD, players=lambda: (3, {"island": 3}, []),
-                                  rename=rename, exists=tree_exists())
+                                  rename=rename, staged_build=STAGED_BUILD, exists=tree_exists())
 check("apply refuses with players online", not ok, msg)
 check("and names where they are", "island (3)" in msg, msg)
 check("and moved nothing", calls == [], calls)
@@ -413,7 +418,7 @@ check("and moved nothing", calls == [], calls)
 calls, rename = moved_nothing()
 ok, msg, _ = updates.apply_update(s, ARK, installed=OLD_BUILD,
                                   players=lambda: (0, {}, [("genesis", "timeout")]),
-                                  rename=rename, exists=tree_exists())
+                                  rename=rename, staged_build=STAGED_BUILD, exists=tree_exists())
 check("a map that did not answer stops the apply - silence is not 'nobody is on'",
       not ok, msg)
 check("and names it", "genesis" in msg, msg)
@@ -450,7 +455,7 @@ renamed, rename = moved_nothing()
 ok, msg, detail = updates.apply_update(
     s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("a clean apply succeeds", ok, msg)
 # No warn step, and that is the point: this apply answers (0, {}, []) - an empty
 # cluster - so there is nobody to count down to. The order either side of it is
@@ -477,7 +482,7 @@ _renamed_w, rename_w = moved_nothing()
 updates.apply_update(
     s_w, ARK, installed=OLD_BUILD, warn=c_w.warn, stop_all=c_w.stop, start_all=c_w.start,
     verify=c_w.verify, players=lambda: (2, {"The Island": 2}, []), force=True,
-    rename=rename_w, exists=tree_exists(), now=lambda: 1000)
+    rename=rename_w, staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("and with players on, warn still comes first - before the save, not just the stop",
       c_w.log == ["warn:30", "stop", "start", "verify"], c_w.log)
 drain()
@@ -493,7 +498,7 @@ _, rename = moved_nothing()
 ok, msg, _ = updates.apply_update(
     s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (5, {"island": 5}, []), force=True,
-    rename=rename, exists=tree_exists(), now=lambda: 1000)
+    rename=rename, staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("force applies over players online", ok, msg)
 
 
@@ -534,7 +539,7 @@ with _NoDownloads() as guard:
     ok, msg, detail = updates.apply_update(
         s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
         verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-        exists=tree_exists(), now=lambda: 1000)
+        staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("the scheduled apply succeeds on staged files", ok, msg)
 check("and never started the staging server - so it never downloaded anything",
       guard.called == [], guard.called)
@@ -581,7 +586,7 @@ renamed, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
     st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("a build and a setting apply together", ok, msg)
 check("in one restart, not two", c.log.count("stop") == 1 and c.log.count("start") == 1,
       c.log)
@@ -601,7 +606,7 @@ calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
     st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("a settings-only batch applies with nothing staged", ok, msg)
 check("and moves no files at all", calls == [], calls)
 check("the setting is live", st.get("max_players") == 250)
@@ -619,7 +624,7 @@ calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
     st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("a config change is not blocked by who owns updates", ok, msg)
 check("but the files are left alone - that half is POK's", calls == [], calls)
 check("and the staged update is still staged for later",
@@ -627,15 +632,73 @@ check("and the staged update is still staged for later",
 
 st = real_store(ark_update_mode="automatic")
 updates.remember(st, primed=ready)
-ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename, exists=tree_exists())
+ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename, staged_build=STAGED_BUILD, exists=tree_exists())
 check("with only a staged build and POK in charge, it refuses and says why",
       not ok and "Who applies ARK updates" in msg, msg)
 
 st = real_store()
-ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename, exists=tree_exists())
+ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename, staged_build=STAGED_BUILD, exists=tree_exists())
 check("with nothing waiting at all it refuses", not ok, msg)
 check("and says there is nothing to do", "nothing is waiting" in msg, msg)
 
+
+# ---- the tree being promoted has to be the tree that was VERIFIED
+#
+# The primed record is a record of a boot that happened. The staged tree does not
+# stand still afterwards: the staging compose sets UPDATE_SERVER TRUE and
+# CHECK_FOR_UPDATE_INTERVAL 1, so its own updater re-downloads into
+# ServerFiles.staging hourly by design. Nothing above the swap asks the staged tree
+# what build it now holds - staged_worth_applying compares against the LIVE install
+# and apply_steps only checks the staged tree exists - so without this a tree nobody
+# verified is promoted onto ten maps.
+drain()
+s_f4 = FakeStore()
+updates.remember(s_f4, primed=ready)
+c_f4 = Cluster()
+_moved4, _rename4 = moved_nothing()
+ok, msg, _d = updates.apply_update(
+    s_f4, ARK, installed=OLD_BUILD, warn=c_f4.warn, stop_all=c_f4.stop,
+    start_all=c_f4.start, verify=c_f4.verify, players=lambda: (0, {}, []),
+    rename=_rename4, staged_build="25300000", exists=tree_exists(), now=lambda: 1000)
+check("a staged tree that moved on since the prime is not promoted", not ok, msg)
+check("and the refusal names both builds, so the claim can be checked",
+      "25300000" in msg and "25200000" in msg, msg)
+check("nothing was renamed - the live install never moved", _moved4 == [], _moved4)
+check("the cluster was started again rather than left down",
+      c_f4.log == ["stop", "start"], c_f4.log)
+check("the primed record is dropped, so the window cannot stop the cluster to be "
+      "refused again tomorrow", updates.primed(s_f4) is None, s_f4.data)
+_ev4 = [i["event"] for i in drain()]
+check("and the refusal reached the admin channel", "ark.update_failed" in _ev4, _ev4)
+
+# An appmanifest nobody could read is refused too: unknown is never a pass, and it is
+# the same rule the world gate and the verify step keep in this file.
+drain()
+s_f4b = FakeStore()
+updates.remember(s_f4b, primed=ready)
+c_f4b = Cluster()
+_moved4b, _rename4b = moved_nothing()
+ok, msg, _d = updates.apply_update(
+    s_f4b, ARK, installed=OLD_BUILD, warn=c_f4b.warn, stop_all=c_f4b.stop,
+    start_all=c_f4b.start, verify=c_f4b.verify, players=lambda: (0, {}, []),
+    rename=_rename4b, staged_build="", exists=tree_exists(), now=lambda: 1000)
+check("a staged build that could not be read is refused, not assumed", not ok, msg)
+check("and says that is what happened", "could not be read" in msg, msg)
+check("with nothing renamed", _moved4b == [], _moved4b)
+
+# ...and a staged tree that still holds exactly what was verified goes through, which
+# is the case that must not become harder.
+drain()
+s_f4c = FakeStore()
+updates.remember(s_f4c, primed=ready)
+c_f4c = Cluster()
+_moved4c, _rename4c = moved_nothing()
+ok, msg, _d = updates.apply_update(
+    s_f4c, ARK, installed=OLD_BUILD, warn=c_f4c.warn, stop_all=c_f4c.stop,
+    start_all=c_f4c.start, verify=c_f4c.verify, players=lambda: (0, {}, []),
+    rename=_rename4c, staged_build="25200000", exists=tree_exists(), now=lambda: 1000)
+check("a staged tree that still holds what was verified is promoted", ok, msg)
+check("and the swap happened", len(_moved4c) >= 3, _moved4c)
 
 
 # ---- a failure after the settings land puts BOTH halves back
@@ -655,7 +718,7 @@ c = Cluster(start_ok=False)
 ok, msg, detail = updates.apply_batch(
     st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=tree_rename,
-    exists=lambda p: p in tree, now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=lambda p: p in tree, now=lambda: 1000)
 check("a cluster that will not start fails the batch", not ok, msg)
 check("the build is put back", tree.get("/ark/ServerFiles") == 1, tree)
 check("and the staged tree too", "/ark/ServerFiles.staging" in tree, tree)
@@ -677,7 +740,7 @@ calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
     st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("an impossible queued value fails the batch", not ok, msg)
 check("nothing was written", st.get("max_players") == 70, st.get("max_players"))
 check("verification never ran on a cluster that got no change",
@@ -689,7 +752,7 @@ st = real_store()
 _pend.stage(st, {"max_players": 250})
 calls, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, players=lambda: (2, {"island": 2}, []),
-                                  rename=rename, exists=tree_exists())
+                                  rename=rename, staged_build=STAGED_BUILD, exists=tree_exists())
 check("a settings batch will not restart a cluster somebody is playing on",
       not ok and "player(s) are online" in msg, msg)
 check("and moved nothing", calls == [], calls)
@@ -711,7 +774,7 @@ _, rename = moved_nothing()
 ok, msg, detail = updates.apply_batch(
     st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("a batch whose gates fail is a failure", not ok, msg)
 check("the setting is back to what was running", st.get("max_players") == 70,
       st.get("max_players"))
@@ -793,7 +856,7 @@ def warned(players_answer, force=False, minutes=30, raises=False):
     updates.apply_batch(
         st_, ARK, installed=OLD_BUILD, warn=c_.warn, stop_all=c_.stop,
         start_all=c_.start, verify=c_.verify, players=ask, force=force, rename=rn_,
-        exists=tree_exists(), now=lambda: 4242)
+        staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 4242)
     return c_.log, drain()
 
 
@@ -861,7 +924,7 @@ c = Cluster()
 _, rename = moved_nothing()
 ok, msg, _d = updates.apply_batch(
     st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
-    verify=c.verify, players=lambda: (0, {}, []), rename=rename, exists=tree_exists(),
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename, staged_build=STAGED_BUILD, exists=tree_exists(),
     now=lambda: 4242)
 check("a cluster with a map down is still not blocked from updating", ok, msg)
 check("and it was stopped exactly once", c.log.count("stop") == 1, c.log)
@@ -1065,7 +1128,7 @@ def _apply(st_, spy, ark=ARK, **kw):
     return updates.apply_batch(
         st_, ark, warn=spy.warn, stop_all=spy.stop, start_all=spy.start,
         verify=spy.verify, players=lambda: (0, {}, []), rename=_rename,
-        exists=tree_exists(), now=lambda: 1000, **kw), _r
+        staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000, **kw), _r
 
 
 st = _stale_store()
@@ -1372,7 +1435,7 @@ _, rename = moved_nothing()
 updates.apply_batch(st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop,
                     start_all=c.start, verify=c.verify,
                     players=lambda: (0, {}, []), rename=rename,
-                    exists=tree_exists(), now=lambda: _five_am - 3600)
+                    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: _five_am - 3600)
 check("a batch that stopped the cluster records the restart",
       updates.state(st).get("last_apply"), updates.state(st))
 ok, why = updates.due(st, now=lambda: _five_am, installed=OLD_BUILD)
@@ -1384,7 +1447,7 @@ st = real_store(update_apply_in_window=True)
 _pend.stage(st, {"max_players": 250})
 _, rename = moved_nothing()
 updates.apply_batch(st, ARK, installed=OLD_BUILD, players=lambda: (3, {"island": 3}, []),
-                    rename=rename, exists=tree_exists(), now=lambda: _five_am - 3600)
+                    rename=rename, staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: _five_am - 3600)
 check("a batch refused before it stopped anything records no restart",
       not updates.state(st).get("last_apply"), updates.state(st))
 
@@ -1409,7 +1472,7 @@ def flaky_rename(src, dst):
 ok, msg, detail = updates.apply_update(
     s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=flaky_rename,
-    exists=lambda p: p in tree, now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=lambda p: p in tree, now=lambda: 1000)
 check("a swap that fails part way fails the apply", not ok, msg)
 check("it was undone", detail.get("undone") is True, detail)
 check("the live tree is back where it started", "/ark/ServerFiles" in tree, tree)
@@ -1429,7 +1492,7 @@ calls, rename = moved_nothing()
 ok, msg, _ = updates.apply_update(
     s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("a cluster that would not stop is never swapped under", not ok and calls == [],
       (msg, calls))
 
@@ -1442,7 +1505,7 @@ _, rename = moved_nothing()
 ok, msg, detail = updates.apply_update(
     s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("a map that fails verification fails the apply", not ok, msg)
 check("and is named", "island" in msg, msg)
 events = [i["event"] for i in drain()]
@@ -1471,7 +1534,7 @@ def verify_with_reasons():
 ok, msg, detail = updates.apply_update(
     s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=verify_with_reasons, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 _fail = [i for i in drain() if i["event"] == "ark.update_failed"]
 check("a three-part verdict still fails the apply", not ok, msg)
 check("and every reason the gate found reaches the operator",
@@ -1492,7 +1555,7 @@ _, rename = moved_nothing()
 ok, msg, detail = updates.apply_update(
     s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=c.verify, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 _fail2 = [i for i in drain() if i["event"] == "ark.update_failed"]
 check("a two-part verdict is still accepted", not ok and _fail2, msg)
 check("and says so rather than inventing a reason",
@@ -1519,7 +1582,7 @@ for _shape, _label in ((False, "a bare False"),
     ok, msg, _d = updates.apply_update(
         s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
         verify=(lambda shape=_shape: shape), players=lambda: (0, {}, []),
-        rename=rename, exists=tree_exists(), now=lambda: 1000)
+        rename=rename, staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
     _ev = [i for i in drain() if i["event"] == "ark.update_failed"]
     check("%s is refused, not read as every map passing" % _label, not ok, (_label, msg))
     check("and the operator is told the verdict could not be read" ,
@@ -1535,7 +1598,7 @@ _, rename = moved_nothing()
 ok, msg, _d = updates.apply_update(
     s, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
     verify=None, players=lambda: (0, {}, []), rename=rename,
-    exists=tree_exists(), now=lambda: 1000)
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000)
 check("an apply with no verify step at all still applies", ok, msg)
 drain()
 
@@ -1779,7 +1842,7 @@ def with_gate(health, force=False, primed_=None):
         check_worlds=lambda: health,
         start_some=lambda keys: (started_.extend(keys) or list(keys)),
         players=lambda: (0, {}, []), force=force, rename=rename_,
-        exists=tree_exists(), now=lambda: 4242)
+        staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 4242)
     return ok_, msg_, detail_, c_, renamed_, started_, st_, drain()
 
 
@@ -1975,7 +2038,7 @@ def _branch(gates=True, check_worlds=None, rename=None, stage=None, stop_ok=True
         start_all=c_.start, verify=c_.verify, check_worlds=check_worlds,
         start_some=lambda keys: (started_.extend(keys) or list(keys)),
         players=lambda: (0, {}, []), rename=rename or rn_,
-        exists=tree_exists(), now=lambda: 4242)
+        staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 4242)
     return ok_, msg_, c_.log, started_
 
 # 1. the ordinary apply
@@ -2046,7 +2109,7 @@ updates.apply_batch(
     st_z, ARK, installed=OLD_BUILD, warn=c_z.warn, stop_all=c_z.stop, start_all=c_z.start, verify=c_z.verify,
     check_worlds=lambda: ONE_BAD,
     start_some=lambda keys: [],            # every start fails
-    players=lambda: (0, {}, []), rename=rename_z, exists=tree_exists(),
+    players=lambda: (0, {}, []), rename=rename_z, staged_build=STAGED_BUILD, exists=tree_exists(),
     now=lambda: 4242)
 _msg_z = [i for i in drain() if i["event"] == "ark.world_damaged"][0]["text"]
 check("when no map actually came up it does not claim any are starting",
@@ -2091,7 +2154,7 @@ _ok_ns, _msg_ns, _d_ns = updates.apply_batch(
     check_worlds=lambda: (_ for _ in ()).throw(
         AssertionError("the world gate must not be reached after a refused stop")),
     start_some=lambda keys: (_started_ns.append(list(keys)), [])[1],
-    players=lambda: (0, {}, []), rename=_rename_ns, exists=tree_exists(),
+    players=lambda: (0, {}, []), rename=_rename_ns, staged_build=STAGED_BUILD, exists=tree_exists(),
     now=lambda: 4242)
 check("a stop that refuses fails the batch", not _ok_ns, _msg_ns)
 check("and the reason travels with it", "stop" in _msg_ns.lower(), _msg_ns)

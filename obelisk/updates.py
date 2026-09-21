@@ -497,7 +497,8 @@ def _staging_answers(store, probe=None):
 def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
                 verify=None, players=None, on_step=None, force=False,
                 check_worlds=None, start_some=None,
-                rename=None, exists=None, now=None, installed=None):
+                rename=None, exists=None, now=None, installed=None,
+                staged_build=None):
     """Apply everything that is waiting, in one restart. (ok, message, detail).
 
     Two kinds of thing wait for a safe moment - a build that has been staged and proved,
@@ -775,6 +776,50 @@ def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
 
     done = []
     if swap_files:
+        # ---- is the staged tree still the tree that was verified?
+        #
+        # The primed record is a record of a boot that HAPPENED, and the staged tree
+        # does not stand still afterwards. The staging compose sets UPDATE_SERVER
+        # "TRUE" and CHECK_FOR_UPDATE_INTERVAL "1", so the staging server's own
+        # updater re-downloads into ServerFiles.staging every hour on purpose, and
+        # under `staging_mode: always` nothing ever stops it. Everything above this
+        # line reads the primed RECORD or the LIVE install - `staged_worth_applying`
+        # compares against ServerFiles, `apply_steps` only checks the staged tree
+        # EXISTS - so nothing has asked the staged tree what build it actually holds
+        # since the prime proved it. Reachable with no failure anywhere: Obelisk's
+        # Steam lookup failing while POK's succeeds is enough.
+        #
+        # So it is asked here, immediately before 12 GB changes places. A tree whose
+        # appmanifest disagrees, or cannot be read at all, is a tree nobody verified,
+        # and promoting one is the most expensive mistake in this file.
+        step("re-reading the staged build")
+        on_disk, why_staged = ((staged_build, "") if staged_build is not None else
+                               arkupdate.installed_build(
+                                   staging.paths(ark_root)["staged"]))
+        if str(on_disk or "") != str(build or ""):
+            refused = (("the staged tree now holds build %s, but %s is what was "
+                        "staged and verified" % (on_disk, build)) if on_disk else
+                       ("the staged tree's build could not be read, so there is "
+                        "no telling what would be promoted%s"
+                        % (": %s" % why_staged if why_staged else "")))
+            # The record described a tree we can no longer confirm, so it is dropped
+            # rather than left to fire again. Left in place it would pass
+            # staged_worth_applying on the next empty cluster, stop ten servers, and
+            # refuse here again - a restart loop that changes nothing, which is the
+            # failure this module was written after. Dropping it also starts the
+            # recovery: the next prime rehearses the tree as it now stands, and
+            # because the trees change places a re-prime is a delta rather than 12 GB.
+            remember(store, primed=None)
+            announce.say("ark.update_failed",
+                         "Refused to swap: %s. Nothing was moved - the previous build "
+                         "is still in place and the cluster is starting again on it. "
+                         "The staged tree has to be rehearsed again before it can be "
+                         "applied, and that will start on its own." % refused,
+                         level="error")
+            step("starting the cluster back on the previous build")
+            start_all()
+            return False, "did not swap: %s" % refused, {"swapped": False}
+
         step("swapping the staged files in")
         steps = staging.swap_steps(ark_root)
         ok, done, problem = staging.apply_steps(steps, rename=rename, exists=exists)

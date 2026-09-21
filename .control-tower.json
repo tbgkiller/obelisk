@@ -100,6 +100,14 @@
       "why": "the disable text is the committed list, which is what stood here, and it makes every gate downstream unreachable for the case the whole pipeline was built for. A mod added to a RUNNING cluster is QUEUED rather than written - pending is an overlay and never a write, by design - so store.get(\"mod_ids\") answers the list WITHOUT it, arkupdate.status never draws a row for it, target_key does not move and any_missing cannot see it. The staging server exists to rehearse what is about to be applied; rehearsing the committed list while an add sits in the queue is the wrong question, and it is silent - every ordinary poll still works, and only the added mod goes missing. Membership rather than `or`, because a queued \"\" is a deliberate run-vanilla and falling back there would rehearse mods the operator has just removed"
     },
     {
+      "id": "the-promoted-tree-is-the-tree-that-was-verified",
+      "file": "obelisk/updates.py",
+      "guard": "        if str(on_disk or \"\") != str(build or \"\"):",
+      "disable": "        if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "the primed record is a record of a boot that HAPPENED, and the staged tree does not stand still afterwards - the staging compose sets UPDATE_SERVER TRUE and CHECK_FOR_UPDATE_INTERVAL 1, so the staging server's own updater re-downloads into ServerFiles.staging every hour on purpose, and under `staging_mode: always` nothing ever stops it. Everything above this line reads the primed RECORD or the LIVE install: staged_worth_applying compares the record's build against ServerFiles, and staging.apply_steps only checks that the staged tree EXISTS. So without this nothing has asked the staged tree what build it actually holds since the prime proved it, and a tree nobody verified is promoted onto ten maps - reachable with no failure anywhere, e.g. Obelisk's Steam lookup failing while POK's succeeds. An appmanifest that cannot be read is refused too: unknown is never a pass, the same rule the world gate and the verify step keep in this file. The record is dropped on refusal so the window cannot stop the cluster to be refused again tomorrow"
+    },
+    {
       "id": "a-mod-not-fetched-yet-is-not-an-unanswered-question",
       "file": "obelisk/ui.py",
       "guard": "            if latest and not running:",
