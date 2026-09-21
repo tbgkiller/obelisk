@@ -3329,6 +3329,131 @@ check("they ask it to exit instead",
       [l for l in _appsrc.splitlines() if "close_one(" in l])
 
 
+# 7. LAUNCH. `up -d --remove-orphans` is not the read-only "start whatever is not
+#    started" it looks like, and the UI renders this exact button as "Apply and
+#    restart" the moment there are pending changes.
+#
+#      - `up -d` RECREATES any service whose configuration no longer matches the
+#        container running it, and a recreate is SIGTERM then rm. The configuration
+#        moves for ordinary reasons: the first-install wait flips once the game files
+#        land, the image changes, a host port is reassigned, and an edit to compose.py
+#        arrives on its own because a push to main redeploys the manager.
+#      - `--remove-orphans` REMOVES a container the regenerated compose file no longer
+#        defines - a map taken out of the settings, still running, with players on it.
+clusterctl.dockerctl = FakeDocker()
+
+
+def _up_args():
+    """The arguments of the last `up` this launch actually sent to compose."""
+    ups = [a[2] for a in calls if a[2][:1] == ["up"]]
+    return ups[-1] if ups else None
+
+
+calls.clear()
+_ok_l1, _msg_l1 = clusterctl.launch(st, procs=lambda n: [], details=lambda ns: {},
+                                    existing=lambda: {})
+check("a launch on a host with none of these containers recreates and removes orphans",
+      _ok_l1 and _up_args() == ["up", "-d", "--remove-orphans"], (_ok_l1, calls))
+calls.clear()
+_ok_l2, _msg_l2 = clusterctl.launch(
+    st, procs=lambda n: [],
+    details=details_for({"island": "exited", "ragnarok": "exited"}),
+    existing=FakeDocker._launched)
+check("and a cluster that is fully down is recreated normally - that is the apply path",
+      _ok_l2 and _up_args() == ["up", "-d", "--remove-orphans"], (_ok_l2, calls))
+check("which is where the new settings actually reach the servers",
+      "Cluster up" in _msg_l2 and "NOT applied" not in _msg_l2, _msg_l2)
+
+# The recreate, with a live server underneath it.
+calls.clear()
+_ok_l3, _msg_l3 = clusterctl.launch(
+    st, procs=lambda n: [_SERVER_LINE],
+    details=details_for({"island": "running", "ragnarok": "running"}),
+    existing=FakeDocker._launched)
+check("a live ARK server turns the recreate OFF - SIGTERM then rm is the corrupting one",
+      _up_args() == ["up", "-d", "--no-recreate"], calls)
+check("and --remove-orphans goes with it, so nothing can be removed either",
+      "--remove-orphans" not in (_up_args() or []), calls)
+check("the launch still ran, so whatever was missing came up",
+      _ok_l3 and _up_args() is not None, (_ok_l3, calls))
+check("and it is reported as a PARTIAL apply, never as a plain success",
+      "NOT applied" in _msg_l3, _msg_l3)
+check("naming the maps that held it back",
+      "The Island" in _msg_l3 and "Ragnarok" in _msg_l3, _msg_l3)
+check("saying the containers already there kept the configuration they started with",
+      "still running the configuration it started with" in _msg_l3, _msg_l3)
+check("and giving the two steps that finish it",
+      "Stop the cluster" in _msg_l3 and "Launch again" in _msg_l3, _msg_l3)
+
+# Positive evidence only, the same rule as the gate on `down`. An unknown takes the
+# safe branch, which costs a partial apply and never a world.
+calls.clear()
+clusterctl.launch(st, procs=lambda n: None, details=lambda ns: {},
+                  existing=FakeDocker._launched)
+check("a process listing nobody could read is not evidence the recreate is safe",
+      _up_args() == ["up", "-d", "--no-recreate"], calls)
+calls.clear()
+clusterctl.launch(st, procs=_raises, details=lambda ns: {},
+                  existing=FakeDocker._launched)
+check("nor is a `docker top` that raised", _up_args() == ["up", "-d", "--no-recreate"],
+      calls)
+calls.clear()
+clusterctl.launch(st, procs=lambda n: [], details=lambda ns: {}, existing=lambda: None)
+check("and a `docker ps -a` that failed cannot rule out an orphan, so it blocks too",
+      _up_args() == ["up", "-d", "--no-recreate"], calls)
+calls.clear()
+clusterctl.launch(st, procs=lambda n: [], details=lambda ns: {},
+                  existing=lambda: (_ for _ in ()).throw(OSError("no socket")))
+check("one that raised is the same", _up_args() == ["up", "-d", "--no-recreate"], calls)
+
+# THE ORPHAN, and the reason this gate is a wider question than the one on `down`.
+# A map taken out of the settings is still a running container with a live world in
+# it, and it is the one thing `--remove-orphans` exists to delete.
+_st_drop, _ = fresh(maps="island")           # ragnarok has just been dropped
+_drop_procs = (lambda n: [] if n.endswith("island") else [_SERVER_LINE])
+_drop_details = details_for({"island": "exited", "ragnarok": "running"})
+_missed = clusterctl.maps_still_alive(_st_drop, procs=_drop_procs,
+                                      details=_drop_details,
+                                      existing=FakeDocker._launched)
+check("the down-gate cannot see a dropped map at all - the settings no longer list it",
+      _missed == [], _missed)
+_caught = clusterctl.launch_would_signal(_st_drop, procs=_drop_procs,
+                                         details=_drop_details,
+                                         existing=FakeDocker._launched)
+check("so launch asks Docker instead, and finds the live one by its container name",
+      [l for l, _k, _w in _caught] == ["asa-testcluster-ragnarok"], _caught)
+check("with a reason that says it was about to be removed",
+      any("would have been removed" in w for _l, _k, w in _caught), _caught)
+calls.clear()
+_ok_l6, _msg_l6 = clusterctl.launch(_st_drop, procs=_drop_procs,
+                                    details=_drop_details,
+                                    existing=FakeDocker._launched)
+check("and a dropped map with a live server stops the removal happening",
+      _up_args() == ["up", "-d", "--no-recreate"], calls)
+check("the operator is told which container, the only name it has left",
+      "asa-testcluster-ragnarok" in _msg_l6 and "NOT applied" in _msg_l6, _msg_l6)
+calls.clear()
+_ok_l7, _msg_l7 = clusterctl.launch(
+    _st_drop, procs=lambda n: [],
+    details=details_for({"island": "exited", "ragnarok": "exited"}),
+    existing=FakeDocker._launched)
+check("while a dropped map whose server is gone is removed exactly as before",
+      _ok_l7 and _up_args() == ["up", "-d", "--remove-orphans"], (_ok_l7, calls))
+calls.clear()
+clusterctl.launch(st, procs=lambda n: [_SERVER_LINE], details=lambda ns: {},
+                  existing=lambda: {"asa-other-island": "someone-elses-cluster"})
+check("and another project's live map on the same host is not this launch's business",
+      _up_args() == ["up", "-d", "--remove-orphans"], calls)
+
+# -- read off the source, so the safe form cannot be quietly widened back
+_lsrc = io.open(os.path.join(os.path.dirname(__file__), "cluster.py"),
+                encoding="utf-8").read().split("def launch(")[1].split(
+                    chr(10) + "def ")[0]
+check("launch sends exactly one `up`, and only ever the form the gate chose",
+      _lsrc.count("_compose(store, *args)") == 1 and
+      _lsrc.count('args = ("up", "-d", "--no-recreate")') == 1 and
+      _lsrc.count('args = ("up", "-d", "--remove-orphans")') == 1, _lsrc[-900:])
+
 clusterctl.compose_path = _real_compose_path
 
 # -- it reuses the proof that already exists rather than growing a second one

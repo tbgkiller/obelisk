@@ -250,6 +250,30 @@
       "disable": "        if name not in (there or {}):  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "this is the one absence the down-gate accepts without reading a process listing, and it has to be, or the gate deadlocks the ordinary cases: `down` removes containers, so a cluster that is already down and a map that was never launched both have nothing to inspect and nothing to `docker top`. What makes it evidence rather than a shrug is that `docker ps -a` SUCCEEDED and lists stopped containers too - a name missing from that answer is a container that is not there. `existing_containers` returns None when the listing failed, and the disable text reads that None as an empty host, which waves every map in the cluster past the gate on the strength of a question nobody answered. Same rule the rest of this mechanism keeps, on the one line where getting it wrong is silent. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "a-live-map-is-never-recreated-by-launch",
+      "file": "obelisk/cluster.py",
+      "guard": "        args = (\"up\", \"-d\", \"--no-recreate\")",
+      "disable": "        args = (\"up\", \"-d\", \"--remove-orphans\")  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "`docker compose up -d --remove-orphans` reads like \"start whatever is not started\" and is not. It RECREATES any service whose configuration no longer matches the container running it, and a recreate is SIGTERM then rm - the same signal into a live ARK server that orphaned six journals out of six on 2026-09-20 and left Aberration as a database ARK could not open. The configuration moves for entirely ordinary reasons: the first-install wait flips once the game files land, the image changes, a host port is reassigned, and any edit to compose.py arrives on its own because a push to main redeploys the manager through Watchtower. The UI renders this very button as \"Apply and restart\", so it is operator-reachable by design. When anything in the project has a live or unproven ARK server, `up` may only run in the form that creates what is missing and touches nothing already there. The disable text restores the unconditional recreate, which is exactly what a later \"why are we not applying the settings\" change would reach for. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "a-dropped-map-is-not-an-orphan-to-be-removed",
+      "file": "obelisk/cluster.py",
+      "guard": "        if state not in SIGNAL_OK:      # not proved gone: it blocks `--remove-orphans`",
+      "disable": "        if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "`--remove-orphans` stops and removes any container in this project that the regenerated compose file no longer defines - which is a map taken out of the settings, still running, with a world open and players on it. maps_still_alive cannot see that map by construction: it reads the maps the settings still list, and this one is no longer one of them. So the only place it still exists is Docker, and Docker is asked here, by the container name and the project label it carries. Positive evidence as everywhere else - a `docker ps -a` that could not be read cannot enumerate orphans, so it blocks too, and blocking is cheap because the safe form of `up` still starts everything missing. The disable text reads every orphan as safe to remove, which puts back \"drop a map from the settings, press Apply and restart, lose that world\". NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "a-partial-apply-says-it-was-partial",
+      "file": "obelisk/cluster.py",
+      "guard": "        return True, _partial_launch_note(risky)",
+      "disable": "        pass  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "cluster",
+      "why": "taking the safe form of `up` means the launch deliberately did LESS than the button promised: every container that was already there is still running the configuration it started with, and only the missing ones came up with the new one. An operator who pressed \"Apply and restart\" and was handed the ordinary \"Cluster up\" would believe the settings had landed and go looking for the bug somewhere else - or, worse, conclude the setting does nothing and change something that does. So the partial apply has to name the maps that held it back and the two steps that finish it. The disable text drops the telling and keeps the safety, which is the shape any tidy-up of this function would take. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
     }
   ]
 }

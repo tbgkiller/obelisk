@@ -90,7 +90,7 @@ def _compose(store, *args, timeout=900):
                              timeout=timeout)
 
 
-def launch(store, in_use_ports=None):
+def launch(store, in_use_ports=None, procs=None, details=None, existing=None):
     """Bring the cluster up. Returns (ok, message).
 
     Everything that can be checked before touching Docker is checked first: the plan
@@ -136,7 +136,34 @@ def launch(store, in_use_ports=None):
 
     write_compose(store, text=text)
 
-    rc, out = _compose(store, "up", "-d", "--remove-orphans")
+    # ---- THE GATE ON `up`. Nothing below this line may recreate or remove a live map.
+    #
+    # `up -d --remove-orphans` looks like "start whatever is not started" and is not.
+    # It RECREATES any service whose configuration no longer matches the container
+    # running it - and a recreate is SIGTERM then rm, which is the signal into a live
+    # ARK server that orphaned six journals out of six on 2026-09-20 and left Aberration
+    # as a database ARK could not open. It also REMOVES any container in this project
+    # the regenerated compose file no longer defines, which is a map dropped from the
+    # settings, still running, with players on it.
+    #
+    # Neither needs an operator to do anything unusual. The compose file this launch
+    # just wrote differs from the running containers for ordinary reasons - the
+    # first-install wait flips once the game files land, the image moves, a host port is
+    # reassigned, and any edit to compose.py arrives on its own because a push to main
+    # redeploys the manager. And the UI renders this very button as "Apply and restart".
+    #
+    # So when anything in this project has a live or unproven ARK server, `up` is run in
+    # the only form that cannot signal one: create what is missing, touch nothing that
+    # is already there. The cost is a PARTIAL apply, which is said out loud below,
+    # because an operator who pressed "Apply and restart" and was told it worked would
+    # otherwise go looking for a setting that never reached the server.
+    risky = launch_would_signal(store, procs=procs, details=details, existing=existing)
+    if risky:
+        args = ("up", "-d", "--no-recreate")
+    else:
+        args = ("up", "-d", "--remove-orphans")
+
+    rc, out = _compose(store, *args)
     if rc != 0:
         return False, "docker compose up failed:\n%s" % out[-1500:]
 
@@ -149,6 +176,8 @@ def launch(store, in_use_ports=None):
 
     _join_network(store)
     n = len(plan["maps"])
+    if risky:
+        return True, _partial_launch_note(risky)
     if not install_present(store):
         return True, ("Cluster up: %d map%s. First start downloads the game files once "
                       "on %s and the others wait for it, so give it a while."
@@ -1042,6 +1071,86 @@ def maps_still_alive(store, procs=None, details=None, existing=None):
         if state not in SIGNAL_OK:              # not proved gone: it blocks the down
             alive.append((label, key, why))
     return alive
+
+
+def launch_would_signal(store, procs=None, details=None, existing=None):
+    """Everything `up -d --remove-orphans` could signal that is not provably dead.
+
+    The gate in front of launch's `up`, and it has to be WIDER than maps_still_alive
+    because `up` reaches two sets of containers where `down` reaches one.
+
+    The first set is the maps this cluster defines, which maps_still_alive already
+    answers for: `up -d` recreates any service whose configuration differs from the
+    container running it, and a recreate is SIGTERM then rm.
+
+    The second set is the one maps_still_alive CANNOT see, and it is the reason this
+    function exists rather than a call to that one. `--remove-orphans` removes a
+    container in this project that the new compose file no longer defines - a map taken
+    out of the settings - and maps_still_alive reads the maps the settings still list,
+    so the dropped map is invisible to it by construction. The only place that map still
+    exists is Docker, so Docker is asked, by the name and project label it carries.
+
+    Empty means no container in this project has a live or unproven ARK server, so the
+    full form of `up` can only reach things there is nothing left to interrupt.
+    Positive evidence each time, the same rule as everywhere else here: a `docker ps -a`
+    that could not be read cannot enumerate orphans, so it blocks rather than concluding
+    there are none. Blocking is cheap - the safe form of `up` still starts everything
+    that is missing - so the unknown costs a partial apply and never a world.
+
+    Returns [(label, key, why)]. An orphan has no label left in the settings and no key
+    worth writing intent against, so it is named by the container, which is the only
+    name anybody could still look it up by.
+    """
+    procs = procs or (lambda name: dockerctl.processes(name))
+    details = details or (lambda names: dockerctl.container_details(names))
+    ask = existing or (lambda: dockerctl.existing_containers())
+    try:
+        there = ask()
+    except Exception as e:                          # noqa: BLE001 - reported, not fatal
+        log.warning("could not ask Docker which containers exist (%s) - a live map "
+                    "this launch no longer defines cannot be ruled out", e)
+        there = None
+    # One listing for both halves. maps_still_alive reads None as "decides nothing" and
+    # judges every map the long way, which is exactly right for its half.
+    blocked = list(maps_still_alive(store, procs=procs, details=details,
+                                    existing=lambda: there))
+    if there is None:
+        blocked.append(("this project", None,
+                        "Docker would not list its containers, so Obelisk could not "
+                        "rule out a live map that this launch no longer defines"))
+        return blocked
+    mine = set(name for name, _key in map_containers(store).values())
+    proj = project(store)
+    for name in sorted(there):
+        if there.get(name) != proj or name in mine:
+            continue                    # another project's, or one this launch defines
+        state, why = process_state(name, procs, details)
+        if state not in SIGNAL_OK:      # not proved gone: it blocks `--remove-orphans`
+            blocked.append((name, None,
+                            "%s, and this launch no longer defines it, so it would "
+                            "have been removed" % why))
+    return blocked
+
+
+def _partial_launch_note(risky):
+    """What an operator who pressed "Apply and restart" and got half of it must be told.
+
+    The whole point of taking the safe form of `up` is that it does LESS than the
+    button says, so the one thing that cannot happen is reporting it as a plain
+    success. It says which maps held it back, that the containers already there are
+    still running the configuration they started with, and the two steps that finish
+    the job.
+    """
+    names = _and([l for l, _k, _w in risky])
+    plural = len(risky) > 1
+    return ("Cluster up, but the new settings were NOT applied. %s still %s a live or "
+            "unproven ARK server, so nothing was recreated and nothing was removed - "
+            "every container that was already there is still running the configuration "
+            "it started with. Anything that was missing was started. Recreating a "
+            "container while its ARK server is alive is what corrupts its world, so "
+            "this stopped short on purpose. To finish: Stop the cluster, which asks "
+            "each map to exit over RCON, then Launch again."
+            % (names, "have" if plural else "has"))
 
 
 def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
