@@ -2561,7 +2561,8 @@ def build_app(store, docker=None):
         def go():
             return restorectl.restore_map(
                 store, path, map_key,
-                stop=lambda k: (note("stopping %s" % k) or clusterctl.stop_one(store, k)),
+                stop=lambda k: (note("asking %s to exit" % k)
+                                or clusterctl.close_one(store, k)),
                 start=lambda k: (note("starting %s" % k) or clusterctl.start_one(store, k)),
                 verify=verify_after, on_step=note,
                 # The same three guards the save-point rollback has had all along, on
@@ -2622,7 +2623,8 @@ def build_app(store, docker=None):
         def go():
             return pointsctl.restore_point(
                 store, map_key, name,
-                stop=lambda k: (note("stopping %s" % k) or clusterctl.stop_one(store, k)),
+                stop=lambda k: (note("asking %s to exit" % k)
+                                or clusterctl.close_one(store, k)),
                 start=lambda k: (note("starting %s" % k)
                                  or clusterctl.start_one(store, k)),
                 verify=verify_after, force=force, on_step=note,

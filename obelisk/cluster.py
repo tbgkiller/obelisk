@@ -382,51 +382,46 @@ def _ask_to_exit(one, rcon, details):
     return True
 
 
-def _close_the_door(one, label, stop_container):
-    """The bounded fallback: stop a container whose server is STILL running. True if it did.
+def _left_running(one, label):
+    """Say that a map took DoExit and its server is STILL RUNNING. It signals nothing.
 
-    This is no longer a keep-it-down measure. The restart policy is an operator setting
-    now and it defaults to `no`, so on that default a container that exits stays exited
-    and nothing has to be marked user-stopped to hold it there - which is what this used
-    to be for, and it used to fire on an inferred exit, on every map, from RCON going
-    quiet.
+    This used to be the bounded fallback that reached for `compose stop` here, on the
+    argument that a compose stop is not a kill - that it lands on the image's own
+    SIGTERM handler and its verified two-stage shutdown inside the 210s grace period.
+    That argument is FALSE, and it was measured false on the live fleet during the
+    ten-container recreate of 2026-09-20:
 
-    What is left is the one case the wait cannot resolve: a map that took DoExit and
-    whose server process is still in the listing when the grace period has run out.
-    That is a stuck server rather than one mid-save - the save a server writes on its
-    way out landed eleven seconds after the DoExit when this was measured by hand at The
-    Center - and `compose stop` is not a kill: it lands on the image's own SIGTERM
-    handler, which runs a verified two-stage shutdown inside the 210s grace period the
-    compose file still sets.
+        `docker compose stop` on a running map left an orphaned `-journal` sidecar
+        6 times out of 6 (center, ragnarok, aberration, extinction, valguero,
+        astraeos). `DoExit` left zero, 2 for 2 (genesis, lostcolony).
 
-    It may only ever fire on a POSITIVELY observed still-running server. A process
-    listing nobody could read establishes nothing, and a map that never answered RCON at
-    all is a server mid-boot - the 2026-09-12 incident - so neither reaches here.
+    The two-stage shutdown is real and it does verify the saves. Then POK terminates
+    the remaining Proton/Wine processes - a SIGKILL - after the saves verify but before
+    SQLite checkpoints, which orphans the rollback journal. ARK cannot recover its own
+    orphaned journal: `sqlite3` rolls that same pair back to `integrity_check = ok`,
+    while ARK's own open produced a malformed database. Aberration was corrupted
+    exactly this way and had to be restored from a backup.
 
-    Whatever happens is said in `why`. A stop that was not observed is never claimed.
+    So there is no signal left to send into a live server, and the only honest thing
+    this can do is report. The map is LATE, its container is left RUNNING, and the
+    operator has a stuck map to look at - which is strictly better than a corrupt
+    world, because a stuck map can be looked at and a corrupt world cannot be undone.
+
+    The permitted stop is still there and unchanged: once a map's server process has
+    been POSITIVELY observed gone, its container may be stopped, because POK then takes
+    the "Server is not running, no need to save world before stopping container" branch.
+    That is `close_map.shut_the_door`, and it runs on that evidence and nothing less.
     """
-    if not one.get("key"):
-        log.warning("%s was still running but Obelisk could not tell which service to "
-                    "stop - the stop that follows will get it", label)
-        one["why"] += ", and Obelisk could not tell which container to stop"
-        return False
-    try:
-        ok, why = stop_container(one["key"])
-    except Exception as e:                          # noqa: BLE001 - reported, not fatal
-        ok, why = False, str(e)
-    if not ok:
-        log.warning("%s was still running and its container did not stop: %s",
-                    label, why)
-        one["why"] += ", and its container would not stop either (%s)" % why
-        return False
-    one["why"] += ", so its container was stopped rather than left running"
-    return True
+    one["why"] += (", so it has been left running rather than signalled - a docker "
+                   "stop into a live ARK server orphans its SQLite journal and the "
+                   "world comes back malformed")
+    log.warning("%s still has a live server after DoExit and has been LEFT RUNNING: "
+                "%s", label, one["why"])
 
 
 def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
                 interval=EXIT_INTERVAL, running=None, on_exited=None, details=None,
-                stop_container=None, procs=None, ark_root=None, settle=None,
-                by="operator"):
+                procs=None, ark_root=None, settle=None, by="operator"):
     """Ask every running map to close itself. {label: {exited, why, state, clean}}.
 
     DoExit and nothing else. No SaveWorld in front of it: the server writes its own save
@@ -444,8 +439,9 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
 
     The container gets there on its own: POK reads the missing server process as a
     self-restart and deliberately exits the container, and on the default `restart: no`
-    policy that exit is the end of it. `_close_the_door` is only the bounded fallback
-    for a server that is still running when the budget is spent.
+    policy that exit is the end of it. NOTHING here signals a container, in any state,
+    ever, and there is no seam left to hand it one through: a map whose server is still
+    running when the budget is spent is reported by `_left_running` and left up.
 
     `state` is one of CLOSED, ALREADY_GONE, NOT_READY or LATE, and `exited` is True for
     the first two only. A map that will not answer is not automatically a map that has
@@ -464,7 +460,6 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
     wait = wait or time.sleep
     details = details or (lambda names: dockerctl.container_details(names))
     procs = procs or (lambda name: dockerctl.processes(name))
-    stop_container = stop_container or (lambda key: stop_one(store, key))
     settle = settle or (lambda sent: worlds_settled(store, sent, ark_root=ark_root,
                                                     now=now, wait=wait))
     targets = running(store) if running else running_instances(store)
@@ -562,7 +557,7 @@ def exit_worlds(store, rcon=None, wait=None, now=None, budget=EXIT_BUDGET,
         present, known = _server_seen(one["name"], procs)
         if present:
             one["why"] = "it was still running %ds after DoExit" % budget
-            _close_the_door(one, label, stop_container)
+            _left_running(one, label)
         elif known:
             one["why"] = ("its server process is gone but its container never confirmed "
                           "it had stopped within %ds" % budget)
@@ -692,6 +687,21 @@ EXITING = "exiting"
 PROCESS_GONE = "process_gone"
 REVIVED = "revived"
 STOPPED = "stopped"
+
+# The ONLY two states a map's container may be signalled in - `compose stop`, `compose
+# down`, or anything else that reaches its process tree. Written once, here, because it
+# is one rule and every path that signals has to be reading the same one.
+#
+# The line is the liveness of the ARK SERVER PROCESS, not the docker verb and not the
+# tone of the request. POK answers a signal by verifying the saves and then terminating
+# the remaining Proton/Wine processes - a kill, after the saves verify but before SQLite
+# checkpoints - which leaves the world's rollback journal orphaned. Measured on the live
+# fleet on 2026-09-20: 6 orphaned journals out of 6 compose stops, 0 out of 2 DoExits,
+# and one world (Aberration) that ARK could then only open as a malformed database.
+#
+# With the server process gone there is nothing to interrupt, and POK takes its other
+# branch: "Server is not running, no need to save world before stopping container."
+SIGNAL_OK = (STOPPED, PROCESS_GONE)
 
 # How many times one map may be taken round save -> exit -> stop before the sequence
 # holds. A revival is a race lost to the container's own supervisor, and losing it three
@@ -978,6 +988,62 @@ def close_map(store, label, at, name, key, rcon=None, procs=None, details=None,
     return out
 
 
+def maps_still_alive(store, procs=None, details=None, existing=None):
+    """Every map this cluster cannot prove has no live ARK server. [(label, key, why)].
+
+    The gate in front of `docker compose down`, and the reason it exists is that `down`
+    is indiscriminate: it SIGTERMs every container in the project, including a map that
+    was never asked to exit because it was still booting, and a SIGTERM into a live ARK
+    server is what orphans that world's SQLite journal - 6 maps out of 6 on the live
+    fleet, and one world (Aberration) corrupted beyond ARK's own ability to open it.
+
+    Empty means every map is safe to signal. That is a POSITIVE reading each time: the
+    container is one Docker says is not running, or its process listing was read and
+    the server is not in it. A listing nobody could read, a Docker that would not
+    answer, a plan whose container names could not be worked out - none of those are
+    evidence of absence, and each one lands a map in this list instead.
+
+    It asks Docker itself rather than reading what `exit_worlds` concluded. What has to
+    be true is a fact about right now, at the moment the `down` would go out, and a map
+    reported closed a minute ago may have been brought back up by a restart policy
+    since.
+
+    A container that DOES NOT EXIST is the one absence that needs no process listing,
+    and it has to be read that way or this gate deadlocks the ordinary cases: `down`
+    removes containers, so a cluster that is already down, and a map that is in the
+    settings but has never been launched, both have nothing to inspect and nothing to
+    `docker top`. That is still positive evidence rather than a shrug - `docker ps -a`
+    lists stopped containers too, so a name missing from a listing that SUCCEEDED is a
+    container that is not there. A listing that failed comes back None and decides
+    nothing, and every map is judged the long way instead.
+    """
+    procs = procs or (lambda name: dockerctl.processes(name))
+    details = details or (lambda names: dockerctl.container_details(names))
+    existing = existing or (lambda: dockerctl.existing_containers())
+    try:
+        there = existing()
+    except Exception as e:                          # noqa: BLE001 - reported, not fatal
+        log.warning("could not ask Docker which containers exist (%s) - every map is "
+                    "judged on its own process listing instead", e)
+        there = None
+    named = map_containers(store)
+    if not named:
+        if not _map_keys(store):
+            return []                   # a cluster with no maps has none to be alive
+        return [("this cluster", None,
+                 "Obelisk could not work out which containers its maps run in, so it "
+                 "could not prove any of them had stopped")]
+    alive = []
+    for label in sorted(named):
+        name, key = named[label]
+        if there is not None and name not in there:
+            continue                    # `docker ps -a` answered: no such container
+        state, why = process_state(name, procs, details)
+        if state not in SIGNAL_OK:              # not proved gone: it blocks the down
+            alive.append((label, key, why))
+    return alive
+
+
 def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
     """Stop the cluster's containers. Saves and the data root are untouched.
 
@@ -988,11 +1054,15 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
     `require_ready` is the difference between the two callers, and it is a judgement
     about consent rather than about safety alone. An apply is unattended and wants a
     cluster it can promote a build over, so a map that is still booting - NOT_READY -
-    makes it refuse and `docker compose down` is never reached: nothing is signalled,
-    nothing is removed, and the window comes round again. An operator pressing Stop has
-    asked for a stop, so it proceeds, because `down` removes the containers and a
-    removed container is not one a restart policy can revive - but the message names
-    every map that never became operational, because that is a thing worth knowing.
+    makes it hold and the window comes round again. An operator pressing Stop has asked
+    for a stop, so it proceeds as far as it safely can and the message names every map
+    that never became operational, because that is a thing worth knowing.
+
+    What `require_ready` is NOT is the safety gate. Whether `docker compose down` may
+    run at all is decided by `maps_still_alive`, on the `down` itself, so that every
+    caller inherits it - including ones written later, and including the operator's own
+    Stop, which is precisely the button that used to reach `down` with nothing in its
+    way. `down` SIGTERMs a live ARK server, and that orphans its world's journal.
 
     `say` is the announcer, defaulting to the real one. A stop is minutes long and was
     silent for all of them, which is not a thing a person can tell apart from nothing
@@ -1000,6 +1070,7 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
     """
     from . import announce
     _say = announce.say if say is None else say
+    _existing = kw.pop("existing", None)
 
     def say(*a, **kw):
         """Telling somebody must never be what stops a cluster stopping. The channel
@@ -1127,12 +1198,12 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
         shut = [l for l, c in closed.items() if c.get("exited")]
         worlds = "world" if len(closed) == 1 else "worlds"
         if late:
-            text = ("%d of %d %s saved and closed. %s would not close and %s being "
-                    "stopped the ordinary way instead - worth checking %s once the "
-                    "cluster is back up. Stopping the servers now."
+            text = ("%d of %d %s saved and closed. %s would not close, and %s been "
+                    "LEFT RUNNING rather than signalled - stopping a map whose server "
+                    "is still alive is what corrupts its world. %s needs a look."
                     % (len(shut), len(closed), worlds, _and(late),
-                       "is" if len(late) == 1 else "are",
-                       "it" if len(late) == 1 else "them"))
+                       "it has" if len(late) == 1 else "they have",
+                       "It" if len(late) == 1 else "They"))
         else:
             text = ("%d of %d %s saved and closed. Stopping the servers now - nothing "
                     "is left writing." % (len(shut), len(closed), worlds))
@@ -1155,8 +1226,8 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
         stale = _autosave_minutes(store)
         say("cluster.shutdown_unproved",
             "%s %s asked to exit, but Obelisk could not prove %s world finished "
-            "writing afterwards. Nothing was refused and nothing is being held - the "
-            "stop went ahead. What it means: %s world on disk may be as old as its last "
+            "writing afterwards. Nothing was refused and nothing is being held on "
+            "account of it. What it means: %s world on disk may be as old as its last "
             "autosave, up to %g minutes. Worth a look when the cluster is back."
             % (_and(unproved), "were" if len(unproved) > 1 else "was",
                "their" if len(unproved) > 1 else "its",
@@ -1165,6 +1236,55 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
             level="warning",
             detail="\n".join("%-14s %s" % (l, closed[l].get("why") or "")
                               for l in unproved))
+
+    # ---- THE GATE ON `down`. Nothing below this line may be reached with a live map.
+    #
+    # `down` SIGTERMs every container in the project at once, and POK answers a SIGTERM
+    # by verifying the saves and then killing the Proton process - after the saves
+    # verify, before SQLite checkpoints - which orphans the world's rollback journal.
+    # ARK cannot recover its own orphaned journal. That is not a theory: six maps out
+    # of six on 2026-09-20, and Aberration had to be restored from a backup.
+    #
+    # So the question asked here is not "did the stop go well" and not "was consent
+    # given" - `require_ready` answered that one, and it is the wrong question for this
+    # - it is "is there a live ARK server anywhere in this project right now". If there
+    # is, or if that cannot be established, nothing is signalled at all.
+    # `existing` is popped rather than read, because it is this gate's seam alone and
+    # exit_worlds has no parameter of that name to be handed one.
+    still_alive = maps_still_alive(store, procs=kw.get("procs"),
+                                   details=kw.get("details"), existing=_existing)
+    if still_alive:
+        # Whatever this stop wrote about those maps, they are up and they are staying
+        # up, so their intent has to say so - otherwise the crash watch reads the
+        # "down" that exit_worlds wrote and leaves one of them dead after a wobble.
+        for _l_sa, _k_sa, _w_sa in still_alive:
+            if _k_sa:
+                intent.remember(store, _k_sa, intent.UP, kw.get("by") or "operator")
+        names = _and([l for l, _k, _w in still_alive])
+        plural = len(still_alive) > 1
+        shut_early = sorted(l for l, c in closed.items() if c.get("exited"))
+        moved = ("Nothing was removed and nothing else was stopped."
+                 if not shut_early else
+                 "%s had already closed and stopped before this, so %s down now and "
+                 "will stay down until Launch. Nothing was removed."
+                 % (_and(shut_early), "they are" if len(shut_early) > 1 else "it is"))
+        say("cluster.still_alive",
+            "%s still %s a live ARK server, so the cluster was NOT taken down. %s "
+            "Stopping a map's container while its server is alive is what corrupts "
+            "its world - the save journal is left open and ARK cannot reopen it - so "
+            "%s been left running for somebody to look at instead. Ask %s to exit over "
+            "RCON, or check why %s stuck, then run this again."
+            % (names, "have" if plural else "has", moved,
+               "they have" if plural else "it has", "them" if plural else "it",
+               "they are" if plural else "it is"),
+            level="warning",
+            detail="\n".join("%-14s %s" % (l, w) for l, _k, w in still_alive))
+        return False, ("%s still %s a live ARK server, so nothing was signalled and "
+                       "the cluster was not taken down. %s A container stopped while "
+                       "its ARK server is alive comes back with a corrupt world, so "
+                       "%s left running."
+                       % (names, "have" if plural else "has", moved,
+                          "they were" if plural else "it was"))
 
     if not_ready:
         # Not a refusal here: Stop was asked for, and `down` removes the containers, so
@@ -1182,9 +1302,10 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
             detail="\n".join("%-14s %s" % (l, closed[l].get("why") or "")
                              for l in not_ready))
 
-    # `down` removes every container, including any map that was never asked to exit
-    # because it was still booting. They are all meant to be down from here, so say so
-    # before the command rather than after it.
+    # Past the gate: every map's server process is provably gone, so `down` is the
+    # branch POK logs as "Server is not running, no need to save world before stopping
+    # container" and there is no world left for it to interrupt. They are all meant to
+    # be down from here, so say so before the command rather than after it.
     intent.remember_many(store, _map_keys(store), intent.DOWN, kw.get("by") or "operator")
 
     rc, out = _compose(store, "down")
@@ -1193,10 +1314,13 @@ def stop(store, close_worlds=True, say=None, require_ready=False, **kw):
 
     note = ""
     if late:
-        note = (" %s had to be stopped without closing %s world first, so %s worth a "
-                "look when the cluster is back."
+        # Reached only for a LATE map whose server process was proved gone - the gate
+        # above refuses on any other kind. So its world is closed; what never landed
+        # was the container's own exit, which the `down` has now taken care of.
+        note = (" %s did not confirm %s container had stopped in time, though %s "
+                "server process was gone - worth a look when the cluster is back."
                 % (_and(late), "its" if len(late) == 1 else "their",
-                   "it is" if len(late) == 1 else "they are"))
+                   "its" if len(late) == 1 else "their"))
     if not_ready:
         note += (" %s never finished booting - %s running but never answered RCON - so "
                  "%s removed without having a world to close."
@@ -1785,8 +1909,20 @@ def other_ports_in_use(store):
     return dockerctl.ports_in_use(exclude_names=target_names(store))
 
 
-def stop_one(store, map_key):
-    """Stop a single map, leaving the rest of the cluster serving. (ok, message).
+def stop_one(store, map_key, procs=None, details=None):
+    """Close the door on one map whose server is ALREADY GONE. (ok, message).
+
+    A primitive, and only a primitive: it signals a container, so it may only ever be
+    called once that container's ARK server process has been positively observed gone.
+    It re-establishes that here rather than trusting its caller, and it REFUSES if it
+    cannot - a `compose stop` into a live server orphans the world's SQLite journal
+    (6 maps out of 6, live fleet, 2026-09-20) and ARK cannot recover its own orphaned
+    journal. `close_one` is the whole spelling of a stop and what callers want.
+
+    Gone has to be established, never assumed: a process listing nobody could read is
+    not an exited server, so it refuses on that too. The one state that needs no
+    evidence of a dead server is a container Docker says is already not running - there
+    is nothing in there to signal.
 
     `--no-deps` matters: the first map downloads the server files and every other
     service declares it as a dependency, so without it compose would happily start that
@@ -1795,6 +1931,14 @@ def stop_one(store, map_key):
     ok, why = dockerctl.available()
     if not ok:
         return False, "Docker isn't reachable. %s" % why
+    name = naming.container_name(project(store), map_key)
+    state, saw = process_state(name, procs or (lambda n: dockerctl.processes(n)),
+                               details or (lambda ns: dockerctl.container_details(ns)))
+    if state not in SIGNAL_OK:                  # not proved gone: nothing is sent
+        log.warning("refused to signal %s: %s", name, saw)
+        return False, ("%s was not stopped: %s, and stopping a container whose ARK "
+                       "server is still alive orphans that world's save journal. Ask "
+                       "it to exit over RCON first." % (map_key, saw))
     # A stop that is decided here too. Written first, for the same reason it is written
     # first in exit_worlds: a manager that dies mid-command must not come back and read
     # this map as one that fell over on its own.
@@ -1803,6 +1947,50 @@ def stop_one(store, map_key):
     if rc != 0:
         return False, "could not stop %s: %s" % (map_key, out[-400:])
     return True, "stopped"
+
+
+def close_one(store, map_key, **kw):
+    """Take one map down the only safe way: DoExit, then the door. (ok, message).
+
+    What a caller that wants "stop this map" means, and the thing the restore paths
+    reach for. They used to call `stop_one` directly - a `compose stop` straight into a
+    serving map, with no DoExit anywhere in front of it - which is the SIGTERM that
+    orphans the world's journal, sent at the one moment a map's world matters most.
+
+    No second spelling of the close: this resolves the map to the four facts `close_map`
+    needs and hands over. `close_map` sends DoExit, watches the process listing rather
+    than the port, and stops the container only in the turn that first sees the server
+    process gone - never on a server that came back, which is a map that is booting.
+
+    False for anything short of a container Docker confirms is not running, and the
+    caller's own rule then applies: the restores treat a stop that did not land as a
+    reason to change nothing at all, which is the right end of that trade.
+
+    It is slower than the `compose stop` it replaces, and that is the price: DoExit is
+    a request, and a big map writes its save on its own schedule. `close_map`'s budget
+    is what bounds it - a map that keeps coming back is taken round CLOSE_ATTEMPTS
+    times and then held, rather than signalled.
+    """
+    ok, why = dockerctl.available()
+    if not ok:
+        return False, "Docker isn't reachable. %s" % why
+    try:
+        wanted = naming.container_name(project(store), map_key)
+        found = [(l, h, p) for l, h, p in rcon_targets(store) if h == wanted]
+    except Exception as e:                          # noqa: BLE001 - a refusal, not fatal
+        log.warning("could not work out how to reach %s: %s", map_key, e)
+        return False, ("Obelisk could not work out how to reach %s, so it was not "
+                       "asked to exit and nothing was signalled at it (%s)"
+                       % (map_key, e))
+    if not found:
+        return False, ("%s is not a map in this cluster, so nothing was stopped"
+                       % map_key)
+    label, name, port = found[0]
+    out = close_map(store, label, (name, port), name, map_key, **kw)
+    if out.get("stopped"):
+        return True, out.get("why") or "stopped"
+    return False, (out.get("why")
+                   or "its container could not be proved to have stopped")
 
 
 def start_one(store, map_key, record=True):

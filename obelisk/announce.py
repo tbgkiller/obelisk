@@ -273,6 +273,10 @@ ICONS = {
     # not closed. Amber because nothing is broken - it is the stop that has to
     # wait, and an apply refuses rather than signal a server mid-boot.
     "not_ready": "⚠",
+    # Every map is meant to be down, and at least one still has a live ARK
+    # server. Amber, not red: nothing broke and nothing was signalled - the
+    # cluster is exactly as it was, with a stuck map to look at.
+    "still_alive": "⚠",
     # In progress
     "start": "▶", "prime_start": "▶", "apply_start": "▶",
     "point_start": "▶",

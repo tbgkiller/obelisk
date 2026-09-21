@@ -166,6 +166,10 @@ async def run():
                      "status": "Up 3 minutes", "health": "healthy"}]
         def ports_in_use(self): return set()
         def existing_containers(self, timeout=30): return {}
+        # A readable listing with no ARK server in it. [] is "asked and
+        # answered, nothing is running in there" - the positive evidence a
+        # container needs before anything may be signalled at it.
+        def processes(self, name, timeout=30): return []
 
     clusterctl.dockerctl = FakeDocker()
     store.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
