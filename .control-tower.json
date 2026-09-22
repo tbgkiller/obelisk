@@ -362,6 +362,14 @@
       "disable": "    live = []  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "cluster",
       "why": "start_one runs `up -d --no-deps <map>`, and that is the last `up` in this module. It recreates for exactly the reason the whole-cluster one does: `up` brings a service to the configuration its compose file describes, and when the container already running it does not match, getting there is SIGTERM then rm - one map instead of ten, the same orphaned journal, the same world ARK cannot reopen. Every caller today has already established the map is down (the crash watch needs two positive sightings of a stopped container, the restore paths run close_one first, start_some only names maps it just stopped), but that is caller discipline and caller discipline is what failed at every other site in this mechanism - _close_the_door was documented as safe and the restore paths were assumed safe. It is also getting less true rather than more: launch's partial apply deliberately leaves the new compose file on disk with the old containers running, which is precisely the drift that turns this line into a recreate. The disable text drops the evidence so the refusal can never fire, which is the shape a \"this check never does anything\" cleanup would take - and it is silent, because every ordinary start still passes. NOTE one line on purpose: CRLF checkouts break any needle with a newline in it."
+    },
+    {
+      "id": "an-unreadable-live-tree-is-not-a-mod-delta",
+      "file": "obelisk/updates.py",
+      "guard": "        changed = mod_changes(staged_mod_files(ready), live) if readable else []",
+      "disable": "        changed = mod_changes(staged_mod_files(ready), live)  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "updates",
+      "why": "installed_mods returns {} for a cluster that has never run a mod AND for a share that is not mounted, and those want opposite decisions. The first is a real answer - its first mod is a genuine delta. The second is the absence of one, and turning it into a delta would stop ten servers on the chance that the staged tree is different, which is the exact failure this module exists to prevent. live_mod_files returns readability separately and this is where it is honoured. The disable text drops it, so an unmounted share reads as every mod having vanished."
     }
   ]
 }
