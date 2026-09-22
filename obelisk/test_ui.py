@@ -1048,7 +1048,7 @@ check("the gate says apply for a mod staged onto the build already running",
 _bt_page = ui.render_ark_update(_bt_store, _added_status, ready=_bt_ready,
                                 applicable=_bt_gate)
 check("and the RENDERED page offers an Apply the operator can press",
-      "disabled>Apply now" not in _bt_page,
+      "Apply now" in _bt_page and "disabled>Apply now" not in _bt_page,
       _ascii(_window(_bt_page, "Apply now", 260)))
 check("it no longer prints the sentence that was false about this cluster",
       "is the one already running" not in _bt_page,

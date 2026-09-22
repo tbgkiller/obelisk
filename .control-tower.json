@@ -370,6 +370,14 @@
       "disable": "        changed = mod_changes(staged_mod_files(ready), live)  # GUARD DISABLED BY MUTATION CHECK",
       "expected_test": "updates",
       "why": "installed_mods returns {} for a cluster that has never run a mod AND for a share that is not mounted, and those want opposite decisions. The first is a real answer - its first mod is a genuine delta. The second is the absence of one, and turning it into a delta would stop ten servers on the chance that the staged tree is different, which is the exact failure this module exists to prevent. live_mod_files returns readability separately and this is where it is honoured. The disable text drops it, so an unmounted share reads as every mod having vanished."
+    },
+    {
+      "id": "a-mod-already-staged-does-not-read-as-still-to-be-staged",
+      "file": "obelisk/ui.py",
+      "guard": "                if project and proved.get(project) == str(latest):",
+      "disable": "                if False:  # GUARD DISABLED BY MUTATION CHECK",
+      "expected_test": "ui",
+      "why": "the live tree has no folder for a mod that is staged but not yet applied, so `running` is None and this row read \"to be staged\" over a mod that had been downloaded, booted and verified hours earlier - pointing the operator at the prime they had already run twice, while the Apply it was actually waiting for was greyed out three lines below. The PAIR is what is asked, never the id: a mod staged at a file id other than the one now wanted was staged against a list that has since moved on, and that combination has never booted anywhere, so it is still to be staged. The disable text makes every staged mod read as unstaged again. One line on purpose - a needle containing a newline stops matching under this repo's CRLF checkouts."
     }
   ]
 }
