@@ -234,6 +234,14 @@ def _as_ids(value):
 
 # ---------------------------------------------------------------- the verdict
 
+# Named because the panel now has to tell this line apart from the other problems a row
+# can carry, and it must do that by identity: a mod that is not on the live tree but HAS
+# been staged and verified gets a truer sentence in its place, while "could not ask
+# CurseForge" must survive untouched. Matching on words would mean a reword silently
+# started replacing the wrong line, or stopped replacing this one.
+NOT_ON_DISK = "listed for the cluster but not on disk yet"
+
+
 def compare(installed, available):
     """Per-mod rows the UI renders, with `newer` only ever True on real evidence.
 
@@ -248,7 +256,7 @@ def compare(installed, available):
         latest = want.get("file_id")
         problem = want.get("problem") or ""
         if not running:
-            problem = problem or "listed for the cluster but not on disk yet"
+            problem = problem or NOT_ON_DISK
         newer = None
         if running and latest:
             newer = running != latest

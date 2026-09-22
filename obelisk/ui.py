@@ -662,7 +662,15 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
     a tick. The whole reason this panel exists is that a checker somewhere answered "up
     to date" without asking, so a green row here has to mean an answer came back.
     """
-    def cell(running, latest, newer):
+    from . import arkupdate
+
+    # {project id: file id} the staging boot actually loaded. The row below tells "not
+    # fetched yet" from "fetched, proved, and waiting for an Apply" with it, and the
+    # pair is what it asks: a mod staged at a file id other than the one now wanted was
+    # staged against a list that has since changed, and is still to be staged.
+    proved = {str(k): str(v) for k, v in ((ready or {}).get("loaded") or {}).items()}
+
+    def cell(running, latest, newer, project=None):
         run = '<code>%s</code>' % _e(running or "—")
         if newer is None:
             # Not on disk YET is not "could not check", and the difference is the
@@ -674,6 +682,16 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
             # to go and investigate. Amber, like an update, because that is what it
             # is: something here is about to change, and nothing is wrong.
             if latest and not running:
+                # And "to be staged" stops being true the moment it HAS been staged.
+                # The live tree still has no folder for it, so `running` is still None
+                # and this row read "to be staged" over a mod that was downloaded,
+                # booted and verified hours ago - pointing the operator at the prime
+                # they had already run instead of at the Apply the mod was waiting
+                # for, while the button for that Apply was greyed out. Still amber:
+                # something here is about to change, and nothing is wrong.
+                if project and proved.get(project) == str(latest):
+                    return ('→ <code>%s</code> <span class=newer>staged, ready to '
+                            'apply</span>' % _e(latest))
                 return ('→ <code>%s</code> <span class=newer>to be staged</span>'
                         % _e(latest))
             return ('%s <span class=unknown>? could not check</span>' % run)
@@ -703,12 +721,22 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
                 _e(row["url"]), _e(name))
         else:
             name = _e(name)
+        project = str(row["id"])
         line = '<tr><td>%s <span class=help>%s</span></td><td>%s</td></tr>' % (
             name, _e(row["id"]),
-            cell(row.get("running"), row.get("latest"), row.get("newer")))
+            cell(row.get("running"), row.get("latest"), row.get("newer"), project))
         rows.append(line)
-        if row.get("problem"):
-            rows.append('<tr><td></td><td class=help>%s</td></tr>' % _e(row["problem"]))
+        problem = row.get("problem") or ""
+        # The honest reason still travels with the row - but "not on disk yet" is the
+        # reason it has not been STAGED, and once it has been staged and proved that
+        # sentence sends the operator back to prime it again. Swapped by identity
+        # against the constant, so a row carrying anything else keeps what it carries.
+        if (problem == arkupdate.NOT_ON_DISK
+                and proved.get(project) == str(row.get("latest") or "")):
+            problem = ("on the staged tree at file %s, verified by the staging boot - "
+                       "it reaches the cluster on the next Apply" % row.get("latest"))
+        if problem:
+            rows.append('<tr><td></td><td class=help>%s</td></tr>' % _e(problem))
 
     # What has been staged, and when it was proved. The timestamp is the point: a
     # verification from before the last mod change is not a verification of what would

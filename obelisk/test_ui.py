@@ -972,6 +972,103 @@ _chips = ui.render_mod_chips(rows=_added_status["mods"])
 check("the chips read the same way", "to be staged" in _chips, _ascii(_chips))
 check("and still mark a genuine unknown as one", "unknown" in _chips, _ascii(_chips))
 
+# ---- ...and "to be staged" stops being true once it HAS been staged
+#
+# The live cluster: 942024 was downloaded, booted and verified on the staging server,
+# and this row still read "to be staged" - because the LIVE tree has no folder for it
+# and never will until an Apply moves the staged tree in. So the page sent the operator
+# back to the prime they had already run, while the Apply the mod was actually waiting
+# for was greyed out three inches below. The primed record's `loaded` is the evidence,
+# and the pair is what it is asked: a mod staged at a file id other than the one now
+# wanted was staged against a list that has since moved on.
+_STAGED_AT = {"929110": "7738786", "942024": "9420001"}
+_pr = ui.render_ark_update(_ps, _added_status,
+                           ready={"ok": True, "build": "25200000", "when": 1757260000,
+                                  "loaded": _STAGED_AT})
+check("a mod that IS staged and verified reads as ready to apply",
+      "staged, ready to apply</span>" in _pr, _ascii(_window(_pr, "942024", 400)))
+check("and never as something still waiting to be staged",
+      "to be staged" not in _pr, _ascii(_window(_pr, "942024", 400)))
+check("the row still shows the file id that would arrive",
+      "9420001" in _pr, _ascii(_window(_pr, "942024", 400)))
+check("and the help line under it stops sending them back to prime it again",
+      "listed for the cluster but not on disk yet" not in _pr,
+      _ascii(_window(_pr, "942024", 500)))
+check("saying instead where it is and what brings it over",
+      "on the staged tree at file 9420001" in _pr and "next Apply" in _pr,
+      _ascii(_window(_pr, "942024", 500)))
+check("a mod nobody could ask about is untouched by any of this",
+      "could not check</span>" in _pr and "could not ask CurseForge" in _pr,
+      _ascii(_window(_pr, "928621", 400)))
+
+# A STALE prime must not read as ready. The staging server proved 9419999; what the
+# cluster now wants is 9420001, and that combination has never booted anywhere.
+_pstale = ui.render_ark_update(_ps, _added_status,
+                               ready={"ok": True, "build": "25200000",
+                                      "when": 1757260000,
+                                      "loaded": {"942024": "9419999"}})
+check("a mod staged at a DIFFERENT file id is still to be staged",
+      "to be staged</span>" in _pstale and "staged, ready to apply" not in _pstale,
+      _ascii(_window(_pstale, "942024", 400)))
+check("and with nothing staged at all it reads exactly as it always did",
+      "to be staged</span>" in _pa and "staged, ready to apply" not in _pa,
+      _ascii(_window(_pa, "942024", 400)))
+
+# THE BUTTON, RENDERED - the half the row checks above do not cover.
+#
+# The whole defect was that the engine and the page disagreed: worth_applying answered
+# "1 setting change(s) are waiting" while the page said "nothing to apply" and greyed
+# Apply out. Asserting the gate returns True does not close that, because the gate
+# returned a good answer the page never asked for. So the REAL gate is computed here
+# over a real tree and handed to the REAL renderer, on the live shape - build EQUAL,
+# one mod staged that the live tree does not have.
+_bt_root = tempfile.mkdtemp()
+_bt_sf = os.path.join(_bt_root, "ServerFiles")
+_bt_mods = os.path.join(_bt_sf, "ShooterGame", "Binaries", "Win64",
+                        "ShooterGame", "Mods", "83374")
+os.makedirs(_bt_mods)
+with open(os.path.join(_bt_sf, "appmanifest_2430930.acf"), "w",
+          encoding="utf-8") as _bt_fh:
+    _bt_fh.write(chr(34) + "AppState" + chr(34) + chr(10) + "{" + chr(10)
+                 + chr(9) + chr(34) + "appid" + chr(34) + chr(9) + chr(9)
+                 + chr(34) + "2430930" + chr(34) + chr(10)
+                 + chr(9) + chr(34) + "buildid" + chr(34) + chr(9) + chr(9)
+                 + chr(34) + "25359944" + chr(34) + chr(10) + "}" + chr(10))
+for _bt_pair in ("929110_7738786", "940003_6830549"):
+    os.makedirs(os.path.join(_bt_mods, _bt_pair))
+
+_bt_ready = {"ok": True, "build": "25359944", "when": 1757260000,
+             "loaded": {"929110": "7738786", "940003": "6830549",
+                        "942024": "8656851"}}
+_bt_store = _PanelStore()
+_bt_store.data["ark_update"] = {"primed": _bt_ready}
+_bt_gate = _upd.staged_worth_applying(_bt_store, ark_root=_bt_root)
+check("the gate says apply for a mod staged onto the build already running",
+      _bt_gate[0] is True, _bt_gate)
+_bt_page = ui.render_ark_update(_bt_store, _added_status, ready=_bt_ready,
+                                applicable=_bt_gate)
+check("and the RENDERED page offers an Apply the operator can press",
+      "disabled>Apply now" not in _bt_page,
+      _ascii(_window(_bt_page, "Apply now", 260)))
+check("it no longer prints the sentence that was false about this cluster",
+      "is the one already running" not in _bt_page,
+      _ascii(_window(_bt_page, "already running", 260)))
+
+# The regression, rendered. Nothing staged beyond what is live, so the page must still
+# grey the button - the rehearsal-of-the-current-build case that once stopped ten
+# servers to install what they were already on.
+_bt_same = _PanelStore()
+_bt_same.data["ark_update"] = {"primed": dict(
+    _bt_ready, loaded={"929110": "7738786", "940003": "6830549"})}
+_bt_gate2 = _upd.staged_worth_applying(_bt_same, ark_root=_bt_root)
+check("a staged tree with no mod delta is still not worth applying",
+      _bt_gate2[0] is False, _bt_gate2)
+check("and the page still greys Apply for it",
+      "disabled>Apply now" in ui.render_ark_update(
+          _bt_same, _added_status, ready=_bt_same.data["ark_update"]["primed"],
+          applicable=_bt_gate2), _bt_gate2)
+
+
 _ready = {"ok": True, "build": "25200000", "when": 1757260000,
           "loaded": {"929110": "7738786", "929420": "8210044"}}
 _ps2 = _PanelStore()

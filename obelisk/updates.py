@@ -1093,8 +1093,65 @@ ALREADY_RUNNING = ("the staged build (%s) is the one already running, so there i
                    "nothing to apply")
 
 
+def staged_mod_files(ready):
+    """{project id: file id} the staging server actually PROVED, from the record.
+
+    `loaded` and not `mods`: the pair is the fact. bbfe3a8 made this record unable to
+    claim more than the staging boot rehearsed, so it is the one source here that
+    cannot overstate what is on the staged tree - reading the staged tree off disk
+    instead would believe a directory that the staging server's own updater rewrites
+    every hour, and believe it about a boot that never happened.
+    """
+    return {str(k): str(v) for k, v in ((ready or {}).get("loaded") or {}).items()}
+
+
+def live_mod_files(serverfiles):
+    """({project id: file id} on the live tree, was the tree readable at all).
+
+    Two answers because `installed_mods` collapses them into one: it returns {} for a
+    vanilla cluster and {} for a share that is not mounted, and those want opposite
+    decisions. Nothing on disk is a real answer about a cluster that has never run a
+    mod - its first mod is a genuine delta - while a tree nobody could read is the
+    unknown that must never turn into "restart ten servers, the staged one is probably
+    different".
+
+    The witness is the install's own appmanifest, read by the same function the build
+    half of this decision uses - not a listing of the Mods folder, because a cluster
+    with no mods has no Mods folder and probing that would call every vanilla cluster
+    unreadable. "There is an ARK install here and we can read it" is exactly the
+    question, and an unmounted share, a wrong Ark root and an empty directory that
+    merely exists all answer it the same way: no.
+    """
+    on_disk, _why = arkupdate.installed_build(serverfiles)
+    if not on_disk:
+        return {}, False
+    return {m: str((d or {}).get("file_id") or "")
+            for m, d in arkupdate.installed_mods(serverfiles).items()}, True
+
+
+def mod_changes(staged, live):
+    """Every way the staged tree's mods differ from the live tree's, in sentences.
+
+    Pairs, never ids: a mod whose file id moved is as real a change as one that
+    appeared, and comparing the id sets alone would call a mod update "nothing to
+    apply" on exactly the cluster that staged it.
+    """
+    out = []
+    for project in sorted(set(staged) | set(live)):
+        was, now = live.get(project), staged.get(project)
+        if was == now:
+            continue
+        if was is None:
+            out.append("%s is new (file %s)" % (project, now))
+        elif now is None:
+            out.append("%s is no longer listed" % project)
+        else:
+            out.append("%s moves from file %s to %s" % (project, was, now))
+    return out
+
+
 def staged_worth_applying(store, installed=None, ark_root=None):
-    """(would swapping the staged tree in change anything, why) - the build half.
+    """(would swapping the staged tree in change anything, why) - build AND mods.
 
     Split out of worth_applying because one function was answering two questions and
     only one caller could use the answer. "Is there anything to apply at all" is
@@ -1107,6 +1164,16 @@ def staged_worth_applying(store, installed=None, ark_root=None):
     writes a verified primed record for the build already running. Reading that as work
     to do is what stopped ten servers to install what they were already on - and because
     a restart empties the cluster, the empty-cluster trigger then fired again, and again.
+
+    **A build number is not the whole tree.** Asking only about the build made this
+    answer false the other way for a mod: 942024 was staged and verified onto the
+    running build, so the staged tree held a mod folder the live tree did not, and this
+    said "the staged build is the one already running, so there is nothing to apply" -
+    about a swap that would have installed a mod. It cost more than a greyed button.
+    The same answer gates the swap in apply_batch, and a queued mod_ids change makes
+    that batch run anyway: the settings would have been committed, naming a mod for ten
+    live maps, and the tree holding it never moved. So the mods are compared here, in
+    the one place both the button and the swap read.
     """
     ready = primed(store)
     if not ready:
@@ -1114,11 +1181,11 @@ def staged_worth_applying(store, installed=None, ark_root=None):
     if not owns_updates(store):
         return False, "a build is staged but POK applies updates on this cluster"
 
+    from . import layout
+    serverfiles = layout.ark_paths(
+        ark_root or layout.ark_root_of(store))["serverfiles"]
     if installed is None:
-        from . import layout
-        root = ark_root or layout.ark_root_of(store)
-        installed, _why = arkupdate.installed_build(
-            layout.ark_paths(root)["serverfiles"])
+        installed, _why = arkupdate.installed_build(serverfiles)
     if not installed:
         # Not knowing what is running is not a reason to restart ten servers on the
         # chance that the staged thing is newer.
@@ -1135,9 +1202,25 @@ def staged_worth_applying(store, installed=None, ark_root=None):
         # not-newer already means equal and this reads False - which is right, since
         # there would be nothing truthful to say about which came first.
         if newer_build(staged, installed):
+            # Still refused whatever the mods say. The swap moves the whole tree, so
+            # promoting this one to pick up a mod would install an older ARK build with
+            # it - and the recovery is not a restart but a re-prime, which the pipeline
+            # starts on its own the moment the mod list changes.
             return False, ("the staged build (%s) is older than the one running (%s), "
                            "so there is nothing to apply - installing it would be a "
                            "downgrade" % (staged, installed))
+
+        # Same build, and now the other half of the tree. An unreadable live tree is
+        # NOT a delta: it is the absence of an answer, and turning it into one would
+        # stop ten servers on the chance that the staged mods are different. It falls
+        # back to the sentence this branch has always returned, which is true of the
+        # build either way.
+        live, readable = live_mod_files(serverfiles)
+        changed = mod_changes(staged_mod_files(ready), live) if readable else []
+        if changed:
+            return True, ("the staged build (%s) is the one already running, but the "
+                          "staged tree's mods differ from the live one: %s - applying "
+                          "it would change the cluster" % (staged, "; ".join(changed)))
         return False, ALREADY_RUNNING % staged
     return True, "build %s is staged and verified, newer than %s" % (
         ready.get("build"), installed)

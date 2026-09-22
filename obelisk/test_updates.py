@@ -1322,10 +1322,13 @@ def _apply(st_, spy, ark=ARK, **kw):
     """apply_batch with every destructive step replaced by a counter."""
     _r, _rename = moved_nothing()
     kw.setdefault("installed", "25117056")
+    # The staged tree is re-read immediately before the rename, so a caller applying
+    # against a different build has to be able to say what the tree holds.
+    kw.setdefault("staged_build", STAGED_BUILD)
     return updates.apply_batch(
         st_, ark, warn=spy.warn, stop_all=spy.stop, start_all=spy.start,
         verify=spy.verify, players=lambda: (0, {}, []), rename=_rename,
-        staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000, **kw), _r
+        exists=tree_exists(), now=lambda: 1000, **kw), _r
 
 
 st = _stale_store()
@@ -1590,6 +1593,168 @@ check("worth_applying is built on the same function the apply refuses with",
       in _src.split("def worth_applying(")[-1])
 check("and apply_batch asks it itself rather than trusting its callers to have asked",
       "staged_worth_applying(store, installed, ark_root)" in _apply_body, _apply_body[:0])
+
+
+# ---- a build number is not the whole tree
+#
+# Live on the production cluster: 942024 was staged and verified onto the build already
+# running, so the staged tree held a mod folder the live tree did not - and this gate,
+# comparing the build alone, answered "the staged build is the one already running, so
+# there is nothing to apply". The button was greyed over a mod that was downloaded,
+# booted and proved, and the mod could never be applied from the UI at all.
+#
+# The greyed button was the smaller half. The same answer gates the swap inside
+# apply_batch, and the queued mod_ids change makes that batch RUN: pending.count is 1,
+# so it would have committed 942024 into mod_ids as a settings-only apply and never
+# moved the tree - ten live maps listing a mod that is not on their disk. So this is
+# proved at the gate AND through the apply.
+#
+# Real directories rather than stubs: this compares what is on the live disk, and a
+# stubbed listdir would prove the comparison against a fiction.
+from . import arkupdate as _ark
+
+_MD_LIVE = {"929110": "7738786", "940003": "6830549", "929420": "8160173"}
+_MD_STAGED = dict(_MD_LIVE, **{"942024": "8656851"})
+
+
+def _live_tree(pairs, build="25117056"):
+    """An Ark root that really reads: an appmanifest, and a folder per mod pair."""
+    root = _tf.mkdtemp()
+    sf = _os.path.join(root, "ServerFiles")
+    mods = _os.path.join(sf, _ark.MODS_SUBDIR)
+    _os.makedirs(mods)
+    with open(_os.path.join(sf, "appmanifest_2430930.acf"), "w",
+              encoding="utf-8") as fh:
+        fh.write('"AppState"\n{\n\t"appid"\t\t"2430930"\n\t"buildid"\t\t"%s"\n}\n'
+                 % build)
+    for project, file_id in pairs.items():
+        _os.makedirs(_os.path.join(mods, "%s_%s" % (project, file_id)))
+    return root
+
+
+def _md_store(loaded, build="25117056", **kw):
+    kw.setdefault("mod_ids", ",".join(sorted(_MD_STAGED)))
+    st_ = real_store(**kw)
+    updates.remember(st_, primed={"ok": True, "build": build, "loaded": loaded})
+    return st_
+
+
+_MD_ROOT = _live_tree(_MD_LIVE)
+check("the fixture really is a tree that reads, not an unreadable one",
+      _ark.installed_build(_os.path.join(_MD_ROOT, "ServerFiles"))[0] == "25117056",
+      _ark.installed_build(_os.path.join(_MD_ROOT, "ServerFiles")))
+check("with exactly the live mods on it, read off the disk",
+      {m: d["file_id"] for m, d in
+       _ark.installed_mods(_os.path.join(_MD_ROOT, "ServerFiles")).items()} == _MD_LIVE,
+      _ark.installed_mods(_os.path.join(_MD_ROOT, "ServerFiles")))
+
+_md_add = _md_store(_MD_STAGED)
+_md_ans = updates.staged_worth_applying(_md_add, installed="25117056",
+                                        ark_root=_MD_ROOT)
+check("THE LIVE DEFECT: a mod staged onto the build already running IS worth applying",
+      _md_ans[0], _md_ans)
+check("and the sentence names the mod, so the operator knows what they are applying",
+      "942024" in _md_ans[1], _md_ans[1])
+check("and the file id it was staged at, which is the thing that would move",
+      "8656851" in _md_ans[1], _md_ans[1])
+check("it never says the false thing - there IS something to apply",
+      _md_ans[1] != updates.ALREADY_RUNNING % "25117056", _md_ans[1])
+check("while still saying plainly that the build itself has not moved",
+      "already running" in _md_ans[1], _md_ans[1])
+
+# THE REGRESSION THAT WOULD HURT MOST. `staging_mode: always` rehearses the build
+# already running as routine bookkeeping, and reading that as work to do stopped ten
+# servers to install what they were already on - then the empty-cluster trigger fired
+# again, and again. Build equal AND mods equal is still nothing to apply, in the
+# byte-identical sentence, and the pairs are equal here rather than merely the ids.
+_md_same = _md_store(_MD_LIVE)
+check("build equal AND mods equal is still refused - the rehearsal is not an update",
+      updates.staged_worth_applying(_md_same, installed="25117056",
+                                    ark_root=_MD_ROOT) == (False, EQUAL_WHY),
+      updates.staged_worth_applying(_md_same, installed="25117056",
+                                    ark_root=_MD_ROOT))
+_md_spy = _Spy()
+(_md_ok, _md_why, _), _md_moved = _apply(_md_same, _md_spy, ark=_MD_ROOT,
+                                         staged_build="25117056")
+check("and pressing Apply on it still stops nothing", _md_spy.log == [], _md_spy.log)
+check("and moves nothing", _md_moved == [], _md_moved)
+check("and the unattended triggers get the same refusal through worth_applying",
+      updates.worth_applying(_md_same, installed="25117056",
+                             ark_root=_MD_ROOT) == (False, EQUAL_WHY),
+      updates.worth_applying(_md_same, installed="25117056", ark_root=_MD_ROOT))
+
+# Pairs, not ids. A mod whose file moved is a real delta, and comparing the id sets
+# alone would call a mod update "nothing to apply" on the cluster that staged it.
+_md_moved_file = _md_store(dict(_MD_LIVE, **{"929420": "8210044"}))
+_md_mv = updates.staged_worth_applying(_md_moved_file, installed="25117056",
+                                       ark_root=_MD_ROOT)
+check("a mod staged at a NEW file id is a delta, though the id set is unchanged",
+      _md_mv[0], _md_mv)
+check("and the sentence names both file ids, so the move is legible",
+      "8160173" in _md_mv[1] and "8210044" in _md_mv[1], _md_mv[1])
+
+_md_gone = _md_store({k: v for k, v in _MD_LIVE.items() if k != "940003"})
+check("a mod the staged tree no longer carries is a delta too - the swap removes it",
+      updates.staged_worth_applying(_md_gone, installed="25117056",
+                                    ark_root=_MD_ROOT)[0],
+      updates.staged_worth_applying(_md_gone, installed="25117056",
+                                    ark_root=_MD_ROOT))
+
+# An unreadable live tree is the ABSENCE of an answer, and must never become one. On
+# a cluster whose share is not mounted, "the staged mods are probably different" is a
+# guess, and the thing it buys is a ten-server restart.
+_md_unread = updates.staged_worth_applying(_md_add, installed="25117056",
+                                           ark_root="/nowhere-at-all")
+check("an unreadable live tree does not turn into a delta",
+      not _md_unread[0], _md_unread)
+check("and it falls back to the sentence that is true of the build either way",
+      _md_unread == (False, EQUAL_WHY), _md_unread)
+check("a directory that merely exists is not an install - the appmanifest is the "
+      "witness",
+      updates.live_mod_files(_tf.mkdtemp()) == ({}, False),
+      updates.live_mod_files(_tf.mkdtemp()))
+
+# A downgrade stays a downgrade. The swap moves the WHOLE tree, so promoting an older
+# one to pick up a mod would install the older ARK build with it - and the recovery is
+# a re-prime, which starts on its own the moment the mod list changes.
+_md_old = _md_store(_MD_STAGED, build="25000000")
+_md_dg = updates.staged_worth_applying(_md_old, installed="25117056",
+                                       ark_root=_MD_ROOT)
+check("a mod delta does not buy a downgrade past the refusal that exists for it",
+      not _md_dg[0], _md_dg)
+check("and it is still refused in the downgrade's own words",
+      "downgrade" in _md_dg[1], _md_dg[1])
+
+# ---- and the swap actually happens, which is the half that was worse
+#
+# With the button forced on and this gate left alone, Apply would have committed the
+# mod into mod_ids and never renamed a thing.
+_md_apply = _md_store(_MD_STAGED, mod_ids="929110,940003,929420")
+_pend.stage(_md_apply, _pend.split({"mod_ids": "929110,940003,929420,942024"},
+                                   _md_apply)[1])
+check("the add really is queued rather than written, as it is on the live cluster",
+      _pend.count(_md_apply) == 1, _pend.rows(_md_apply))
+_md_spy2 = _Spy()
+(_md_ok2, _md_why2, _md_det), _md_moved2 = _apply(_md_apply, _md_spy2, ark=_MD_ROOT,
+                                                  staged_build="25117056")
+check("the apply goes through", _md_ok2, _md_why2)
+check("AND THE TREE IS SWAPPED, rather than the settings landing on their own",
+      ("%s/ServerFiles.staging" % _MD_ROOT, "%s/ServerFiles" % _MD_ROOT)
+      in _md_moved2, _md_moved2[:3])
+check("so the mod is not left listed for ten maps and absent from their disk",
+      _md_apply.get("mod_ids") == "929110,940003,929420,942024",
+      _md_apply.get("mod_ids"))
+
+# ...while a queued setting with no file delta still applies WITHOUT touching the
+# install. Over-tightening this would stop ten servers for a max_players change.
+_md_cfg = _md_store(_MD_LIVE)
+_pend.stage(_md_cfg, {"max_players": 250})
+_md_spy3 = _Spy()
+(_md_ok3, _md_why3, _), _md_moved3 = _apply(_md_cfg, _md_spy3, ark=_MD_ROOT,
+                                            staged_build="25117056")
+check("a settings-only apply still applies", _md_ok3, _md_why3)
+check("and still leaves the 12 GB of install exactly where it is", _md_moved3 == [],
+      _md_moved3)
 
 
 # ---- the window is a backstop, not a second schedule
