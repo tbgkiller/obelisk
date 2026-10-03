@@ -2118,6 +2118,29 @@ def close_one(store, map_key, **kw):
         return False, ("%s is not a map in this cluster, so nothing was stopped"
                        % map_key)
     label, name, port = found[0]
+
+    # A map whose container DOES NOT EXIST is already closed, and has to be read that
+    # way or this can never answer for the map that needs it most. The integrity gate
+    # holds a damaged map down, and the `down` that follows removes its container - so
+    # the map somebody opens the restore page for is exactly the one with nothing to
+    # inspect. close_map cannot see that: `docker inspect` and `docker top` both fail
+    # on a missing name, which it rightly reads as "unknown", and it spends its whole
+    # budget waiting on RCON before refusing - and the restore refuses with it.
+    #
+    # The evidence is the one maps_still_alive already accepts: `docker ps -a` lists
+    # stopped containers too, so a name missing from a listing that SUCCEEDED is a
+    # container that is not there, with no server in it and nothing to signal. A
+    # listing that failed decides nothing, and the map is closed the long way.
+    existing = kw.pop("existing", None) or (lambda: dockerctl.existing_containers())
+    try:
+        there = existing()
+    except Exception as e:                          # noqa: BLE001 - reported, not fatal
+        log.warning("could not ask Docker which containers exist (%s) - closing %s "
+                    "the long way", e, map_key)
+        there = None
+    if there is not None and name not in there:
+        return True, "its container does not exist, so there is nothing to stop"
+
     out = close_map(store, label, (name, port), name, map_key, **kw)
     if out.get("stopped"):
         return True, out.get("why") or "stopped"

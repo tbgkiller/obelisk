@@ -3434,11 +3434,13 @@ check("a live map ELSEWHERE is no reason to leave this one down - it asks about 
 
 # 5. close_one: what the restore paths call now. DoExit first, the door only after the
 #    server process has been seen gone - close_map's sequence, not a second spelling.
+_island_there = lambda: {clusterctl.naming.container_name(
+    clusterctl.project(_ps_store), "island"): "x"}
 _rig_c1 = _Rig(linger=1)
 _ok_c1, _msg_c1 = clusterctl.close_one(
     _ps_store, "island", rcon=_rig_c1.rcon, procs=_rig_c1.procs,
     details=_rig_c1.details, stop_container=_rig_c1.stop, wait=_rig_c1.wait,
-    now=_rig_c1.now, budget=60, interval=5, confirm=30)
+    now=_rig_c1.now, budget=60, interval=5, confirm=30, existing=_island_there)
 check("close_one asks the map to exit before anything is signalled at it",
       _ok_c1 and _rig_c1.events.index("DoExit") < _rig_c1.events.index("stop"),
       (_ok_c1, _msg_c1, _rig_c1.events))
@@ -3448,11 +3450,45 @@ _rig_c2 = _Rig(linger=99)
 _ok_c2, _msg_c2 = clusterctl.close_one(
     _ps_store, "island", rcon=_rig_c2.rcon, procs=_rig_c2.procs,
     details=_rig_c2.details, stop_container=_rig_c2.stop, wait=_rig_c2.wait,
-    now=_rig_c2.now, budget=60, interval=5, confirm=30)
+    now=_rig_c2.now, budget=60, interval=5, confirm=30, existing=_island_there)
 check("a map that will not let go of its server is never signalled",
       not _ok_c2 and _rig_c2.stops == 0, (_ok_c2, _msg_c2, _rig_c2.events))
 check("and the caller is told, so a restore changes nothing at all",
       "DoExit" in _msg_c2, _msg_c2)
+
+# A map the integrity gate held down has had its container removed by the `down` that
+# followed - which is exactly the map somebody opens the restore page for. Nothing to
+# inspect and nothing to `docker top`, so close_map can only ever read it as unknown;
+# without a positive reading of absence the restore spins out its budget and refuses.
+_rig_c4 = _Rig(linger=1)
+_ok_c4, _msg_c4 = clusterctl.close_one(
+    _ps_store, "island", rcon=_rig_c4.rcon, procs=lambda n: None,
+    details=lambda ns: {}, stop_container=_rig_c4.stop, wait=_rig_c4.wait,
+    now=_rig_c4.now, budget=60, interval=5, confirm=30, existing=lambda: {})
+check("a map whose container does not exist is already closed, so a restore can run",
+      _ok_c4 and "does not exist" in _msg_c4, (_ok_c4, _msg_c4))
+check("and nothing is asked of it or signalled at it",
+      _rig_c4.events == [] and _rig_c4.stops == 0, _rig_c4.events)
+# The unknown still falls the safe way: a listing that FAILED is no evidence of
+# absence, so the map is closed the long way and, with nothing answering, refused.
+_rig_c5 = _Rig(linger=1)
+_ok_c5, _msg_c5 = clusterctl.close_one(
+    _ps_store, "island", rcon=_rig_c5.rcon, procs=lambda n: None,
+    details=lambda ns: {}, stop_container=_rig_c5.stop, wait=_rig_c5.wait,
+    now=_rig_c5.now, budget=60, interval=5, confirm=30, existing=lambda: None)
+check("but a container listing that failed is not read as the container being gone",
+      not _ok_c5 and _rig_c5.stops == 0, (_ok_c5, _msg_c5))
+# And a container that IS listed goes through close_map exactly as before.
+_rig_c6 = _Rig(linger=1)
+_ok_c6, _msg_c6 = clusterctl.close_one(
+    _ps_store, "island", rcon=_rig_c6.rcon, procs=_rig_c6.procs,
+    details=_rig_c6.details, stop_container=_rig_c6.stop, wait=_rig_c6.wait,
+    now=_rig_c6.now, budget=60, interval=5, confirm=30,
+    existing=_island_there)
+check("a container that is there is still asked to exit before anything is signalled",
+      _ok_c6 and _rig_c6.events.index("DoExit") < _rig_c6.events.index("stop"),
+      (_ok_c6, _msg_c6, _rig_c6.events))
+
 _ok_c3, _msg_c3 = clusterctl.close_one(_ps_store, "notamap")
 check("and a key that is not a map in this cluster is a refusal, not a stop",
       not _ok_c3 and "not a map in this cluster" in _msg_c3, _msg_c3)
