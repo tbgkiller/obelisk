@@ -1806,7 +1806,7 @@ def render_crash_watch(on, policy, stood_down=None):
     return out
 
 
-def render_held_down(maps, states=None):
+def render_held_down(maps, states=None, auto=False, tried=None):
     """The gate refused these and is holding them down. Say so where the buttons are.
 
     Launch and "Apply and restart" both bring every map up, this one included, onto the
@@ -1823,6 +1823,12 @@ def render_held_down(maps, states=None):
     announcement for that case says in as many words not to, and restoring there would
     swap a healthy world for an older one to fix a mount. A map that has never booted has
     no save point to restore from either.
+
+    `auto` and `tried` are the automatic restore: whether it is on, and {label: attempt}
+    for the maps it has already started on this hold. A damaged map it is going to fix
+    must not be told "restore it first" as though nothing were coming - the operator
+    would race it - and one it already tried and failed on must say so, because it will
+    not be tried again and the next move is theirs.
     """
     from .cluster import _and
     one = len(maps) == 1
@@ -1844,6 +1850,35 @@ def render_held_down(maps, states=None):
     else:
         advice = ('Restore %s from a save point first, unless you already have.'
                   % ("it" if one else "them"))
+
+    damaged = [m for m in maps if (states or {}).get(m) == "damaged"]
+    if auto and damaged and not storage_only:
+        tried = tried or {}
+        waiting = [m for m in damaged if not tried.get(m)]
+        going = [m for m in damaged if tried.get(m) and tried[m].get("ok") is None]
+        failed = [m for m in damaged if tried.get(m) and tried[m].get("ok") is False]
+        said = []
+        if waiting:
+            w1 = len(waiting) == 1
+            said.append("Obelisk will restore %s automatically from %s newest good save "
+                        "point - the damaged %s copied aside first, and players' "
+                        "characters are not rolled back."
+                        % (_and(waiting), "its" if w1 else "their",
+                           "world is" if w1 else "worlds are"))
+        if going:
+            said.append("Obelisk is restoring %s from %s newest good save point now."
+                        % (_and(going), "its" if len(going) == 1 else "their"))
+        if failed:
+            f1 = len(failed) == 1
+            why = str(tried[failed[0]].get("why") or "").rstrip(" .")
+            said.append("Obelisk already tried to restore %s automatically and could "
+                        "not%s, so it will not try again for this hold. Restore %s from "
+                        "a save point or an archive by hand."
+                        % (_and(failed), (" (%s)" % why) if f1 and why else "",
+                           "it" if f1 else "them"))
+        # The maps held for some other reason keep the advice they had.
+        advice = " ".join(said) if len(damaged) == len(maps) else (
+            advice + " " + " ".join(said))
 
     return ('<div class=problem><b>%s %s still stopped after a refused update.</b> '
             'The %s %s %s could not be read, so %s not started - the files are '

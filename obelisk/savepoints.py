@@ -154,13 +154,21 @@ WARNING = ("Rolls this map's world back to %s. Player characters and tribes are 
 
 def restore_point(store, map_key, name, stop=None, start=None, verify=None,
                   players=None, force=False, on_step=None, ark_root=None, now=None,
-                  listdir=None, getsize=None, save=None):
+                  listdir=None, getsize=None, save=None, restart_on_failure=True):
     """Put one map back on one of its own dated saves. (ok, message, detail).
 
     The order is the safety argument, and it is restore_map's: prove the point first,
     copy the world that is about to be replaced, stop only this map, swap one file,
     start, and prove the server. A failure at any point leaves the map on the world it
     already had - and the copy taken means even a successful one is reversible.
+
+    `restart_on_failure=False` is for auto_restore, and it is the difference between
+    "leaves the map on the world it already had" being a comfort and being the harm.
+    Somebody pressing a restore point on a serving map wants it back up on its old world
+    if the swap fails. A map the integrity gate is holding down is held BECAUSE the world
+    it already had is damaged, so starting it again on that world is the exact thing the
+    hold exists to prevent - and an unattended restore that failed would otherwise undo
+    the hold without anybody having decided to.
     """
     ark = ark_root or layout.ark_root_of(store)
     map_id = _map_id(store, map_key)
@@ -260,6 +268,10 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
         shutil.copy2(point["path"], live)
         restore.give_world_to_server(live)
     except OSError as e:
+        if not restart_on_failure:
+            step("left stopped - the world it had is the one being replaced")
+            return False, ("could not put the world in place, so %s is still stopped on "
+                           "the world it had: %s" % (map_name, e)), detail
         _restart(start, map_key, detail, step)
         return False, ("could not put the world in place, so %s is starting again on "
                        "the world it had: %s" % (map_name, e)), detail
@@ -272,6 +284,10 @@ def restore_point(store, map_key, name, stop=None, start=None, verify=None,
             shutil.copy2(keep, live)
             restore.give_world_to_server(live)
             step("the swapped world did not verify, so the previous one was put back")
+        if not restart_on_failure:
+            step("left stopped - the world it had is the one being replaced")
+            return False, ("the restored world does not verify, so %s is still stopped: "
+                           "%s" % (map_name, why_v)), detail
         _restart(start, map_key, detail, step)
         return False, "the restored world does not verify: %s" % why_v, detail
 
@@ -305,3 +321,179 @@ def _restart(start, map_key, detail, step):
     ok, why = start(map_key)
     detail["steps"].append("start: %s" % why)
     return ok, why
+
+
+# ---------------------------------------------------------------- bringing a map back
+#
+# The incident this is for: on 1 October The Island and Ragnarok crashed during their
+# own saves, the crash watch stood them down, their live worlds were malformed SQLite,
+# and two applies later the integrity gate was still holding them down - correctly, and
+# uselessly, beside twenty dated saves each that read perfectly well. Everything needed
+# to bring them back was on disk. What was missing was anybody deciding to.
+#
+# So this decides, and it is narrow on purpose. It acts on ONE finding - SQLite itself
+# says the live world is damaged - and refuses everything that merely looks like it. A
+# world that cannot be reached is a mount, not damage, and restoring over a mount
+# problem trades a healthy world for an older one. A world with a journal beside it has
+# not finished settling, and the journal may be exactly what makes it whole again. A
+# world that is not there at all has nothing to be damaged. And a world that verifies
+# now - because somebody restored it by hand while this was waiting - is left alone.
+
+def newest_good_point(store, map_key, ark_root=None, verify=None, listdir=None,
+                      getsize=None, now=None):
+    """(point or None, rejected) - the newest dated save that actually opens.
+
+    Newest first, and the first one that verifies wins: the least world lost is the
+    whole point. `rejected` is [(name, why)] for every newer point that would not open,
+    because "it went back three hours" reads very differently once you know the two
+    points in between were damaged too - which is what a crash during a save does to the
+    copy it was writing at the time.
+    """
+    verify = verify or verify_point
+    rejected = []
+    for point in list_points(store, map_key, ark_root=ark_root, listdir=listdir,
+                             getsize=getsize, now=now):
+        ok, why = verify(point["path"])
+        if ok:
+            return point, rejected
+        rejected.append((point["name"], why))
+    return None, rejected
+
+
+def live_state(path, verify=None, listdir=None):
+    """(state, why) for one live world, in the words the apply gate uses.
+
+    "ok", "damaged", "writing", "absent" or "unreachable" - and only "damaged" is a
+    licence to restore. The order of the questions is the argument:
+
+      * the folder has to LIST, or nothing below it is a finding about the world;
+      * nothing at all there is "absent" - lexists, so a dangling link is not absence;
+      * a link, or anything that is not a plain file, is "unreachable": restore_point
+        copies onto this path, and copying onto a link writes through it to wherever it
+        points, which is the symlink trap with a restore on top;
+      * a sidecar beside it is "writing" - verify_world opens with immutable=1, which
+        ignores a hot journal, so a world whose journal would make it whole reads as
+        damaged when it is not;
+      * a file that will not even open for reading is "unreachable" - a permission, not
+        a page SQLite has looked at;
+      * and only then is SQLite asked. Whatever it says against the file is "damaged".
+    """
+    verify = verify or restore.verify_world
+    listdir = listdir or os.listdir
+    folder = os.path.dirname(path)
+    try:
+        listdir(folder)
+    except FileNotFoundError:
+        return "absent", "its world folder %s does not exist" % folder
+    except OSError as e:
+        return "unreachable", "its world folder could not be read (%s)" % e
+    if not os.path.lexists(path):
+        return "absent", "there is no world file at %s" % path
+    if os.path.islink(path) or not os.path.isfile(path):
+        return "unreachable", ("%s is not a plain file, so nothing will be copied onto "
+                               "it" % path)
+    hot = sorted(s for s in restore.SIDECARS if os.path.lexists(path + s))
+    if hot:
+        return "writing", ("a %s file is beside it, so it had not finished being "
+                           "written" % ", ".join(hot))
+    try:
+        with open(path, "rb") as f:
+            f.read(1)
+    except OSError as e:
+        return "unreachable", "the world file will not open for reading (%s)" % e
+    ok, why = verify(path)
+    return ("ok" if ok else "damaged"), why
+
+
+def human_span(seconds):
+    """"about 54 minutes", "about 3 hours" - how much world a rollback costs, said the
+    way somebody reads it in a channel."""
+    seconds = max(0, int(seconds or 0))
+    if seconds < 90:
+        return "under a minute"
+    if seconds < 90 * 60:
+        return "about %d minutes" % round(seconds / 60.0)
+    if seconds < 36 * 3600:
+        hours = round(seconds / 3600.0, 1)
+        return "about %s hours" % (("%d" % hours) if hours == int(hours) else hours)
+    return "about %d days" % round(seconds / 86400.0)
+
+
+def auto_restore(store, map_key, restore=None, live_ok=None, pick=None, ark_root=None,
+                 mtime=None, **wiring):
+    """Bring a map whose live world is damaged back on its newest good save point.
+
+    (ok, message, detail). `wiring` is stop/start/verify/save/on_step and goes straight
+    to restore_point, so this path and the button stop, start and prove a map the same
+    way. `restore`, `live_ok` and `pick` are restore_point, live_state and
+    newest_good_point, handed in for the tests.
+
+    The caller has to have positively established the map is not running - that is why
+    the restore is forced past the player check, and the only reason it may be. This
+    then asks the live world again rather than trusting whoever said it was damaged: the
+    hold may be hours old, and in that time somebody may have restored it by hand, or
+    the share may have dropped out from under it. Either of those is a reason to do
+    nothing, and `detail["refused"]` says which.
+
+    The damaged world is not lost: restore_point copies it aside to the backups folder
+    before anything moves, and names the copy in the message.
+    """
+    ark = ark_root or layout.ark_root_of(store)
+    map_name = (mapcat.entry(store, map_key) or {}).get("name") or map_key
+    detail = {"map": map_key, "point": "", "rejected": [], "rolled_back": 0,
+              "steps": []}
+    live = live_world(store, map_key, ark)
+
+    state, why = (live_ok or live_state)(live)
+    detail["live_state"], detail["live_why"] = state, why
+    if state == "ok":
+        detail["refused"] = "intact"
+        return False, ("%s's world reads cleanly now (%s), so it was not rolled back. "
+                       "Somebody may already have restored it." % (map_name, why)), detail
+    if state != "damaged":
+        detail["refused"] = state or "unknown"
+        return False, ("%s's world was not rolled back, because it is not damaged - it "
+                       "is %s: %s. Only a world SQLite itself reports damaged is restored "
+                       "automatically." % (map_name, state or "unknown", why)), detail
+
+    point, rejected = (pick or newest_good_point)(store, map_key, ark_root=ark)
+    detail["rejected"] = list(rejected or [])
+    if not point:
+        return False, ("%s's world is damaged and none of its %d save point%s would "
+                       "open, so there is nothing good to restore from. Restore it from "
+                       "an archive." % (map_name, len(detail["rejected"]),
+                                        "" if len(detail["rejected"]) == 1 else "s")
+                       ), detail
+    detail["point"] = point["name"]
+    detail["point_local"] = point.get("local") or ""
+    # How much world goes: from the point to when the live world was last written. The
+    # file's own mtime rather than "now", because a map that has been down for a day
+    # has not been accumulating a day of building.
+    try:
+        written = (mtime or os.path.getmtime)(live)
+    except OSError:
+        written = point["when"]
+    detail["rolled_back"] = max(0, int(written - point["when"]))
+    detail["rolled_back_human"] = human_span(detail["rolled_back"])
+
+    ok, msg, got = (restore or restore_point)(
+        store, map_key, point["name"], force=True, ark_root=ark,
+        restart_on_failure=False, **wiring)
+    for k, v in (got or {}).items():
+        if k not in ("map", "point"):
+            detail[k] = v
+    if not ok:
+        return False, msg, detail
+    kept = os.path.basename(detail.get("kept") or "")
+    skipped = (" %d newer save point%s would not open and %s skipped."
+               % (len(detail["rejected"]), "" if len(detail["rejected"]) == 1 else "s",
+                  "was" if len(detail["rejected"]) == 1 else "were")
+               if detail["rejected"] else "")
+    return True, ("%s's world was damaged, so it has been restored from its save point "
+                  "of %s, rolling the world back %s.%s%s Player characters and tribes "
+                  "are not rolled back."
+                  % (map_name, point.get("local") or point["name"],
+                     detail["rolled_back_human"], skipped,
+                     (" The damaged world is kept as %s." % kept) if kept else "")
+                  ), detail
+

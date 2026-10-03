@@ -2530,5 +2530,63 @@ _ev_ns = [i["event"] for i in drain()]
 check("and the refusal reaches the admin channel as a failure",
       "ark.update_failed" in _ev_ns, _ev_ns)
 
+# ---- the held-down record, one map at a time
+#
+# The apply gate writes the record whole, because its answer is the whole truth about
+# every world. The crash watch and the automatic restore change ONE map in it, and a
+# helper that rewrote the rest would release or re-stamp maps nobody decided about.
+_hd = FakeStore()
+updates.remember(_hd, held_down={"maps": ["Aberration", "The Island"], "when": 1000,
+                                 "states": {"Aberration": "unreachable",
+                                            "The Island": "damaged"}})
+updates.hold_down(_hd, "Ragnarok", "damaged", 5000)
+check("holding one more map down keeps the maps already held",
+      updates.held_down(_hd) == ["Aberration", "The Island", "Ragnarok"],
+      updates.held_down(_hd))
+check("with their states, and the new one's",
+      updates.held_down_states(_hd) == {"Aberration": "unreachable",
+                                        "The Island": "damaged", "Ragnarok": "damaged"},
+      updates.held_down_states(_hd))
+check("the new map's hold starts when it was held",
+      updates.held_since(_hd, "Ragnarok") == 5000, updates.held_since(_hd, "Ragnarok"))
+check("and the others keep the hold they already had - re-stamping them would make "
+      "a failed restore look like a new hold", updates.held_since(_hd, "The Island") == 1000,
+      updates.held_since(_hd, "The Island"))
+check("a map that is not held has no hold", updates.held_since(_hd, "Valguero") is None)
+
+updates.release_held(_hd, "The Island")
+check("releasing one map takes it out of the list",
+      updates.held_down(_hd) == ["Aberration", "Ragnarok"], updates.held_down(_hd))
+check("and out of the states, so the page cannot advise about a map not held",
+      "The Island" not in updates.held_down_states(_hd), updates.held_down_states(_hd))
+check("and leaves the rest exactly as they were",
+      updates.held_down_states(_hd) == {"Aberration": "unreachable",
+                                        "Ragnarok": "damaged"},
+      updates.held_down_states(_hd))
+updates.release_held(_hd, "Aberration")
+updates.release_held(_hd, "Ragnarok")
+check("releasing the last one leaves nothing held", updates.held_down(_hd) == []
+      and updates.held_down_states(_hd) == {}, updates.state(_hd).get("held_down"))
+check("and releasing a map that is not held is harmless",
+      updates.release_held(_hd, "Ragnarok") is not None)
+
+# one attempt per hold, remembered on disk
+_ht = FakeStore()
+updates.remember(_ht, held_down={"maps": ["The Island"], "when": 1000,
+                                 "states": {"The Island": "damaged"}})
+check("a fresh hold has had no attempt", updates.restore_tried(_ht, "The Island") is None)
+updates.note_restore_try(_ht, "The Island", ok=False, why="no point opened")
+check("an attempt is remembered against the hold it was made on",
+      (updates.restore_tried(_ht, "The Island") or {}).get("why") == "no point opened",
+      updates.restore_tries(_ht))
+updates.remember(_ht, held_down={"maps": ["The Island"], "when": 2000,
+                                 "states": {"The Island": "damaged"}})
+check("a NEW hold of the same map has not been tried",
+      updates.restore_tried(_ht, "The Island") is None, updates.restore_tries(_ht))
+updates.remember(_ht, held_down=None)
+updates.note_restore_try(_ht, "Ragnarok", ok=True)
+check("attempts for maps no longer held are dropped as the record is written",
+      updates.restore_tries(_ht) == {}, updates.restore_tries(_ht))
+
 print("\nFAILURES: %s" % fails if fails else "\nall updates tests passed")
 sys.exit(1 if fails else 0)

@@ -24,6 +24,7 @@ web UI after it is running.
 | Restart warning | `restart_notice_minutes` | int | `30` | UI | recreate |
 | Container restart policy | `restart_policy` | choice | `no` | UI | recreate |
 | Bring a crashed map back | `crash_watch` | bool | `True` | UI | none |
+| Restore a damaged world automatically | `auto_restore` | bool | `True` | UI | none |
 | Who applies ARK updates | `ark_update_mode` | choice | `automatic` | UI | recreate |
 | Apply staged updates in the window | `update_apply_in_window` | bool | `False` | UI | none |
 | Apply waiting changes when nobody is on | `apply_when_empty` | bool | `True` | UI | none |
@@ -49,6 +50,8 @@ web UI after it is running.
 **Container restart policy** - What Docker does when a map's container exits. no: nothing - the map stays down until Obelisk starts it, which is the only way a deliberate stop actually sticks (the server image reads its own server exiting as a restart and exits the container on purpose, so a policy turns every stop into a boot loop). unless-stopped: Docker restarts it, which brings that loop back but does recover a genuine crash without Obelisk. CHANGING THIS DOES NOTHING TO A RUNNING CONTAINER - a container keeps the policy it was created with, so the maps have to be recreated (Launch, or Apply and restart) before the new setting is live.
 
 **Bring a crashed map back** - With the restart policy set to no, nothing brings a map back after a crash. This watches for a map that is down when Obelisk meant it to be up, and starts it again - at most 3 times in 6 hours per map, and it announces every one. A map Obelisk stopped on purpose is never started by it. Stands down entirely while the restart policy is unless-stopped, because Docker is doing the job then.
+
+**Restore a damaged world automatically** - When a map is held down because the integrity check found its world DAMAGED, roll that one map back to its newest save point that opens, and start it. Only damage is restored: a world that could not be reached, was still being written, or is not there at all is never touched. The damaged world is copied aside first, it is tried once per hold and never again on its own, and players' characters and tribes are not rolled back - only the world is.
 
 **Who applies ARK updates** - automatic: the server image updates itself inside the update window - no warning, no check, and a build that will not load with your mods is found out by every map failing to come back. obelisk: Obelisk rehearses the update on the staging server first and applies it only once it has booted cleanly, when you click Apply or when the window opens. Changing this recreates the map containers.
 

@@ -102,6 +102,106 @@ def held_down_states(store):
     return dict((got or {}).get("states") or {}) if isinstance(got, dict) else {}
 
 
+def held_since(store, label):
+    """When this map's current hold began, as an int, or None if it is not held.
+
+    Per map when the record says so, and the hold's own `when` otherwise. The apply gate
+    writes one `when` for everything it refused at once; the crash watch adds one map to
+    whatever is already held, and stamping the whole record with its time would make
+    every OTHER held map look like a new hold - which is a fresh automatic restore
+    attempt for a map whose last one already failed.
+    """
+    got = state(store).get("held_down")
+    if not isinstance(got, dict) or label not in (got.get("maps") or []):
+        return None
+    since = got.get("since") if isinstance(got.get("since"), dict) else {}
+    return int(since.get(label) or got.get("when") or 0)
+
+
+def hold_down(store, label, map_state, when):
+    """Add one map to the held-down record, keeping whatever is already in it.
+
+    The crash watch's way in. remember() replaces the record wholesale, which is right
+    for the apply gate - it has just checked every world and its answer is the whole
+    truth - and wrong for one map going down on its own between applies, which would
+    wipe out every other map still being held.
+    """
+    got = state(store).get("held_down")
+    got = dict(got) if isinstance(got, dict) else {}
+    maps = list(got.get("maps") or [])
+    states = dict(got.get("states") or {})
+    since = dict(got.get("since") or {}) if isinstance(got.get("since"), dict) else {}
+    if label not in maps:
+        maps.append(label)
+    states[label] = map_state
+    since[label] = int(when)
+    got.update(maps=maps, states=states, since=since)
+    got.setdefault("when", int(when))
+    return remember(store, held_down=got)
+
+
+def release_held(store, label):
+    """Take one map out of the held-down record, and its state with it.
+
+    The record is the thing the pages warn from, so a map that is back on a good world
+    and still listed would keep telling the operator not to press Launch. The rest of
+    the record is left exactly as it was - the other maps are still held for the reason
+    they were held.
+    """
+    got = state(store).get("held_down")
+    if not isinstance(got, dict) or label not in (got.get("maps") or []):
+        return state(store)
+    got = dict(got)
+    got["maps"] = [m for m in got.get("maps") or [] if m != label]
+    got["states"] = {k: v for k, v in (got.get("states") or {}).items() if k != label}
+    if isinstance(got.get("since"), dict):
+        got["since"] = {k: v for k, v in got["since"].items() if k != label}
+    return remember(store, held_down=got if got["maps"] else None)
+
+
+# Where the automatic restore remembers what it already tried. Keyed by map AND hold, so
+# "one attempt per hold" is a fact on disk that survives a manager restart rather than a
+# set in memory that forgets - a pass that forgot would restore the same map again ten
+# minutes after a restart, and again ten minutes after that.
+RESTORE_TRIES = "auto_restore_tries"
+
+
+def hold_key(label, since):
+    return "%s@%s" % (label, int(since or 0))
+
+
+def restore_tries(store):
+    got = state(store).get(RESTORE_TRIES)
+    return dict(got) if isinstance(got, dict) else {}
+
+
+def restore_tried(store, label):
+    """The attempt made on this map's CURRENT hold, or None if there has not been one."""
+    since = held_since(store, label)
+    if since is None:
+        return None
+    return restore_tries(store).get(hold_key(label, since))
+
+
+def note_restore_try(store, label, ok=None, why=""):
+    """Record an attempt on this map's current hold. Called BEFORE the restore runs as
+    well as after, so a manager that dies half-way through one does not come back and
+    start a second: the attempt exists from the moment it began.
+
+    Entries for maps no longer held are dropped as this writes, so the record is only
+    ever as long as the hold list beside it.
+    """
+    since = held_since(store, label)
+    tries = restore_tries(store)
+    held = set(held_down(store))
+    tries = {k: v for k, v in tries.items()
+             if isinstance(v, dict) and v.get("label") in held}
+    if since is not None:
+        tries[hold_key(label, since)] = {"label": label, "ok": ok, "why": str(why or ""),
+                                         "at": int(time.time())}
+    return remember(store, **{RESTORE_TRIES: tries})
+
+
 # ---------------------------------------------------------------- what to stage
 
 # How many times to rehearse the same thing before leaving it alone, and how long to

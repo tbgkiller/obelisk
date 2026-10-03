@@ -1418,6 +1418,50 @@ _legacy = ui.render_held_down(["The Island"])
 check("with no states given it falls back to the restore line",
       "Restore it from a save point" in _legacy, _legacy)
 
+# With the automatic restore on, a damaged map is not told "restore it first" as if
+# nothing were coming - the operator would race Obelisk to it. And once it has tried and
+# failed, the page has to say so, because it will not try again for this hold.
+_auto1 = ui.render_held_down(["The Island"], states={"The Island": "damaged"}, auto=True)
+check("a damaged map is told Obelisk will restore it automatically",
+      "Obelisk will restore The Island automatically from its newest good save point"
+      in _auto1, _auto1)
+check("and not told to do it first themselves",
+      "Restore it from a save point first" not in _auto1, _auto1)
+check("saying the damaged world is kept and characters are not rolled back",
+      "copied aside" in _auto1 and "not rolled back" in _auto1, _auto1)
+_auto2 = ui.render_held_down(["Astraeos", "The Island"],
+                             states={"Astraeos": "damaged", "The Island": "damaged"},
+                             auto=True)
+check("and agrees in the plural",
+      "restore Astraeos and The Island automatically from their newest" in _auto2
+      and "worlds are copied aside" in _auto2, _auto2)
+_autof = ui.render_held_down(["The Island"], states={"The Island": "damaged"},
+                             auto=True, tried={"The Island": {
+                                 "ok": False, "why": "none of its saves would open."}})
+check("one it already tried and failed on says so, with the reason",
+      "already tried to restore The Island automatically and could not "
+      "(none of its saves would open)" in _autof, _autof)
+check("and that it will not try again, so the next move is the operator's",
+      "will not try again" in _autof and "by hand" in _autof
+      and "will restore" not in _autof, _autof)
+_autog = ui.render_held_down(["The Island"], states={"The Island": "damaged"},
+                             auto=True, tried={"The Island": {"ok": None}})
+check("one it is restoring right now says that",
+      "is restoring The Island" in _autog or "restoring The Island from" in _autog,
+      _autog)
+_autou = ui.render_held_down(["The Island"], states={"The Island": "unreachable"},
+                             auto=True)
+check("an unreachable map is never promised an automatic restore",
+      "automatically" not in _autou and "do not restore anything yet" in _autou, _autou)
+_autom = ui.render_held_down(["Astraeos", "The Island"],
+                             states={"Astraeos": "writing", "The Island": "damaged"},
+                             auto=True)
+check("a mix keeps the advice for the map that is not damaged, and promises the other",
+      "Restore them from a save point" in _autom
+      and "restore The Island automatically" in _autom, _autom)
+check("with the setting off the advice is exactly what it was",
+      ui.render_held_down(["The Island"], states={"The Island": "damaged"}) == _dmg1)
+
 
 # The integrity gate is minutes long and can end the apply. Every line it emits has to
 # land on a phase: one that matches nothing scores -1, and render_stepper then draws the

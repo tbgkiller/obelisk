@@ -522,5 +522,179 @@ check("and naming it as a pre-point copy rather than a mystery file",
       "pre-point-" in msg_k, msg_k)
 
 
+# ---- the automatic restore: newest point that opens, and only over real damage
+#
+# 1 October: two maps crashed mid-save, their live worlds were malformed SQLite, and they
+# sat held down beside twenty good points each. What follows pins the narrow licence the
+# automatic path has - SQLite says damaged, nothing else - and that the point it picks is
+# the newest one that actually opens, not merely the newest.
+def damage(path):
+    """A file SQLite will not read as a database: the shape a crash mid-save leaves."""
+    with open(path, "wb") as fh:
+        fh.write(b"SQLite format 3\x00" + b"\xde\xad" * 4000)
+    return path
+
+
+_NEW = "Ragnarok_WP_01.10.2026_07.30.00.ark"     # damaged by the same crash
+_MID = "Ragnarok_WP_01.10.2026_06.47.00.ark"     # good
+_OLD = "Ragnarok_WP_01.10.2026_05.00.00.ark"     # good, older
+
+
+def auto_fresh():
+    root, folder = ark_root([_MID, _OLD])
+    damage(os.path.join(folder, _NEW))
+    st = store()
+    st.patch({"appdata": "/mnt/data/ark"}, source="install")
+    return st, root, folder
+
+
+st_a, root_a, folder_a = auto_fresh()
+pt, rej = savepoints.newest_good_point(st_a, "ragnarok", ark_root=root_a)
+check("the newest good point skips a newer one that does not open",
+      pt and pt["name"] == _MID, (pt, rej))
+check("and says which one it skipped, and why",
+      [n for n, _w in rej] == [_NEW] and rej[0][1], rej)
+
+_seen = []
+pt_i, rej_i = savepoints.newest_good_point(
+    st_a, "ragnarok", ark_root=root_a,
+    verify=lambda p: (_seen.append(os.path.basename(p)) or False, "injected no"))
+check("with nothing that opens it returns no point at all", pt_i is None, pt_i)
+check("having tried every one of them, newest first",
+      _seen == [_NEW, _MID, _OLD], _seen)
+
+# live_state: only "damaged" is a licence
+_live_a = os.path.join(folder_a, "Ragnarok_WP.ark")
+check("an intact live world reads ok", savepoints.live_state(_live_a)[0] == "ok",
+      savepoints.live_state(_live_a))
+damage(_live_a)
+check("a malformed live world reads damaged",
+      savepoints.live_state(_live_a)[0] == "damaged", savepoints.live_state(_live_a))
+open(_live_a + "-journal", "wb").close()
+check("but one with a journal beside it is still being written, not damaged - the "
+      "journal may be what makes it whole", savepoints.live_state(_live_a)[0] == "writing",
+      savepoints.live_state(_live_a))
+os.remove(_live_a + "-journal")
+check("a world folder that will not list is unreachable, never damaged",
+      savepoints.live_state(_live_a, listdir=lambda _p: (_ for _ in ()).throw(
+          PermissionError("denied")))[0] == "unreachable")
+check("a world that is not there is absent",
+      savepoints.live_state(os.path.join(folder_a, "Nope.ark"))[0] == "absent")
+_lnk = os.path.join(folder_a, "Linked.ark")
+os.symlink(os.path.join(folder_a, "gone-elsewhere.ark"), _lnk)
+check("a link is unreachable - copying onto it would write through it",
+      savepoints.live_state(_lnk)[0] == "unreachable", savepoints.live_state(_lnk))
+
+
+class _Restores:
+    """Records what auto_restore asked restore_point to do, without doing it."""
+    def __init__(self, ok=True):
+        self.calls, self.ok = [], ok
+
+    def __call__(self, store, key, name, **kw):
+        self.calls.append((key, name, kw))
+        return (self.ok, "Ragnarok is back on its save from x." if self.ok
+                else "the restored world does not verify: nope",
+                {"steps": ["stopped ragnarok"], "kept": "/b/pre-point-x.ark"})
+
+
+# refuses when the live world verifies now - somebody already fixed it
+st_a, root_a, folder_a = auto_fresh()
+r = _Restores()
+ok_v, msg_v, det_v = savepoints.auto_restore(st_a, "ragnarok", restore=r,
+                                             ark_root=root_a)
+check("auto restore does nothing when the live world verifies now", not ok_v
+      and r.calls == [] and det_v.get("refused") == "intact", (msg_v, det_v))
+check("and says it may already have been restored", "already" in msg_v, msg_v)
+
+# refuses when the live world cannot be reached or is missing
+for _state in ("unreachable", "absent", "writing"):
+    r = _Restores()
+    ok_u, msg_u, det_u = savepoints.auto_restore(
+        st_a, "ragnarok", restore=r, ark_root=root_a,
+        live_ok=lambda _p, _s=_state: (_s, "injected %s" % _s))
+    check("auto restore never restores over a world that is %s" % _state,
+          not ok_u and r.calls == [] and det_u.get("refused") == _state, (msg_u, det_u))
+check("and says only damage is restored automatically",
+      "Only a world SQLite itself reports damaged" in msg_u, msg_u)
+
+# restores the newest good point otherwise, forced, and never restarting on failure
+damage(os.path.join(folder_a, "Ragnarok_WP.ark"))
+_pt_mid = [p for p in savepoints.list_points(st_a, "ragnarok", ark_root=root_a)
+           if p["name"] == _MID][0]
+r = _Restores()
+ok_d, msg_d, det_d = savepoints.auto_restore(
+    st_a, "ragnarok", restore=r, ark_root=root_a,
+    mtime=lambda _p: _pt_mid["when"] + 54 * 60, stop="STOP", start="START")
+check("a damaged live world is restored from the newest point that opens",
+      ok_d and [c[1] for c in r.calls] == [_MID], (msg_d, r.calls))
+check("forced past the player check - the caller established the map is down",
+      r.calls and r.calls[0][2].get("force") is True, r.calls)
+check("and told never to restart the map onto the damaged world if it fails",
+      r.calls and r.calls[0][2].get("restart_on_failure") is False, r.calls)
+check("with the stop and start wiring handed straight through",
+      r.calls and r.calls[0][2].get("stop") == "STOP"
+      and r.calls[0][2].get("start") == "START", r.calls)
+check("the message names the point", _pt_mid["local"] in msg_d, msg_d)
+check("and how much world was rolled back, from the live world's own mtime",
+      "rolling the world back about 54 minutes" in msg_d
+      and det_d.get("rolled_back") == 54 * 60, (msg_d, det_d.get("rolled_back")))
+check("and the newer point it skipped", "1 newer save point would not open" in msg_d,
+      msg_d)
+check("and where the damaged world is kept", "pre-point-x.ark" in msg_d, msg_d)
+check("and that characters are not rolled back", "not rolled back" in msg_d, msg_d)
+
+r = _Restores(ok=False)
+ok_f, msg_f, det_f = savepoints.auto_restore(st_a, "ragnarok", restore=r,
+                                             ark_root=root_a)
+check("a restore that fails is a failure, with restore_point's reason",
+      not ok_f and "does not verify" in msg_f and not det_f.get("refused"), msg_f)
+
+ok_n, msg_n, det_n = savepoints.auto_restore(
+    st_a, "ragnarok", restore=_Restores(), ark_root=root_a,
+    pick=lambda *_a, **_k: (None, [(_NEW, "malformed")]))
+check("with no point that opens it fails and says so",
+      not ok_n and "none of its 1 save point would open" in msg_n, msg_n)
+
+# end to end, through the real restore_point: the damaged world is swapped and kept
+st_e, root_e, folder_e = auto_fresh()
+_live_e = os.path.join(folder_e, "Ragnarok_WP.ark")
+damage(_live_e)
+c = Cluster()
+ok_e, msg_e, det_e = savepoints.auto_restore(
+    st_e, "ragnarok", ark_root=root_e, stop=c.stop, start=c.start, verify=c.verify)
+check("end to end the damaged world is replaced by the newest good point", ok_e
+      and savepoints.verify_point(_live_e)[0]
+      and os.path.getsize(_live_e) == os.path.getsize(os.path.join(folder_e, _MID)),
+      (msg_e, det_e))
+check("and the damaged one is kept aside, not lost",
+      det_e.get("kept") and os.path.isfile(det_e["kept"]), det_e.get("kept"))
+check("only that map was stopped and started",
+      c.log == ["stop:ragnarok", "start:ragnarok", "verify:ragnarok"], c.log)
+
+# restart_on_failure=False: a held map is never started on the world that failed
+_real_give = savepoints.restore.give_world_to_server
+
+
+def _refuse_give(_path):
+    raise OSError("injected: the copy did not land")
+
+
+for _restart, _want in ((True, True), (False, False)):
+    st_r, root_r, folder_r = auto_fresh()
+    c = Cluster()
+    savepoints.restore.give_world_to_server = _refuse_give
+    try:
+        ok_r, msg_r, _d_r = savepoints.restore_point(
+            st_r, "ragnarok", _MID, stop=c.stop, start=c.start, force=True,
+            ark_root=root_r, restart_on_failure=_restart)
+    finally:
+        savepoints.restore.give_world_to_server = _real_give
+    check("a swap that fails %s the map again when restart_on_failure is %s"
+          % ("starts" if _want else "does NOT start", _restart),
+          not ok_r and (("start:ragnarok" in c.log) == _want), (c.log, msg_r))
+check("and says it is still stopped", "still stopped" in msg_r, msg_r)
+
+
 print("\nFAILURES: %s" % fails if fails else "\nall savepoints tests passed")
 sys.exit(1 if fails else 0)

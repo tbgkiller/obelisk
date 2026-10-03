@@ -549,8 +549,14 @@ def build_app(store, docker=None):
             if still:
                 # The state travels with them, because "restore it" and "check the
                 # mount" are opposite advice and the label alone cannot tell which.
+                # And whether the automatic restore is coming for them, or has
+                # already been and failed - "restore it first" over a map Obelisk is
+                # about to restore would have the operator racing it.
                 banner += ui.render_held_down(
-                    still, states=updatesctl.held_down_states(store))
+                    still, states=updatesctl.held_down_states(store),
+                    auto=bool(store.get("auto_restore")),
+                    tried={l: updatesctl.restore_tried(store, l) for l in still
+                           if updatesctl.restore_tried(store, l)})
         # What the crash watch is actually doing, which is not always what the
         # checkbox says. Three states, and the one that must not be hidden is "on and
         # doing nothing because Docker has the job" - an operator who thinks Obelisk is
@@ -863,7 +869,7 @@ def build_app(store, docker=None):
                                 key, why_s)
             return up
 
-        return updatesctl.apply_batch(
+        result = updatesctl.apply_batch(
             store, _ark_root(), warn=warn,
             stop_all=stop_all,
             # Asked before anything is renamed, and a refusal from it refuses the
@@ -882,6 +888,11 @@ def build_app(store, docker=None):
             start_some=_start_some,
             players=lambda: clusterctl.players_online(store), force=force,
             on_step=_note_update)
+        # Inside _apply_task's `async with cluster_busy`, the same as the scheduled
+        # path: the restore runs after the apply has finished and before the lock lets
+        # anything else at the cluster.
+        after_refused_apply(store, (result or (None, None, None))[2])
+        return result
 
     async def _apply_task(force):
         try:
@@ -2440,20 +2451,11 @@ def build_app(store, docker=None):
 
         Shared by both restore paths. It sat inside the save-point handler, which is
         how the archive restore - the one that replaces the whole world directory -
-        ended up being the path that never asked the map to save.
+        ended up being the path that never asked the map to save. It is module-level
+        now, as save_one, because the automatic restore is a third caller with no
+        request to hang off.
         """
-        from . import bot
-        password = str(store.get("admin_password") or "")
-        for label, host, port in clusterctl.running_instances(store):
-            if label not in (key, (mapsmod.entry(store, key) or {}).get("name")):
-                continue
-            try:
-                clusterctl.run_coroutine(
-                    bot.rcon_with(host, port, password, "SaveWorld", timeout=30))
-                return True, "saved"
-            except Exception as e:                   # noqa: BLE001 - reported, not fatal
-                return False, str(e).strip() or e.__class__.__name__
-        return False, "it is not running"
+        return save_one(store, key)
 
     def _restore_body(message="", problem="", refusal=""):
         return ui.render_restore(store, backupctl.listing(store),
@@ -2622,19 +2624,13 @@ def build_app(store, docker=None):
             rjob["step"] = text
             announce.say("restore.phase", text, map=map_key)
 
-        def verify_after(key):
-            return verify_restored(store, key, note)
-
         def go():
+            # The stop, start, proof and save are restore_wiring's, so this button and
+            # the automatic restore cannot come to roll a map back two different ways.
             return pointsctl.restore_point(
-                store, map_key, name,
-                stop=lambda k: (note("asking %s to exit" % k)
-                                or clusterctl.close_one(store, k)),
-                start=lambda k: (note("starting %s" % k)
-                                 or clusterctl.start_one(store, k)),
-                verify=verify_after, force=force, on_step=note,
+                store, map_key, name, force=force,
                 players=lambda: clusterctl.players_online(store),
-                save=_save_one)
+                **restore_wiring(store, note))
 
         async def run_it():
             try:
@@ -2648,6 +2644,17 @@ def build_app(store, docker=None):
             # guard saying "somebody is playing on it" arrived with a red cross beside
             # an identical refusal from the archive path rendered amber.
             refused = bool((detail or {}).get("refused"))
+            if ok:
+                # Back on a world that verified and a server that passed the gates, so
+                # it is not being held any more - and a record still naming it would
+                # keep warning about Launch, and would hand it to the automatic restore
+                # the next time it is down for any reason at all.
+                try:
+                    updatesctl.release_held(
+                        store, (mapsmod.entry(store, map_key) or {}).get("name")
+                        or map_key)
+                except Exception as e:               # noqa: BLE001 - never fatal
+                    log.warning("could not clear the hold on %s: %s", map_key, e)
             announce.say("restore.done" if ok else
                          ("restore.refused" if refused else "restore.failed"), str(msg),
                          level="info" if ok else ("warning" if refused else "error"),
@@ -3104,6 +3111,55 @@ def verify_restored(store, key, note=None):
     return (bool(ok_h) and bool(ok_v)), reasons + list(reasons_v or [])
 
 
+def save_one(store, key):
+    """Ask this one map to write its world out. Best effort, by design. (ok, why).
+
+    A map that shuts down cleanly does not leave a hot journal beside its world, which
+    is what refused the Genesis restore. So it is worth asking - but the world has
+    already been copied aside as a file, so a map that cannot answer must not be a map
+    that cannot be restored. That is precisely when somebody wants to.
+    """
+    from . import bot
+    password = str(store.get("admin_password") or "")
+    for label, host, port in clusterctl.running_instances(store):
+        if label not in (key, (mapsmod.entry(store, key) or {}).get("name")):
+            continue
+        try:
+            clusterctl.run_coroutine(
+                bot.rcon_with(host, port, password, "SaveWorld", timeout=30))
+            return True, "saved"
+        except Exception as e:                       # noqa: BLE001 - reported, not fatal
+            return False, str(e).strip() or e.__class__.__name__
+    return False, "it is not running"
+
+
+def restore_wiring(store, note=None):
+    """How a save-point restore stops, starts, proves and saves one map. A dict of the
+    keyword arguments restore_point takes.
+
+    One copy, for the button and the automatic restore both. They were about to be two:
+    the button's lambdas sat inline in its route, and a second caller copying them is
+    how the two restore routes came to have byte-identical verify_restored copies, one of
+    which kept a short circuit the other had lost. close_one is the safe close - DoExit,
+    then the door - and start_one is the gated single-map up.
+    """
+    say = note or (lambda _text: None)
+
+    def stop(k):
+        say("asking %s to exit" % k)
+        return clusterctl.close_one(store, k)
+
+    def start(k):
+        say("starting %s" % k)
+        return clusterctl.start_one(store, k)
+
+    def verify(key):
+        return verify_restored(store, key, note)
+
+    return {"stop": stop, "start": start, "verify": verify,
+            "save": lambda k: save_one(store, k), "on_step": say}
+
+
 def verify_every_map(store):
     """The six gates on every map, whatever the map before it did. (ok, per_map, why).
 
@@ -3205,7 +3261,7 @@ async def loop_watch(store, interval=120, status=None, sleep_first=True):
 # not bringing back a crashed map is the regression this exists to fix. So it acts, and
 # the announcement says out loud what to do instead.
 def crash_pass(store, details=None, start=None, say=None, locked=None, policy=None,
-               names=None, seen_down=None, now=None):
+               names=None, seen_down=None, now=None, world=None):
     """One look at every map. Returns what it did, and never raises.
 
     Split out from the loop so the decision can be tested without a clock: everything
@@ -3278,12 +3334,30 @@ def crash_pass(store, details=None, start=None, say=None, locked=None, policy=No
                 # is harder to see than Docker's was.
                 intentctl.stand_down(store, key, why, now=now)
                 out["stood_down"].append(key)
+                held = _hold_if_damaged(store, label, key, world=world, now=now)
+                if held:
+                    out.setdefault("held", []).append(key)
+                # The sentence is only true when nothing is coming for it. A damaged
+                # world the automatic restore is about to roll back is not "nothing
+                # automatic will touch it", and telling somebody to start it themselves
+                # would have them launch it onto the damaged world.
+                if held and store.get("auto_restore"):
+                    after = ("It is still down, and the crash watch will not start it "
+                             "again. Its world is damaged, so it is being held down and "
+                             "Obelisk will restore it automatically from its newest good "
+                             "save point.")
+                elif held:
+                    after = ("It is still down and nothing automatic will touch it "
+                             "again. Its world is damaged, so it is being held down - "
+                             "restore it from a save point before starting it.")
+                else:
+                    after = ("It is still down and nothing automatic will touch it "
+                             "again - something is wrong with that map rather than with "
+                             "its luck. Check its log on the Cluster page, then start it "
+                             "yourself when you have dealt with it.")
                 say("cluster.watch_stood_down",
                     "%s keeps going down and Obelisk has stopped bringing it back: %s. "
-                    "It is still down and nothing automatic will touch it again - "
-                    "something is wrong with that map rather than with its luck. Check "
-                    "its log on the Cluster page, then start it yourself when you have "
-                    "dealt with it." % (label, why), level="error")
+                    "%s" % (label, why, after), level="error")
             continue
 
         n = intentctl.record_relaunch(store, key, now=now)
@@ -3310,6 +3384,41 @@ def crash_pass(store, details=None, start=None, say=None, locked=None, policy=No
             "tell that apart from a crash."
             % (label, n, intentctl.BUDGET, int(intentctl.WINDOW / 3600)))
     return out
+
+
+def _hold_if_damaged(store, label, key, world=None, now=None):
+    """After the watch gives up on a map: is its world the reason? True if it was held.
+
+    The 1 October crashes were saves that never finished, and what the watch gave up on
+    was a map relaunching onto a malformed database three times. Standing down was right
+    and was the end of it - nothing recorded WHY, so the map sat down beside twenty good
+    save points until an apply happened to check its world and hold it, two applies
+    later. This asks the same question at the moment the watch stops, and records a
+    damaged world the way the apply gate would, so the automatic restore can see it.
+
+    Only damage. A world that could not be reached or had not finished writing is left
+    exactly as the watch left it - those are not things a restore fixes. And never
+    raises: the crash watch's own guarantee is that it never does, and a second opinion
+    about the world is not worth breaking it for.
+    """
+    try:
+        if world is not None:
+            got_state, why = world(store, key)
+        else:
+            got_state, why = pointsctl.live_state(pointsctl.live_world(store, key))
+    except Exception as e:                           # noqa: BLE001 - never fatal
+        log.info("could not look at %s's world after standing it down: %s", label, e)
+        return False
+    if got_state != "damaged":
+        return False
+    try:
+        updatesctl.hold_down(store, label, "damaged", (now or time.time)())
+    except Exception as e:                           # noqa: BLE001 - never fatal
+        log.warning("could not hold %s down after finding its world damaged: %s",
+                    label, e)
+        return False
+    log.warning("%s's world is damaged (%s) - holding it down for a restore", label, why)
+    return True
 
 
 async def crash_watch(store, interval=120, sleep_first=True, **kw):
@@ -3486,6 +3595,180 @@ async def ark_update_watch(store, interval=1800, panel=None):
         await asyncio.sleep(interval)
 
 
+# ---------------------------------------------------------------- the automatic restore
+#
+# THE OWNER'S ASK: bring a map whose world is damaged back from its last good save,
+# rather than leave it down. The integrity gate and the crash watch both hold such a map
+# down correctly, and then nothing happens until a person notices - on 1 October that
+# was two maps, two applies and the best part of a day, beside forty save points that
+# read perfectly well.
+#
+# The guarantees, each one a reason for a line below:
+#   * damage only - the hold's own state has to say "damaged", and the live world is
+#     asked again at the moment of the restore (savepoints.auto_restore);
+#   * positively down - a restore stops the map, and a map whose state is not known is
+#     not a map to restore under a player;
+#   * once per hold - recorded before it starts, on disk, so neither a failure nor a
+#     manager restart can turn it into a loop;
+#   * serialised - under the same lock as every other thing that stops and starts maps.
+
+def auto_restore_pass(store, restore=None, names=None, existing=None, details=None,
+                      locked=None, say=None):
+    """One look at every held map, restoring the damaged ones. Never raises.
+
+    `locked` defaults to APPLY_LOCK.locked, which is the right question for a caller
+    that does NOT hold the lock and the wrong one for a caller that does: the apply
+    paths run this from inside their own critical section and hand in `lambda: False`.
+    Everything else is handed in for the tests - `restore(store, key)` is
+    savepoints.auto_restore with restore_wiring behind it.
+    """
+    say = say or announce.say
+    out = {"restored": [], "failed": [], "refused": [], "skipped": "", "passed": {}}
+    if not store.get("auto_restore"):
+        out["skipped"] = "automatic restore is off"
+        return out
+    held = updatesctl.held_down(store)
+    if not held:
+        return out
+    if (locked or APPLY_LOCK.locked)():
+        out["skipped"] = "something else is stopping or starting maps"
+        return out
+    states = updatesctl.held_down_states(store)
+    try:
+        mapping = (names or clusterctl.map_containers)(store)
+    except Exception as e:                           # noqa: BLE001 - never fatal
+        log.info("automatic restore could not work out this cluster's containers: %s", e)
+        return out
+
+    there = None
+    try:
+        there = (existing or dockerctl.existing_containers)()
+    except Exception as e:                           # noqa: BLE001 - an unknown, not a no
+        log.info("automatic restore could not list containers: %s", e)
+    details = details or (lambda n: dockerctl.container_details(n))
+
+    def down(name):
+        # The two pieces of positive evidence, and only those. A name missing from a
+        # `docker ps -a` that SUCCEEDED is a container that is not there; a state Docker
+        # actually reported as exited, created or dead is one that is not running.
+        # Anything else - a failed listing, an inspect that did not answer, "running",
+        # "restarting" - is a map this will not stop.
+        if there is not None and name not in there:
+            return True
+        try:
+            got = details([name]) or {}
+        except Exception:                            # noqa: BLE001 - an unknown
+            return False
+        return (got.get(name) or {}).get("state") in clusterctl.NOT_RUNNING
+
+    for label in held:
+        if states.get(label) != "damaged":
+            out["passed"][label] = "held as %s, not damaged" % (states.get(label)
+                                                                  or "unknown")
+            continue
+        name, key = (mapping.get(label) or (None, None))
+        if not name or not key:
+            out["passed"][label] = "not a map in this cluster any more"
+            continue
+        if not mapsmod.known(store, key):
+            # A second instance of a map ("island-2") is not something the save-point
+            # code can find a folder for - restore points are per catalogue map - so
+            # it is left for a person rather than restored from the wrong folder.
+            out["passed"][label] = "its save points cannot be located automatically"
+            continue
+        if updatesctl.restore_tried(store, label) is not None:
+            out["passed"][label] = "already tried for this hold"
+            continue
+        if not down(name):
+            # Not recorded as an attempt: nothing was tried. The next pass asks again,
+            # and the map is restored once it is positively down.
+            out["passed"][label] = "not positively stopped"
+            continue
+
+        updatesctl.note_restore_try(store, label, ok=None, why="started")
+        say("restore.auto_start",
+            "%s's world is damaged and it is being held down, so Obelisk is rolling it "
+            "back to its newest save point that opens. Only %s stops; the damaged world "
+            "is copied aside first." % (label, label), map=key)
+        try:
+            ok, msg, detail = (restore or _auto_restore_one)(store, key)
+        except Exception as e:                       # noqa: BLE001 - reported below
+            log.exception("automatic restore of %s failed", label)
+            ok, msg, detail = False, "the restore itself failed: %s" % e, {}
+        detail = detail or {}
+        updatesctl.note_restore_try(store, label, ok=bool(ok), why=msg)
+        steps = "\n".join(detail.get("steps") or [])
+        if ok:
+            updatesctl.release_held(store, label)
+            out["restored"].append(key)
+            say("restore.auto_done", str(msg), level="info", map=key,
+                point=detail.get("point") or "", detail=steps)
+        elif detail.get("refused"):
+            # It looked again and found no damage to restore over - a world somebody
+            # already fixed, or a share that has dropped out. Nothing was touched, and
+            # it stays held: the operator decides what happens to it now.
+            out["refused"].append(key)
+            say("restore.auto_refused", "%s It is still held down." % msg,
+                level="warning", map=key, detail=steps)
+        else:
+            out["failed"].append(key)
+            say("restore.auto_failed",
+                "Obelisk could not restore %s automatically: %s It is still held down "
+                "and will not be tried again for this hold - restore it from a save "
+                "point or an archive by hand." % (label, str(msg).rstrip(".") + "."),
+                level="error", map=key, detail=steps)
+    return out
+
+
+def _auto_restore_one(store, key):
+    """savepoints.auto_restore, wired the way the restore button is wired."""
+    def note(text):
+        announce.say("restore.phase", text, map=key)
+    return pointsctl.auto_restore(store, key, **restore_wiring(store, note))
+
+
+def after_refused_apply(store, detail, **kw):
+    """Run the automatic restore straight after an apply the integrity gate refused.
+
+    Called from INSIDE both apply paths, which already hold the lock - so it hands the
+    pass `locked=lambda: False` rather than asking a lock it is itself holding. Only
+    when the refusal named a damaged world: a world that had not finished writing or
+    could not be reached is not something a restore fixes. Never raises, because the
+    apply's own answer is what its caller is waiting for.
+    """
+    if not (detail or {}).get("damaged"):
+        return None
+    try:
+        return auto_restore_pass(store, locked=lambda: False, **kw)
+    except Exception as e:                           # noqa: BLE001 - never fatal
+        log.exception("automatic restore after a refused apply failed: %s", e)
+        return None
+
+
+async def auto_restore_watch(store, interval=600, sleep_first=True):
+    """Every ten minutes, look for a held map with a damaged world and restore it.
+
+    For the maps that are already held - the live situation this was built in - and for
+    the ones the crash watch holds between applies. It does not wait for the lock: an
+    apply that is running will call the pass itself if it refuses, and one that is not
+    will be finished by the next look.
+    """
+    while True:
+        if sleep_first:
+            await asyncio.sleep(interval)
+        sleep_first = True
+        try:
+            if store.get("auto_restore") and updatesctl.held_down(store) \
+                    and not APPLY_LOCK.locked():
+                # No await between the check and the acquire, so nothing can take the
+                # lock in between: asyncio only switches tasks at an await.
+                async with APPLY_LOCK:
+                    await asyncio.to_thread(auto_restore_pass, store,
+                                            locked=lambda: False)
+        except Exception as e:                       # a bad pass must not kill it
+            log.error("automatic restore check failed: %s", e)
+
+
 def _scheduled_apply(store, force=False):
     """The unattended apply. Same verbs as the button, assembled in one place.
 
@@ -3542,7 +3825,7 @@ def _scheduled_apply(store, force=False):
                 log.warning("could not start %s after the gate refused: %s", key, why_s)
         return up
 
-    return upd.apply_batch(
+    result = upd.apply_batch(
         store, layout.ark_root_of(store), warn=warn, force=force,
         # The unattended path gets the same gate as the button. An apply nobody is
         # watching is the one that most needs to refuse rather than promote.
@@ -3557,6 +3840,11 @@ def _scheduled_apply(store, force=False):
         start_all=lambda: clusterctl.launch(store), verify=verify_all,
         players=lambda: clusterctl.players_online(store),
         on_step=lambda text: log.info("update: %s", text))
+    # Still inside the caller's lock - the window and the empty watch both hold it
+    # around this call - so a damaged world the gate just held down is restored before
+    # anything else can start or stop a map.
+    after_refused_apply(store, (result or (None, None, None))[2])
+    return result
 
 
 async def main():
@@ -3644,6 +3932,7 @@ async def main():
     tasks.append(asyncio.create_task(world_watch(store)))
     tasks.append(asyncio.create_task(loop_watch(store)))
     tasks.append(asyncio.create_task(crash_watch(store)))
+    tasks.append(asyncio.create_task(auto_restore_watch(store)))
 
     from . import bot
     # The relay used to learn its maps from a SERVERS environment variable, which only

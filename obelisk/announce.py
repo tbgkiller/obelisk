@@ -224,6 +224,8 @@ ICONS = {
     "primed": "✅", "update_primed": "✅", "saved": "✅",
     "closed": "✅", "world_closed": "✅", "readable_again": "✅",
     "map_settled": "✅", "map_relaunched": "✅",
+    # A damaged world brought back from a save point with nobody pressing anything.
+    "auto_done": "✅",
     "message_sent": "✅",
     "kick_sent": "✅",
     "ban_sent": "✅",
@@ -237,6 +239,9 @@ ICONS = {
     "batch_failed": "❌", "closing_failed": "❌",
     "unsafe": "❌", "update_unsafe": "❌", "world_damaged": "❌",
     "map_looping": "❌", "relaunch_failed": "❌",
+    # The map is still down on a damaged world and will not be tried again for this
+    # hold - somebody has to act.
+    "auto_failed": "❌",
     # Loud on purpose. The watch giving up on a map is the end of anything automatic
     # happening to it, and the map stays down until a person acts.
     "watch_stood_down": "❌",
@@ -265,6 +270,8 @@ ICONS = {
     "cap_allow_partial": "⚠",
     "cap_revoke_partial": "⚠",
     "refused": "⚠",
+    # It looked again before restoring and found no damage to restore over.
+    "auto_refused": "⚠",
     # One map the sweep could not look at. Amber rather than red: nothing is known to
     # be wrong with that world - it is the looking that failed.
     "unchecked": "⚠",
@@ -279,7 +286,7 @@ ICONS = {
     "still_alive": "⚠",
     # In progress
     "start": "▶", "prime_start": "▶", "apply_start": "▶",
-    "point_start": "▶",
+    "point_start": "▶", "auto_start": "▶",
     "phase": "…", "closing": "…",
     # Something is available
     "available": "⬆", "update_available": "⬆",

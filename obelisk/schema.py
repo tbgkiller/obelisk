@@ -396,6 +396,17 @@ SETTINGS = [
               "by it. Stands down entirely while the restart policy is "
               "unless-stopped, because Docker is doing the job then."),
 
+    dict(key="auto_restore", label="Restore a damaged world automatically",
+         group="Cluster", type="bool", default=True, target="obelisk:auto_restore",
+         apply="none",
+         help="When a map is held down because the integrity check found its world "
+              "DAMAGED, roll that one map back to its newest save point that opens, "
+              "and start it. Only damage is restored: a world that could not be "
+              "reached, was still being written, or is not there at all is never "
+              "touched. The damaged world is copied aside first, it is tried once per "
+              "hold and never again on its own, and players' characters and tribes "
+              "are not rolled back - only the world is."),
+
     dict(key="curseforge_api_key", label="CurseForge API key", group="Advanced",
          type="password", default="", target="obelisk:curseforge_api_key",
          apply="none", max_len=200,

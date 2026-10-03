@@ -1083,7 +1083,11 @@ def _cw_pass(store, states, starts=None, locked=False, policy="no"):
         say=lambda *a, **k: _cw_said.append((a[0], a[1], k.get("level", "info"))),
         locked=lambda: locked, policy=lambda _s: policy,
         names=lambda _s: dict(_CW_NAMES),
-        seen_down={k for _n, k in _CW_NAMES.values()})
+        seen_down={k for _n, k in _CW_NAMES.values()},
+        # Pinned intact. Standing a map down now asks after its world, and the disk
+        # under OBELISK_ARK here belongs to other sections of this file - what these
+        # checks are about is intent, not whatever world happens to be lying there.
+        world=lambda _s, _k: ("ok", "pinned intact"))
     return out, starts
 
 
@@ -2414,6 +2418,16 @@ check("the apply gate goes through it too, rather than keeping a third copy",
 check("both restore routes call the shared helper",
       _n3src.count("verify_restored(store, key, note)") == 2,
       _n3src.count("verify_restored(store, key, note)"))
+
+# The save-point button and the automatic restore stop, start and prove a map through
+# ONE wiring. A second copy of those lambdas is how the two archive routes came to have
+# byte-identical verify_restored copies, one with a short circuit the other had lost.
+check("the restore button and the automatic restore share one wiring",
+      _n3src.count("**restore_wiring(store, note)") == 2,
+      _n3src.count("**restore_wiring(store, note)"))
+_rw = _appmod.restore_wiring(Store(os.path.join(tempfile.mkdtemp(), "s.json")))
+check("and it hands restore_point exactly the verbs it takes",
+      sorted(_rw) == ["on_step", "save", "start", "stop", "verify"], sorted(_rw))
 
 
 # ---- the save-point restore says no the way the archive restore does
