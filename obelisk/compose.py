@@ -35,6 +35,48 @@ def _q(v):
 POLICIES = ("no", "unless-stopped")
 
 
+# POK's own entrypoint, which the stop guard runs under rather than replacing.
+#
+# Established, not guessed, from two places that agree:
+#   * the upstream dockerfile, Acekorneya/Ark-Survival-Ascended-Server at 67ed7ad
+#     (2026-10-01): ENTRYPOINT ["/tini", "--", "/home/pok/scripts/init.sh"], no CMD;
+#   * `docker top` on the live fleet, recorded in test_cluster's _SUPERVISOR fixture:
+#     PID 1 is "/tini -- /home/pok/scripts/init.sh".
+# Overriding `entrypoint:` in compose replaces the image's, so this has to be spelled
+# out in full - and if POK ever moves init.sh, test_compose names this as the line.
+POK_ENTRYPOINT = ("/tini", "--", "/home/pok/scripts/init.sh")
+
+# Where the guard is mounted inside a map container, and the file it is shipped as. The
+# directory rather than the file, deliberately: a bind mount of a single file that does
+# not exist yet makes Docker create a DIRECTORY at that host path, and every later write
+# of the guard would then fail on it.
+GUARD_MOUNT = "/opt/obelisk"
+GUARD_FILE = "stop-guard.py"
+# Seconds the guard waits for the server to exit after DoExit. Comfortably under
+# stop_grace_period (210s), so its loud "forwarding anyway" lands before Docker's kill.
+GUARD_BUDGET = 180
+
+
+def guard_entrypoint():
+    """tini, then the guard under python3, then POK's own init as the guard's child.
+
+    tini stays PID 1: it is what POK ships, it reaps zombies, and it forwards a signal
+    to its direct child only - which is now the guard, so a SIGTERM reaches the guard
+    and not POK. python3 is in the image on POK's own account: the dockerfile installs
+    python3-minimal, and health_server.py and Proton both run under it on every map.
+    """
+    if POK_ENTRYPOINT[:2] == ("/tini", "--"):
+        head, rest = list(POK_ENTRYPOINT[:2]), list(POK_ENTRYPOINT[2:])
+    else:
+        head, rest = [], list(POK_ENTRYPOINT)
+    return head + ["python3", "%s/%s" % (GUARD_MOUNT, GUARD_FILE)] + rest
+
+
+def stop_guard_on(store):
+    v = store.get("stop_guard")
+    return True if v is None else bool(v)
+
+
 def restart_policy(store):
     """The restart policy for the ARK containers. Docker's default, `no`, unless told.
 
@@ -138,6 +180,13 @@ def generate_compose(store, project="ark", in_use_ports=None, wait_for_master=No
             # from the same shape the staging server already uses.
             "    restart: %s" % restart_policy(store),
             "    stop_grace_period: 210s",
+        ]
+        if stop_guard_on(store):
+            # Every outside `docker stop` - a backup plugin, the Docker tab, an array
+            # stop, Watchtower - gets DoExit and a wait for the server instead of POK's
+            # save-then-kill. See stopguard.py for the incident and the order.
+            L += ["    entrypoint: [%s]" % ", ".join(_q(a) for a in guard_entrypoint())]
+        L += [
             "    mem_limit: %s" % mem,
             "    networks: [%s]" % net,
             "    ulimits:",
@@ -194,6 +243,10 @@ def generate_compose(store, project="ark", in_use_ports=None, wait_for_master=No
             # POK re-links Config/*.ini and SavedArks/<map> from here at every
             # start - this is what makes one shared settings file work for all maps.
             "      BACKUP_DIR: /home/pok/shared",
+        ]
+        if stop_guard_on(store):
+            L += ["      OBELISK_STOP_GUARD_BUDGET: %s" % _q(GUARD_BUDGET)]
+        L += [
             "    ports:",
             # The game port on both protocols. Gameplay is UDP, so direct connect works
             # either way - but the hand-built cluster this replaces publishes TCP too and
@@ -209,6 +262,11 @@ def generate_compose(store, project="ark", in_use_ports=None, wait_for_master=No
             '      - "%s:/home/pok/arkserver/ShooterGame/Saved"' % layout.instance_dir(ark, instance),
             '      - "%s:/home/pok/arkserver/ShooterGame/Saved/clusters"' % paths["cluster"],
             '      - "%s:/home/pok/shared"' % paths["shared"],
+        ]
+        if stop_guard_on(store):
+            # Read-only: the map has no business changing what runs when it is stopped.
+            L += ['      - "%s:%s:ro"' % (paths["generated"], GUARD_MOUNT)]
+        L += [
             "",
         ]
 

@@ -50,6 +50,10 @@ SHARED = "shared"             # the shared config and the real per-map saves
 CLUSTER = "cluster"           # cross-map transfer data (survivors, tames, items)
 INSTANCES = "instances"       # per-map Saved: that map's config, logs, crash reports
 
+# Files Obelisk generates for the map containers to read - the stop guard. Under the Ark
+# root because that is the one folder every map container already mounts from, outside
+# ARK_PORTABLE because it is regenerated on every launch and is not data.
+GENERATED = "obelisk"
 SAVED_ARKS = SHARED + "/SavedArks"
 SHARED_CFG = SHARED + "/Config"
 
@@ -81,6 +85,7 @@ def ark_paths(root):
         "shared_config": "%s/%s" % (root, SHARED_CFG),
         "cluster": "%s/%s" % (root, CLUSTER),
         "instances": "%s/%s" % (root, INSTANCES),
+        "generated": "%s/%s" % (root, GENERATED),
     }
 
 

@@ -387,6 +387,24 @@ SETTINGS = [
               "the policy it was created with, so the maps have to be recreated "
               "(Launch, or Apply and restart) before the new setting is live."),
 
+    # The stop guard. A plain `docker stop` from anything but Obelisk - Unraid's Appdata
+    # Backup on 1 October, the Docker tab, an array stop, Watchtower - reaches POK's own
+    # SIGTERM handler, which saves and then kills Wine before SQLite finishes. That is
+    # how The Island and Ragnarok were damaged. Recreate, like the restart policy,
+    # because an entrypoint is part of the container and not something it re-reads.
+    dict(key="stop_guard", label="Guard maps against outside stops", group="Cluster",
+         type="bool", default=True, target="obelisk:stop_guard", apply="recreate",
+         help="Runs a small guard in front of each map's server. When anything other "
+              "than Obelisk stops a map container - a backup plugin such as Unraid's "
+              "Appdata Backup, the Docker tab's Stop or Restart, an array stop or "
+              "reboot, Watchtower - the guard first asks the server to save and exit "
+              "over RCON and waits (up to 3 minutes) for it to finish, instead of the "
+              "server image's own stop, which can kill the server while it is still "
+              "writing the world. Obelisk's own stops are unaffected. CHANGING THIS "
+              "DOES NOTHING TO A RUNNING CONTAINER - the maps have to be recreated "
+              "(Launch, or Apply and restart) before it is live. Turn it off only for "
+              "a server image that is not POK's."),
+
     dict(key="crash_watch", label="Bring a crashed map back", group="Cluster",
          type="bool", default=True, target="obelisk:crash_watch", apply="none",
          help="With the restart policy set to no, nothing brings a map back after a "

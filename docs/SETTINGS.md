@@ -23,6 +23,7 @@ web UI after it is running.
 | Update window closes | `update_window_end` | text | `6:00 AM` | UI | recreate |
 | Restart warning | `restart_notice_minutes` | int | `30` | UI | recreate |
 | Container restart policy | `restart_policy` | choice | `no` | UI | recreate |
+| Guard maps against outside stops | `stop_guard` | bool | `True` | UI | recreate |
 | Bring a crashed map back | `crash_watch` | bool | `True` | UI | none |
 | Restore a damaged world automatically | `auto_restore` | bool | `True` | UI | none |
 | Who applies ARK updates | `ark_update_mode` | choice | `automatic` | UI | recreate |
@@ -48,6 +49,8 @@ web UI after it is running.
 **Restart warning** - Minutes of in-game warning before a scheduled restart or update.
 
 **Container restart policy** - What Docker does when a map's container exits. no: nothing - the map stays down until Obelisk starts it, which is the only way a deliberate stop actually sticks (the server image reads its own server exiting as a restart and exits the container on purpose, so a policy turns every stop into a boot loop). unless-stopped: Docker restarts it, which brings that loop back but does recover a genuine crash without Obelisk. CHANGING THIS DOES NOTHING TO A RUNNING CONTAINER - a container keeps the policy it was created with, so the maps have to be recreated (Launch, or Apply and restart) before the new setting is live.
+
+**Guard maps against outside stops** - Runs a small guard in front of each map's server. When anything other than Obelisk stops a map container - a backup plugin such as Unraid's Appdata Backup, the Docker tab's Stop or Restart, an array stop or reboot, Watchtower - the guard first asks the server to save and exit over RCON and waits (up to 3 minutes) for it to finish, instead of the server image's own stop, which can kill the server while it is still writing the world. Obelisk's own stops are unaffected. CHANGING THIS DOES NOTHING TO A RUNNING CONTAINER - the maps have to be recreated (Launch, or Apply and restart) before it is live. Turn it off only for a server image that is not POK's.
 
 **Bring a crashed map back** - With the restart policy set to no, nothing brings a map back after a crash. This watches for a map that is down when Obelisk meant it to be up, and starts it again - at most 3 times in 6 hours per map, and it announces every one. A map Obelisk stopped on purpose is never started by it. Stands down entirely while the restart policy is unless-stopped, because Docker is doing the job then.
 
