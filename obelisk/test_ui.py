@@ -1718,6 +1718,41 @@ check("and each carries its own confirm",
 check("the dead '+N older' label is gone", "+14 older" not in _spm
       and "+6 older" not in _spm)
 
+# The size on the quick buttons, and a note on the one that is much smaller. The fold
+# showed sizes and the buttons people actually press did not - and on 1 October the one
+# point that would have restored an empty-looking world was a third smaller than the
+# rest, with nothing on the button to say whether that mattered.
+_szp = [dict(_pts[0], name="s%d" % i, ago="%dh ago" % i, local="01 Oct %02d:00" % i,
+             when=1790000000 - i * 3600, size=(40 if i == 2 else 100) * 1024 * 1024,
+             human_size="%d.0 MB" % (40 if i == 2 else 100)) for i in range(8)]
+_szr = ui.render_savepoints([("Ragnarok", _szp)])
+_quick = _szr.split("<details>")[0]
+check("each quick button shows the point's size",
+      all(("%d.0 MB" % (40 if i == 2 else 100)) in
+          _window(_quick, 'value="ragnarok|s%d"' % i, 600) for i in range(6)), _quick[:900])
+check("the much smaller one carries a note on its button",
+      "much smaller than the points around it" in
+      _window(_quick, 'value="ragnarok|s2"', 900), _window(_quick, 's2"', 900))
+check("and only that one", _quick.count("pointnote") == 1, _quick.count("pointnote"))
+check("the full list carries the same note",
+      "much smaller" in _szr.split("<details>")[1], _szr[-1500:])
+import time as _time_wipe                                        # noqa: E402
+_wipe_local = _time_wipe.strftime(
+    "%H:%M", _time_wipe.localtime(_szp[2]["when"] - 25 * 60))
+_szw = ui.render_savepoints([("Ragnarok", _szp)], wipe_times=_wipe_local)
+check("taken just after a scheduled wipe, it says that is why and that it is normal",
+      "after the %s wild-dino wipe" % _wipe_local in _szw and "respawning" in _szw
+      and "much smaller" not in _szw, _window(_szw, "pointnote", 400))
+check("the map page hands the wipe schedule through",
+      "after the %s wild-dino wipe" % _wipe_local in
+      ui.render_map("Ragnarok", "ragnarok",
+                    row={"map": "ragnarok", "name": "Ragnarok", "instance": "ragnarok",
+                         "game_port": 7777, "rcon_port": 27020, "memory": "16g",
+                         "memory_why": "base", "role": "primary"},
+                    points=_szp, wipe_times=_wipe_local), "no wipe note on the map page")
+check("points with no size recorded draw no note and no stray separator",
+      "pointnote" not in _sp and "&middot; </span>" not in _sp, _sp[:600])
+
 _spb = ui.render_savepoints([("Ragnarok", _pts)],
                             job={"state": "running", "step": "stopping ragnarok"})
 check("while one is running the page says so",
@@ -3318,6 +3353,20 @@ _ccheck("a filesystem that cannot answer is not guessed at",
 _ccheck("a world still being written says so rather than looking finished",
       "part-way through writing" in _mapc(world=dict(_world, hot=["-wal"])),
       _window(_mapc(world=dict(_world, hot=["-wal"])), "World file", 500))
+
+# A map held down because its world is damaged: the stat on its own is reassuring - a
+# plausible size, written at a plausible time - so the finding goes right beside it.
+_dmgw = _mapc(world=_world, world_damaged=True)
+_ccheck("a world the integrity check found damaged says so beside the world line",
+      _ui.WORLD_DAMAGED in _dmgw
+      and _dmgw.index("World file on disk") < _dmgw.index(_ui.WORLD_DAMAGED)
+      < _dmgw.index("</fieldset>", _dmgw.index("<fieldset id=console>")),
+      _window(_dmgw, "World file", 700))
+_ccheck("in red, because the map is down over it",
+      "<div class=problem>" + _ui.WORLD_DAMAGED in _dmgw,
+      _window(_dmgw, "World file", 700))
+_ccheck("and a world that is not held damaged says nothing of the kind",
+      _ui.WORLD_DAMAGED not in _with_world)
 
 # -- the chrome says the same thing the words do
 #

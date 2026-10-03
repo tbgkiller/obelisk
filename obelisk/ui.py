@@ -2476,7 +2476,13 @@ WORLD_WRITING = ("a %s file is open beside it — this map is part-way through "
                  "writing its world right now, and the save has not finished")
 
 
-def _console_world(world):
+WORLD_DAMAGED = ("The integrity check found this live world damaged - SQLite will not "
+                 "read it - so this map is being held down. The size and time above are "
+                 "only what the file looks like from outside, not a sign that it is "
+                 "good.")
+
+
+def _console_world(world, damaged=False):
     """The read-only look at this map's world file: is it there, and when was it last
     written.
 
@@ -2510,6 +2516,11 @@ def _console_world(world):
     hot = world.get("hot") or []
     if hot:
         said += warn_block(WORLD_WRITING % ", ".join(sorted(hot)))
+    if damaged:
+        # Beside the stat, because the stat on its own is reassuring - a world of a
+        # plausible size, written at a plausible time - and this map is down precisely
+        # because that file will not open.
+        said += ('<div class=problem>%s</div>' % _e(WORLD_DAMAGED))
     return said
 
 
@@ -2559,7 +2570,8 @@ def _console_ask(name, key, command):
                _e(key), _e(command), _e(command), _e(name), _e(key)))
 
 
-def render_console(name, key, world=None, result=None, ask="", refusal=""):
+def render_console(name, key, world=None, result=None, ask="", refusal="",
+                   world_damaged=False):
     """One map's RCON console: the safe commands, a box to type in, and the answer.
 
     One route, one map - the map is the one in the URL and there is no picker, because a
@@ -2601,12 +2613,14 @@ def render_console(name, key, world=None, result=None, ask="", refusal=""):
             '</fieldset>'
             % (_e(name), _e(CONSOLE_IS), _e(CONSOLE_ANSWERS),
                warn_block(refusal) if refusal else "",
-               _console_result(name, result), _console_world(world), ask or form))
+               _console_result(name, result), _console_world(world, world_damaged),
+               ask or form))
 
 
 def render_map(name, key, row=None, address="", host_known=True, points=None,
                job=None, state=None, overrides="", notice="",
-               launched=True, world=None, result=None, ask=None, refusal=""):
+               launched=True, world=None, result=None, ask=None, refusal="",
+               wipe_times="", world_damaged=False):
     """One map, in detail, for the things that are only true of that map.
 
     The overview answers "is it up, who is on, is anything broken" for a cluster. Ports,
@@ -2658,7 +2672,8 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
                '%s%s</fieldset>'
                % (_e(address), IN_GAME_HELP,
                   "" if host_known else HOST_UNKNOWN_WHY)) if address else ""
-    saves = render_savepoints([(name, list(points or []))], job=job)
+    saves = render_savepoints([(name, list(points or []))], job=job,
+                              wipe_times=wipe_times)
     if not saves:
         saves = ('<fieldset><legend>Quick restore points</legend>'
                  '<div class=note>No dated saves for %s yet. ARK writes one every '
@@ -2688,7 +2703,8 @@ def render_map(name, key, row=None, address="", host_known=True, points=None,
     # The console goes directly under the detail it belongs to: the RCON port is two
     # rows up, and the map this sends to is the map whose page this is.
     console = render_console(name, key, world=world, result=result, refusal=refusal,
-                             ask=_console_ask(name, key, ask) if ask else "")
+                             ask=_console_ask(name, key, ask) if ask else "",
+                             world_damaged=world_damaged)
     return ('<div class=jump><a href="%s">Back to the cluster</a></div>' % back_to
             + (notice or "") + here + where + console + connect + saves
             + (overrides or ""))
@@ -3477,7 +3493,7 @@ def render_restore(store, archives, chosen=None, info=None, notes=(),
                RESTORE_PICK_JS, RESTORE_JS, points_block, _superseded_block(store)))
 
 
-def render_savepoints(by_map, job=None, limit=6):
+def render_savepoints(by_map, job=None, limit=6, wipe_times=""):
     """The saves the game already took, offered per map as one-click rollbacks.
 
     The recent few are buttons; *all* of them are behind a fold, because "roll back to
@@ -3487,21 +3503,34 @@ def render_savepoints(by_map, job=None, limit=6):
     Nothing stops until the operator confirms. The consequence used to live in a hover
     tooltip, which meant clicking a point stopped a server with no warning anybody had
     read - a tooltip is documentation, not consent.
+
+    Every point carries its size, and one clearly smaller than the rest of the map's
+    carries a note saying why if the schedule can explain it (a wild-dino wipe just
+    before it) and that it is worth a look if not. The fold already showed sizes; the
+    quick buttons - the ones people actually press - showed only a time, so the one
+    piece of evidence that tells two adjacent points apart was a click further away.
+    `wipe_times` is the setting, read by the caller.
     """
     if not by_map:
         return ""
+    from .savepoints import point_notes
 
     rows = []
     for map_name, points in by_map:
         if not points:
             continue
-        quick = "".join(_point_button(map_name, p, ghost=True) for p in points[:limit])
+        notes = point_notes(points, wipe_times=wipe_times)
+        quick = "".join(_point_button(map_name, p, ghost=True,
+                                      note=notes.get(p.get("name")))
+                        for p in points[:limit])
         rest = ""
         if len(points) > limit:
             older = "".join(
-                '<tr><td>%s</td><td class=help>%s</td><td class=help>%s</td>'
+                '<tr><td>%s</td><td class=help>%s</td><td class=help>%s%s</td>'
                 '<td class=num>%s</td></tr>'
                 % (_e(p["local"]), _e(p["ago"]), _e(p.get("human_size") or ""),
+                   (' &middot; %s' % _e(notes[p.get("name")]))
+                   if notes.get(p.get("name")) else "",
                    _point_button(map_name, p, ghost=True, label="restore"))
                 for p in points)
             rest = ('<details><summary>all %d restore points for %s, back to %s'
@@ -3534,14 +3563,26 @@ def render_savepoints(by_map, job=None, limit=6):
                if busy else "", "".join(rows), POINT_CONFIRM_JS))
 
 
-def _point_button(map_name, point, ghost=False, label=None):
-    """One restore point, carrying the sentence the operator has to agree to."""
+def _point_button(map_name, point, ghost=False, label=None, note=None):
+    """One restore point, carrying the sentence the operator has to agree to.
+
+    A labelled button is the "restore" in the fold's table, where the time and size are
+    already in the cells beside it. An unlabelled one is a quick button and has to say
+    everything itself: how long ago, when, how big - and the note, if this point is
+    clearly smaller than the map's others.
+    """
     text = CONFIRM_TEXT % (map_name, point["local"])
+    said = ""
+    if not label:
+        said = '<span class=help> &middot; %s</span>' % _e(point["local"])
+        if point.get("human_size"):
+            said += '<span class=help> &middot; %s</span>' % _e(point["human_size"])
+        if note:
+            said += '<div class="help pointnote">%s</div>' % _e(note)
     return ('<button%s type=submit name=point value="%s|%s" data-confirm="%s">'
             '%s%s</button>'
             % (" class=ghost" if ghost else "", _e(point["map"]), _e(point["name"]),
-               _e(text), _e(label or point["ago"]),
-               "" if label else '<span class=help> &middot; %s</span>' % _e(point["local"])))
+               _e(text), _e(label or point["ago"]), said))
 
 
 CONFIRM_TEXT = ("This will stop %s, roll its world back to %s, and restart it "

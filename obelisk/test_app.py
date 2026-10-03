@@ -5218,6 +5218,12 @@ check("and the two pages are not the same page",
       [("Docker says" in _mp_body), ("Docker says" in _mp_down_body)])
 
 # ---- the saves the game took, on the page about the map they belong to
+_mb_src = _insp_dead.getsource(_appmod.build_app).split(
+    "async def _map_body")[1].split("async def map_page")[0]
+check("the map page hands the wipe schedule to the size notes",
+      'wipe_times=str(store.get("wipe_times") or "")' in _mb_src, _mb_src[-700:])
+check("and says when the held-down record has this world as damaged",
+      "world_damaged=_held_damaged(name)" in _mb_src, _mb_src[-700:])
 check("its restore points are here", "Quick restore points" in _mp_body,
       _window(_mp_body, "Quick restore points", 300))
 check("offered as the same guarded button the restore page used",

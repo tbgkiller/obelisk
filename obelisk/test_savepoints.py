@@ -695,6 +695,49 @@ for _restart, _want in ((True, True), (False, False)):
           not ok_r and (("start:ragnarok" in c.log) == _want), (c.log, msg_r))
 check("and says it is still stopped", "still stopped" in msg_r, msg_r)
 
+# ---- a point much smaller than its neighbours: after a wipe, or worth a look
+_H = 3600
+_base = 1790000000                               # an arbitrary UTC instant
+
+
+def _pts(*sizes):
+    return [{"name": "p%d" % i, "when": _base - i * _H, "size": s}
+            for i, s in enumerate(sizes)]
+
+
+def _lt(epoch):
+    """A fixed 'local' clock - UTC - so the wipe arithmetic is the test's, not the
+    machine's."""
+    return time.gmtime(epoch)
+
+
+_wipe_at = time.strftime("%H:%M", time.gmtime(_base - 20 * 60))
+_notes = savepoints.point_notes(_pts(100, 50, 100, 100, 100), localtime=_lt)
+check("a point well under the median of the map's points gets a note",
+      list(_notes) == ["p1"], _notes)
+check("which says it is much smaller than the ones around it",
+      "much smaller than the points around it" in _notes["p1"], _notes)
+check("points within normal drift get none",
+      savepoints.point_notes(_pts(100, 90, 100, 80, 100), localtime=_lt) == {})
+_wn = savepoints.point_notes(_pts(40, 100, 100, 100), wipe_times=_wipe_at,
+                             localtime=_lt)
+check("a small point taken just after a scheduled wipe says that instead",
+      "wild-dino wipe" in _wn.get("p0", "") and "respawning" in _wn["p0"]
+      and "20 minutes after" in _wn["p0"], (_wipe_at, _wn))
+_late = time.strftime("%H:%M", time.gmtime(_base - 3 * _H))
+_wl = savepoints.point_notes(_pts(40, 100, 100, 100), wipe_times=_late,
+                             localtime=_lt)
+check("but not when the wipe was hours before it",
+      "much smaller" in _wl.get("p0", ""), _wl)
+# A point at 00:20 after a 23:50 wipe is thirty minutes after it, not 23 hours before.
+_wrapped = savepoints.point_notes(
+    _pts(40, 100, 100, 100), wipe_times="junk, 23:50",
+    localtime=lambda _e: time.struct_time((2026, 10, 1, 0, 20, 0, 3, 274, 0)))
+check("a wipe just before midnight still covers the point just after it",
+      "30 minutes after the 23:50" in _wrapped.get("p0", ""), _wrapped)
+check("two points have no 'around them' to compare with",
+      savepoints.point_notes(_pts(10, 100), localtime=_lt) == {})
+
 
 print("\nFAILURES: %s" % fails if fails else "\nall savepoints tests passed")
 sys.exit(1 if fails else 0)

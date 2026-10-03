@@ -497,3 +497,69 @@ def auto_restore(store, map_key, restore=None, live_ok=None, pick=None, ark_root
                      (" The damaged world is kept as %s." % kept) if kept else "")
                   ), detail
 
+
+
+# ---------------------------------------------------------------- reading a size
+
+# A point under this fraction of the map's median is worth a word. A quarter is well
+# outside the drift of a world that is being played in, and well inside what a
+# wild-dino wipe does to one.
+SMALL = 0.75
+# How long after a wipe a point still reads small for that reason. The wipe clears the
+# wild creatures at once and the map refills them over the next hour or so.
+WIPE_WINDOW = 90 * 60
+
+
+def _wipe_minutes(wipe_times):
+    out = []
+    for part in str(wipe_times or "").split(","):
+        hh, _, mm = part.strip().partition(":")
+        try:
+            h, m = int(hh), int(mm or 0)
+        except ValueError:
+            continue
+        if 0 <= h < 24 and 0 <= m < 60:
+            out.append((h * 60 + m, "%02d:%02d" % (h, m)))
+    return out
+
+
+def point_notes(points, wipe_times="", localtime=None):
+    """{name: note} for the points clearly smaller than the ones around them.
+
+    A restore point a third smaller than its neighbours is either nothing - it was taken
+    just after the wild dinos were wiped and the map had not refilled yet - or it is the
+    one point somebody should not roll back to. The page could not tell those apart, so
+    an operator choosing between two adjacent points had nothing to choose on. Wipe
+    times are server-local, so the point's time is read in local time to match them.
+    """
+    localtime = localtime or time.localtime
+    sizes = sorted(int(p.get("size") or 0) for p in points or [])
+    if len(sizes) < 3:
+        return {}                       # two points have no "around them"
+    mid = len(sizes) // 2
+    median = sizes[mid] if len(sizes) % 2 else (sizes[mid - 1] + sizes[mid]) / 2.0
+    if median <= 0:
+        return {}
+    wipes = _wipe_minutes(wipe_times)
+    out = {}
+    for p in points:
+        size = int(p.get("size") or 0)
+        if size >= SMALL * median:
+            continue
+        t = localtime(p.get("when") or 0)
+        at = t.tm_hour * 60 + t.tm_min
+        after = None
+        for minute, said in wipes:
+            gap = (at - minute) % (24 * 60)
+            if gap * 60 <= WIPE_WINDOW:
+                after = (gap, said)
+                break
+        if after:
+            out[p["name"]] = ("taken %d minutes after the %s wild-dino wipe, while wild "
+                              "dinos were still respawning - smaller is normal here"
+                              % (after[0], after[1]))
+        else:
+            out[p["name"]] = ("much smaller than the points around it (%s against about "
+                              "%s) - look at it before rolling back to it"
+                              % (backup.human_size(size), backup.human_size(median)))
+    return out

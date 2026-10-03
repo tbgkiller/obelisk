@@ -1795,6 +1795,15 @@ def build_app(store, docker=None):
             log.info("could not look at %s's world file: %s", key, e)
             return None
 
+    def _held_damaged(name):
+        """Is this map held down because the integrity check found its world damaged?
+        Advice only, so a record that will not read is simply "no"."""
+        try:
+            return (name in updatesctl.held_down(store)
+                    and updatesctl.held_down_states(store).get(name) == "damaged")
+        except Exception:                            # noqa: BLE001 - never a blank page
+            return False
+
     async def _map_body(request, key, result=None, ask=None, refusal=""):
         """The per-map page's markup, for the GET and for the console's own POST.
 
@@ -1863,7 +1872,9 @@ def build_app(store, docker=None):
                                     job=rjob, state=state, overrides=overrides,
                                     notice=notice, launched=launched,
                                     world=_world_look(key) if row else None,
-                                    result=result, ask=ask, refusal=refusal),
+                                    result=result, ask=ask, refusal=refusal,
+                                    wipe_times=str(store.get("wipe_times") or ""),
+                                    world_damaged=_held_damaged(name)),
                       name, "/admin/cluster")
 
     async def map_page(request):
