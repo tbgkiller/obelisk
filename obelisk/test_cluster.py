@@ -1537,6 +1537,19 @@ class WorldWritable:
 check("world-writable folders are fine too",
       layout.not_writable_by_server("/ark", stat=lambda p: WorldWritable()) == [])
 
+# The stop guard's folder is the manager's, read-only to every map by design. Asking
+# that the server could write it refused every launch - the rollback's included - and
+# left ten maps down the first time a cluster had it.
+_guard_dir = layout.ark_paths("/ark")["generated"]
+check("the stop guard's root-owned folder does not block a launch",
+      layout.not_writable_by_server(
+          "/ark", stat=lambda p: RootOwned() if p == _guard_dir else ServerOwned()) == [])
+check("while every other folder is still checked",
+      [b for b in layout.not_writable_by_server(
+          "/ark", stat=lambda p: RootOwned() if p != _guard_dir else ServerOwned())]
+      and not any(_guard_dir + " " in b for b in layout.not_writable_by_server(
+          "/ark", stat=lambda p: RootOwned())))
+
 
 # ---- the flush has to find the maps that are actually running
 # It read a SERVERS environment variable that only exists when Obelisk writes itself

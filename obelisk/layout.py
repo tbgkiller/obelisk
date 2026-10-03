@@ -224,10 +224,18 @@ def not_writable_by_server(root, stat=None, uid=SERVER_UID, gid=SERVER_GID):
     denied", installs nothing, and reports `running (health: starting)` forever. Checked
     before a launch so it is a refusal with a fix rather than an hour of watching a
     progress bar that was never moving.
+
+    The generated folder is the one exception, and on purpose: it holds the stop guard,
+    which every map runs but none may rewrite. It is mounted read-only and stays owned
+    by the manager, so the server's user not being able to write it is the design rather
+    than a fault - and asking that it could refused every launch, rollback included, on
+    the first cluster that had it (2 Oct 2026, ten maps down until it was fixed).
     """
     stat = stat or os.stat
     problems = []
     for name, path in sorted(ark_paths(root).items()):
+        if name == "generated":
+            continue                       # read-only to the server by design
         try:
             st = stat(path)
         except OSError:
