@@ -3272,7 +3272,8 @@ async def loop_watch(store, interval=120, status=None, sleep_first=True):
 # not bringing back a crashed map is the regression this exists to fix. So it acts, and
 # the announcement says out loud what to do instead.
 def crash_pass(store, details=None, start=None, say=None, locked=None, policy=None,
-               names=None, seen_down=None, now=None, world=None):
+               names=None, seen_down=None, now=None, world=None, external=None,
+               told=None):
     """One look at every map. Returns what it did, and never raises.
 
     Split out from the loop so the decision can be tested without a clock: everything
@@ -3318,6 +3319,7 @@ def crash_pass(store, details=None, start=None, say=None, locked=None, policy=No
     except Exception as e:                           # noqa: BLE001 - never fatal
         log.info("crash watch could not ask Docker what is running: %s", e)
         return out
+    held = set(updatesctl.held_down(store))
 
     for label in sorted(mapping):
         name, key = mapping[label]
@@ -3327,7 +3329,14 @@ def crash_pass(store, details=None, start=None, say=None, locked=None, policy=No
         # and says so. container_details drops any container whose inspect failed, so an
         # absent answer is a Docker hiccup OR a container that was removed, and neither
         # is something to start a server over.
-        if (got.get(name) or {}).get("state") not in clusterctl.NOT_RUNNING:
+        state_now = (got.get(name) or {}).get("state")
+        if state_now == "running" and label in held:
+            # Somebody started it - Launch, Apply, a restore - so whatever held it is
+            # over. Left in the record it would keep this watch off a map that is now
+            # serving, the next time it fell over.
+            updatesctl.release_held(store, label)
+            held.discard(label)
+        if state_now not in clusterctl.NOT_RUNNING:
             continue
         out["down"].add(key)
         if key not in seen_down:
@@ -3335,6 +3344,14 @@ def crash_pass(store, details=None, start=None, say=None, locked=None, policy=No
             # pass through `exited` on the way somewhere else, and acting on the first
             # look would race every one of them.
             continue
+        if label in held:
+            # Held down on purpose - by the apply gate, or by this watch because its
+            # world is not fit to start on. Not a crash to recover, and not a relaunch
+            # to spend budget on: the automatic restore or a person decides what
+            # happens to it next.
+            out.setdefault("held_skipped", []).append(key)
+            continue
+
 
         ok, why = intentctl.may_relaunch(store, key, now=now)
         if not ok:
@@ -3371,6 +3388,45 @@ def crash_pass(store, details=None, start=None, say=None, locked=None, policy=No
                     "%s" % (label, why, after), level="error")
             continue
 
+        # An outside stop a few minutes ago. A backup plugin that stops a container
+        # starts it again when its copy is done, and relaunching into the middle of
+        # that is the fight of 1 October - the watch restarted island and ragnarok
+        # mid-tar and the plugin reported "container is already started!". So the
+        # outside actor gets a grace period first. Nothing is spent and nothing is
+        # recorded: the map is simply looked at again on the next pass.
+        stopped_at = (external or (lambda k: EXTERNAL_STOPS.get(k)))(key)
+        if stopped_at and now() - stopped_at < EXTERNAL_GRACE:
+            out.setdefault("grace", []).append(key)
+            if told is not None and (key, stopped_at) not in told:
+                told.add((key, stopped_at))
+                say("cluster.relaunch_waiting",
+                    "%s is down after being stopped from outside Obelisk, so the crash "
+                    "watch is giving whatever stopped it %d minutes to start it again "
+                    "before it does - a backup plugin starts its containers again "
+                    "when its copy is finished, and starting one underneath it is a "
+                    "fight over the same map." % (label, EXTERNAL_GRACE // 60),
+                    level="warning")
+            continue
+
+        # The world, before anything is started on it. The watch relaunched The Island
+        # and Ragnarok three times each onto malformed databases on 1 October, spending
+        # its whole budget proving what one look at the file would have said. Only a
+        # world that reads cleanly - or none at all, a map that has never booted - is
+        # started on; anything else is held, with its reason, and the budget is not
+        # touched.
+        verdict = _world_before_relaunch(store, label, key, world=world)
+        if verdict and verdict[0] == "unchecked":
+            out.setdefault("unchecked", []).append(key)
+            continue
+        if verdict:
+            state_w, why_w = verdict
+            updatesctl.hold_down(store, label, state_w, now())
+            held.add(label)
+            out.setdefault("held", []).append(key)
+            say("cluster.relaunch_held", _held_sentence(store, label, state_w, why_w),
+                level="error")
+            continue
+
         n = intentctl.record_relaunch(store, key, now=now)
         try:
             ok_s, why_s = (start or clusterctl.start_one)(store, key, record=False)
@@ -3395,6 +3451,64 @@ def crash_pass(store, details=None, start=None, say=None, locked=None, policy=No
             "tell that apart from a crash."
             % (label, n, intentctl.BUDGET, int(intentctl.WINDOW / 3600)))
     return out
+
+
+# How long the crash watch leaves a map alone after something outside Obelisk stopped
+# it. Long enough for Appdata Backup's tar of one container on 1 October; short enough
+# that a map somebody stopped by hand in the Docker tab is not down for the evening.
+EXTERNAL_GRACE = 20 * 60
+# {map key: when an outside stop was seen}, written by external_stop_watch. In memory on
+# purpose: a manager restart forgets a grace period, which costs one relaunch the
+# outside actor may have to tolerate - never a map that stays down.
+EXTERNAL_STOPS = {}
+
+
+def _world_before_relaunch(store, label, key, world=None):
+    """None to relaunch, or (state, why) to hold it instead. Never raises.
+
+    The same classification the automatic restore uses (savepoints.live_state). "ok"
+    and "absent" relaunch - a map that has never booted has no world to protect, and
+    refusing it would be a map that can never start. A map whose world folder cannot be
+    worked out at all (an instance the save-point code has no folder for) relaunches as
+    it always did: there is nothing to look at, and this check is new. A check that
+    fails for any other reason holds nothing and starts nothing - it is asked again on
+    the next pass.
+    """
+    try:
+        if world is not None:
+            state, why = world(store, key)
+        else:
+            try:
+                path = pointsctl.live_world(store, key)
+            except KeyError:
+                return None
+            state, why = pointsctl.live_state(path)
+    except Exception as e:                           # noqa: BLE001 - never fatal
+        log.info("could not look at %s's world before relaunching it: %s", label, e)
+        return ("unchecked", str(e))
+    if state in ("ok", "absent"):
+        return None
+    return (state, why)
+
+
+def _held_sentence(store, label, state, why):
+    """What the channel is told when the watch will not start a map on its world."""
+    if state == "damaged":
+        tail = ("Obelisk will restore it automatically from its newest good save point."
+                if store.get("auto_restore") else
+                "Restore it from a save point before starting it again.")
+        return ("%s is down and its world is damaged (%s), so the crash watch has NOT "
+                "started it again - starting a server on a damaged world only repeats "
+                "the crash. It is being held down. %s" % (label, why, tail))
+    if state == "writing":
+        return ("%s is down with its world still part-way through being written (%s), "
+                "so the crash watch has NOT started it again and is holding it down. "
+                "Look at the map before starting it - the journal beside the world "
+                "belongs to a save that never finished." % (label, why))
+    return ("%s is down and its world could not be reached (%s) - a storage problem "
+            "rather than a damaged world - so the crash watch has NOT started it again "
+            "and is holding it down. Check the ARK volume is mounted and readable."
+            % (label, why))
 
 
 def _hold_if_damaged(store, label, key, world=None, now=None):
@@ -3441,13 +3555,16 @@ async def crash_watch(store, interval=120, sleep_first=True, **kw):
     """
     seen_down = set()
     told = ""
+    # Which outside-stop grace periods have already been announced, across passes - one
+    # line per stop, not one every two minutes for twenty.
+    graced = set()
     while True:
         if sleep_first:
             await asyncio.sleep(interval)
         sleep_first = True
         try:
             out = await asyncio.to_thread(
-                lambda: crash_pass(store, seen_down=set(seen_down), **kw))
+                lambda: crash_pass(store, seen_down=set(seen_down), told=graced, **kw))
             seen_down = out["down"]
             # Said once per change of state, not once per pass. A watch that is standing
             # down is standing down for as long as the setting says so, and a line every
@@ -3780,6 +3897,153 @@ async def auto_restore_watch(store, interval=600, sleep_first=True):
             log.error("automatic restore check failed: %s", e)
 
 
+# ---------------------------------------------------------------- outside stops
+#
+# Obelisk holds the Docker socket, so it can SEE every stop that reaches a map, whoever
+# sent it. On 1 October nothing was looking: Appdata Backup stopped ten maps one after
+# another over three hours, two worlds were damaged, and the first anybody heard was the
+# crash watch giving up on them. This watcher only ever announces - it starts nothing,
+# stops nothing and holds nothing. The crash watch reads what it records to give the
+# outside actor a grace period, and that is the whole of its effect.
+
+# One announcement per stop. A `docker stop` arrives as kill, then die, then stop, and a
+# restart as all three and more; within this many seconds they are one event.
+STOP_BURST = 120
+
+_SIGNALS = {"15": "SIGTERM", "9": "SIGKILL", "2": "SIGINT", "1": "SIGHUP",
+            "3": "SIGQUIT", "SIGTERM": "SIGTERM", "SIGKILL": "SIGKILL"}
+
+
+def classify_stop(store, key, locked=None):
+    """"obelisk" or "external" for a stop that just reached this map.
+
+    Obelisk's own when it is holding the cluster lock - every apply, Stop, restore and
+    automatic restore runs under it - or when the map's recorded intent is DOWN. Every
+    path in Obelisk that signals a map writes that intent before the signal: exit_worlds
+    and stop_one per map, and stop() for the whole cluster before its `down`. Anything
+    else is something outside Obelisk.
+    """
+    if (locked or APPLY_LOCK.locked)():
+        return "obelisk"
+    if intentctl.read(store, key).get("intent") == intentctl.DOWN:
+        return "obelisk"
+    return "external"
+
+
+def stop_event_pass(store, event, names=None, locked=None, guarded=None, say=None,
+                    now=None, seen=None):
+    """Read one `docker events` record; announce an outside stop. Returns what it found.
+
+    Only `kill` is read: every stop that sends a signal produces one, carrying the
+    signal, and a server that exits on its own - a crash, or POK leaving after a DoExit
+    - produces a die with no kill in front of it, which is the crash watch's business
+    rather than this one's. `seen` is {container: last announced} for the burst rule.
+    """
+    say = say or announce.say
+    now = now or time.time
+    seen = {} if seen is None else seen
+    action = str(event.get("Action") or event.get("status") or "")
+    attrs = ((event.get("Actor") or {}).get("Attributes") or {})
+    name = str(attrs.get("name") or "")
+    out = {"action": action, "name": name, "kind": ""}
+    if action != "kill" or not name:
+        return out
+    by_name = {}
+    try:
+        by_name = {n: (l, k) for l, (n, k) in (names or clusterctl.map_containers)(
+            store).items() if n}
+    except Exception as e:                           # noqa: BLE001 - never fatal
+        log.info("could not work out this cluster's containers: %s", e)
+    if name not in by_name:
+        return out
+    label, key = by_name[name]
+    out["kind"] = kind = classify_stop(store, key, locked=locked)
+    if kind != "external":
+        return out
+    at = float(event.get("time") or now())
+    EXTERNAL_STOPS[key] = at
+    if now() - seen.get(name, 0) < STOP_BURST:
+        out["repeat"] = True
+        return out
+    seen[name] = now()
+
+    sig = _SIGNALS.get(str(attrs.get("signal") or ""), "signal %s" % (attrs.get("signal")
+                                                                     or "unknown"))
+    try:
+        guard = (guarded or _has_stop_guard)(name)
+    except Exception:                                # noqa: BLE001 - an unknown
+        guard = None
+    if sig == "SIGKILL":
+        protected = ("It was a SIGKILL, which nothing inside the container can delay - "
+                     "if it landed during a save, the world may be damaged.")
+    elif guard:
+        protected = ("The stop guard is in place on this map, so the server was asked "
+                     "to save and exit before the signal reached it - the world was "
+                     "protected.")
+    elif guard is False:
+        protected = ("This map is NOT running the stop guard yet - recreate it (Launch, "
+                     "or Apply and restart) so the next one cannot do this.")
+    else:
+        protected = ("Whether this map is running the stop guard could not be "
+                     "checked.")
+    grace = (" The crash watch will leave it alone for %d minutes in case whatever "
+             "stopped it starts it again." % (EXTERNAL_GRACE // 60)
+             if store.get("crash_watch") else "")
+    out["announced"] = True
+    say("cluster.external_stop",
+        "%s was stopped by something outside Obelisk (%s) at %s. An outside stop can "
+        "corrupt the world if it lands during a save - check for backup plugins "
+        "(Unraid Appdata Backup), Watchtower or a manual Stop. %s%s"
+        % (label, sig, time.strftime("%H:%M:%S", time.localtime(at)), protected, grace),
+        level="error", map=key)
+    return out
+
+
+def _has_stop_guard(name):
+    got = dockerctl.entrypoint(name)
+    if got is None:
+        return None
+    return any(composectl.GUARD_FILE in str(part) for part in got)
+
+
+def follow_stops(store, stream, **kw):
+    """Read one events stream until it ends. Never raises out of a single record."""
+    seen = kw.pop("seen", None)
+    seen = {} if seen is None else seen
+    count = 0
+    for event in stream:
+        count += 1
+        try:
+            stop_event_pass(store, event, seen=seen, **kw)
+        except Exception as e:                       # noqa: BLE001 - one bad record
+            log.info("could not read a docker event: %s", e)
+    return count
+
+
+async def external_stop_watch(store, stream=None, backoff=(2, 5, 15, 30, 60),
+                              rounds=None, sleep=None):
+    """Follow `docker events` for this cluster, and reconnect when the stream drops.
+
+    The stream ends whenever Docker restarts, the socket blips or the CLI dies, and a
+    watcher that stopped then would be silent for exactly the kind of night it exists
+    for. So it reconnects, backing off while the failures continue and starting again
+    from the shortest wait once a stream has carried something. `rounds` bounds it for
+    the tests.
+    """
+    sleep = sleep or asyncio.sleep
+    stream = stream or (lambda: dockerctl.events(clusterctl.project(store)))
+    seen, tries, n = {}, 0, 0
+    while rounds is None or n < rounds:
+        n += 1
+        try:
+            got = await asyncio.to_thread(follow_stops, store, stream(), seen=seen)
+            tries = 0 if got else tries + 1
+        except Exception as e:                       # noqa: BLE001 - reconnect
+            tries += 1
+            log.info("docker events stream failed (%s) - reconnecting", e)
+        await sleep(backoff[min(max(tries - 1, 0), len(backoff) - 1)])
+
+
 def _scheduled_apply(store, force=False):
     """The unattended apply. Same verbs as the button, assembled in one place.
 
@@ -3944,6 +4208,7 @@ async def main():
     tasks.append(asyncio.create_task(loop_watch(store)))
     tasks.append(asyncio.create_task(crash_watch(store)))
     tasks.append(asyncio.create_task(auto_restore_watch(store)))
+    tasks.append(asyncio.create_task(external_stop_watch(store)))
 
     from . import bot
     # The relay used to learn its maps from a SERVERS environment variable, which only

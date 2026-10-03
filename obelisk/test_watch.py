@@ -80,7 +80,10 @@ def _cw_pass(store, states, starts=None, locked=False, policy="no", twice=True):
         store, details=_cw_details(states), start=starts.start,
         say=lambda *a, **k: _cw_said.append((a[0], a[1], k.get("level", "info"))),
         locked=lambda: locked, policy=lambda _s: policy,
-        names=lambda _s: dict(_CW_NAMES), seen_down=seen)
+        names=lambda _s: dict(_CW_NAMES), seen_down=seen,
+        # Pinned: the world check and the outside-stop grace have sections of their own
+        # below, and everything above them is about intent.
+        world=lambda _s, _k: ("ok", "pinned intact"), external=lambda _k: None)
     return out, starts
 
 
@@ -251,13 +254,18 @@ def _stand_down(world_says):
             locked=lambda: False, policy=lambda _s: "no",
             names=lambda _s: dict(_CW_NAMES),
             seen_down={k for _n, k in _CW_NAMES.values()},
-            world=lambda _s, k: (asked.append(k) or world_says))
+            # Intact while the budget is being spent - the relaunch check would hold a
+            # damaged world before any of this - and then whatever the test says by the
+            # time the watch gives up: a world that went bad on the last crash.
+            world=lambda _s, k: (asked.append(k) or (
+                ("ok", "intact") if len(asked) <= intent.BUDGET else world_says)))
     return st, out, asked, said
 
 
 _st_d, _out_d, _asked_d, _said_d = _stand_down(("damaged", "malformed"))
-check("a map stood down on a damaged world is asked about its world, once",
-      _asked_d == ["island"], _asked_d)
+check("a map stood down on a damaged world is asked about its world when it is stood "
+      "down, as well as before each relaunch",
+      _asked_d == ["island"] * (intent.BUDGET + 1), _asked_d)
 check("and recorded as held down, damaged, for the automatic restore",
       _upd.held_down(_st_d) == ["The Island"]
       and _upd.held_down_states(_st_d) == {"The Island": "damaged"},
@@ -439,6 +447,236 @@ check("and the periodic restore is started with the other watches",
 for _tail_r in ("auto_done", "auto_failed", "auto_refused", "auto_start"):
     check("%s has an icon of its own" % _tail_r,
           announce.ICONS.get(_tail_r) not in (None, "•"), announce.ICONS.get(_tail_r))
+
+# 14. the world, before a relaunch. 1 October: the watch started The Island and
+#     Ragnarok three times each onto malformed databases, spending its whole budget to
+#     prove what one look at the file would have said.
+def _rl_store():
+    st = Store(os.path.join(tempfile.mkdtemp(), "settings.json")).load()
+    st.patch({"appdata": "/srv/ark-data", "status_port": 8088}, source="install")
+    st.patch({"maps": "island,ragnarok", "admin_password": "pw", "cluster_id": "cwtest",
+              "host_ram_gb": 256, "crash_watch": True})
+    intent.remember(st, "island", intent.UP, "start")
+    intent.remember(st, "ragnarok", intent.DOWN, "apply")
+    return st
+
+
+def _rl_pass(st, world_says=None, states=None, external=None, told=None, starts=None,
+             now=None):
+    starts = starts or _CwStarts()
+    said = []
+    out = appmod.crash_pass(
+        st, details=_cw_details(states or _DOWN_BOTH), start=starts.start,
+        say=lambda *a, **k: said.append((a[0], a[1], k.get("level", "info"))),
+        locked=lambda: False, policy=lambda _s: "no", names=lambda _s: dict(_CW_NAMES),
+        seen_down={k for _n, k in _CW_NAMES.values()},
+        world=(lambda _s, _k: world_says) if world_says else None,
+        external=external or (lambda _k: None), told=told, now=now)
+    return out, starts, said
+
+
+for _w, _relaunch in ((("ok", "intact"), True), (("absent", "never booted"), True),
+                      (("damaged", "malformed"), False), (("writing", "a -wal"), False),
+                      (("unreachable", "denied"), False)):
+    _st_w = _rl_store()
+    _o_w, _s_w, _said_w = _rl_pass(_st_w, world_says=_w)
+    if _relaunch:
+        check("a world that is %s is relaunched" % _w[0],
+              _s_w.calls == [("island", False)], (_s_w.calls, _said_w))
+        continue
+    check("a world that is %s is NOT relaunched" % _w[0], _s_w.calls == [],
+          (_s_w.calls, _said_w))
+    check("it is held down with that state (%s)" % _w[0],
+          _upd.held_down_states(_st_w) == {"The Island": _w[0]},
+          _upd.state(_st_w).get("held_down"))
+    check("and no relaunch budget was spent on it (%s)" % _w[0],
+          intent.relaunches(_st_w, "island") == 0, intent.read(_st_w, "island"))
+    check("and the channel is told why, in red (%s)" % _w[0],
+          any(e == "cluster.relaunch_held" and l == "error" and "NOT started" in t
+              for e, t, l in _said_w), _said_w)
+
+_st_dm = _rl_store()
+_o, _s, _said = _rl_pass(_st_dm, world_says=("damaged", "malformed"))
+check("a damaged world held by the watch is promised the automatic restore",
+      any("restore it automatically" in t for _e, t, _l in _said), _said)
+_r = _ArRestores()
+_ar_pass(_st_dm, _r, there={})
+check("and the automatic restore picks it up", _r.calls == ["island"], _r.calls)
+
+# held maps are left alone, and cost nothing
+_st_h = _rl_store()
+_rl_pass(_st_h, world_says=("writing", "a -wal"))
+for _i in range(intent.BUDGET + 2):
+    _o_h, _s_h, _said_h = _rl_pass(_st_h, world_says=("ok", "fixed by hand"))
+check("a held map is never relaunched by the watch, however many passes",
+      _s_h.calls == [] and "island" in _o_h.get("held_skipped", []), _o_h)
+check("so its relaunch budget is untouched", intent.relaunches(_st_h, "island") == 0
+      and not intent.read(_st_h, "island").get("stood_down"),
+      intent.read(_st_h, "island"))
+_o_up, _s_up, _ = _rl_pass(_st_h, states=_UP_BOTH)
+check("once somebody starts it, the hold is over",
+      _upd.held_down(_st_h) == [], _upd.state(_st_h).get("held_down"))
+
+def _raise_world(_s, _k):
+    raise OSError("stale file handle")
+
+
+_st_x = _rl_store()
+_said_x = []
+_sx = _CwStarts()
+_o_x = appmod.crash_pass(
+    _st_x, details=_cw_details(_DOWN_BOTH), start=_sx.start,
+    say=lambda *a, **k: _said_x.append(a[0]), locked=lambda: False,
+    policy=lambda _s: "no", names=lambda _s: dict(_CW_NAMES),
+    seen_down={"island", "ragnarok"}, world=_raise_world, external=lambda _k: None)
+check("a world check that raises starts nothing and holds nothing, and asks again",
+      _sx.calls == [] and _upd.held_down(_st_x) == []
+      and "island" in _o_x.get("unchecked", []), (_sx.calls, _o_x))
+
+# 15. the outside actor gets a grace period, not a fight
+_st_g = _rl_store()
+_told = set()
+_t0 = 1_800_000_000
+_o_g, _s_g, _said_g = _rl_pass(_st_g, world_says=("ok", "intact"),
+                              external=lambda k: _t0 - 60 if k == "island" else None,
+                              told=_told, now=lambda: _t0)
+check("a map stopped from outside minutes ago is not relaunched yet",
+      _s_g.calls == [] and "island" in _o_g.get("grace", []), _o_g)
+check("and nothing is spent on it", intent.relaunches(_st_g, "island") == 0)
+check("said once, as a warning", [l for e, _t, l in _said_g
+                                  if e == "cluster.relaunch_waiting"] == ["warning"],
+      _said_g)
+_o_g2, _s_g2, _said_g2 = _rl_pass(_st_g, world_says=("ok", "intact"),
+                                 external=lambda k: _t0 - 60, told=_told,
+                                 now=lambda: _t0 + 120)
+check("and not said again on the next pass", not any(
+    e == "cluster.relaunch_waiting" for e, _t, _l in _said_g2), _said_g2)
+_o_g3, _s_g3, _ = _rl_pass(_st_g, world_says=("ok", "intact"),
+                           external=lambda k: _t0 - 60, told=_told,
+                           now=lambda: _t0 + appmod.EXTERNAL_GRACE)
+check("after the grace period it is relaunched as usual",
+      _s_g3.calls == [("island", False)], _s_g3.calls)
+
+# 16. noticing an outside stop
+_EV = []
+
+
+def _kill(name, sig="15", at=_t0):
+    return {"Type": "container", "Action": "kill", "time": at,
+            "Actor": {"Attributes": {"name": name, "signal": sig}}}
+
+
+def _ev_pass(st, event, locked=False, guarded=True, seen=None, now=None):
+    _EV.clear()
+    return appmod.stop_event_pass(
+        st, event, names=lambda _s: dict(_CW_NAMES), locked=lambda: locked,
+        guarded=lambda _n: guarded, seen=seen,
+        say=lambda *a, **k: _EV.append((a[0], a[1], k.get("level", "info"))),
+        now=now or (lambda: _t0))
+
+
+_st_e = _rl_store()
+appmod.EXTERNAL_STOPS.clear()
+_o_e = _ev_pass(_st_e, _kill("asa-cwtest-island"))
+check("a kill on a map Obelisk meant to be up is an outside stop",
+      _o_e["kind"] == "external" and _o_e.get("announced"), _o_e)
+check("announced in red, naming the map, the signal and what to look for",
+      _EV and _EV[0][0] == "cluster.external_stop" and _EV[0][2] == "error"
+      and "The Island" in _EV[0][1] and "SIGTERM" in _EV[0][1]
+      and "Appdata Backup" in _EV[0][1] and "Watchtower" in _EV[0][1], _EV)
+check("saying the stop guard protected the world when it is in place",
+      "the world was protected" in _EV[0][1], _EV)
+check("and recorded for the crash watch's grace period",
+      appmod.EXTERNAL_STOPS.get("island") == _t0, appmod.EXTERNAL_STOPS)
+_ev_pass(_st_e, _kill("asa-cwtest-island"), guarded=False)
+check("a map without the guard is told to recreate", any(
+    "NOT running the stop guard" in t for _e, t, _l in _EV), _EV)
+_ev_pass(_st_e, _kill("asa-cwtest-island", sig="9"))
+check("and a SIGKILL is never called protected",
+      "SIGKILL" in _EV[0][1] and "the world was protected" not in _EV[0][1], _EV)
+
+_seen = {}
+_ev_pass(_st_e, _kill("asa-cwtest-island"), seen=_seen)
+_o_b = _ev_pass(_st_e, _kill("asa-cwtest-island"), seen=_seen,
+                now=lambda: _t0 + 30)
+check("one announcement per burst, not one per event", _EV == [] and _o_b.get("repeat"),
+      _EV)
+
+_o_own = _ev_pass(_st_e, _kill("asa-cwtest-ragnarok"))
+check("a kill on a map whose intent Obelisk set DOWN is Obelisk's own, and silent",
+      _o_own["kind"] == "obelisk" and _EV == [], (_o_own, _EV))
+_o_lk = _ev_pass(_st_e, _kill("asa-cwtest-island"), locked=True)
+check("so is any stop while Obelisk holds the cluster lock",
+      _o_lk["kind"] == "obelisk" and _EV == [], (_o_lk, _EV))
+for _act in ("die", "stop"):
+    _ev_pass(_st_e, dict(_kill("asa-cwtest-island"), Action=_act))
+    check("a %s on its own is not read as an outside stop" % _act, _EV == [], _EV)
+_ev_pass(_st_e, _kill("asa-cwtest-staging"))
+check("a container that is not one of this cluster's maps is ignored", _EV == [], _EV)
+
+_wsrc = inspect.getsource(appmod.stop_event_pass) + inspect.getsource(
+    appmod.follow_stops) + inspect.getsource(appmod.external_stop_watch)
+check("the watcher only announces - it never starts, stops or holds a map",
+      not any(v in _wsrc for v in ("start_one", "close_one", "stop_one", "launch(",
+                                   "hold_down", "intentctl.remember")), _wsrc[:200])
+
+# it survives the stream dropping
+_streams = []
+
+
+def _flaky():
+    _streams.append(1)
+    if len(_streams) == 1:
+        raise OSError("the docker socket went away")
+    if len(_streams) == 2:
+        return iter([{"Action": "die"}])
+    return iter([])
+
+
+_naps = []
+
+
+async def _nap(t):
+    _naps.append(t)
+
+
+import asyncio as _aio_w                                         # noqa: E402
+_aio_w.run(appmod.external_stop_watch(_st_e, stream=_flaky, backoff=(1, 2, 3),
+                                      rounds=4, sleep=_nap))
+check("the events watcher reconnects after the stream fails or ends",
+      len(_streams) == 4, _streams)
+check("backing off while it keeps failing, and resetting once a stream carries events",
+      _naps == [1, 1, 1, 2], _naps)
+check("and it is started with the other background watches",
+      "external_stop_watch(store)" in inspect.getsource(appmod.main))
+for _tail_x in ("external_stop", "relaunch_held", "relaunch_waiting"):
+    check("%s has an icon of its own" % _tail_x,
+          announce.ICONS.get(_tail_x) not in (None, "•"), announce.ICONS.get(_tail_x))
+
+# the stream itself: only this cluster's containers, only the three stop events
+from . import dockerctl as _dctl                                 # noqa: E402
+
+
+class _FakeEvents:
+    def __init__(self, args, **kw):
+        _FakeEvents.args, _FakeEvents.killed = args, False
+        self.stdout = iter(['{"Action": "kill", "Actor": {"Attributes": {"name": "x"}}}\n',
+                            "not json\n", "\n", '"a string"\n',
+                            '{"Action": "die"}\n'])
+
+    def kill(self):
+        _FakeEvents.killed = True
+
+
+_got_ev = list(_dctl.events("cwtest", popen=_FakeEvents))
+check("docker events is filtered to this cluster's compose project",
+      "label=com.docker.compose.project=cwtest" in _FakeEvents.args, _FakeEvents.args)
+check("and to kill, stop and die on containers",
+      all(f in _FakeEvents.args for f in ("type=container", "event=kill", "event=stop",
+                                          "event=die")), _FakeEvents.args)
+check("each JSON line comes back as a record, and junk lines are skipped",
+      [e.get("Action") for e in _got_ev] == ["kill", "die"], _got_ev)
+check("and the process is ended when the stream is", _FakeEvents.killed)
 
 print("\nFAILURES: %s" % fails if fails else "\nall crash watch tests passed")
 sys.exit(1 if fails else 0)

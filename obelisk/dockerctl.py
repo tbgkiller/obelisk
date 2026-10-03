@@ -208,3 +208,50 @@ def logs(name, tail=200, timeout=30):
     """The tail of one container's log, for showing a person why it is unhappy."""
     rc, out = _run(["docker", "logs", "--tail", str(tail), name], timeout=timeout)
     return out if rc == 0 else ""
+
+
+def entrypoint(name, timeout=30):
+    """This container's entrypoint as a list, or None when Docker could not say."""
+    rc, out = _run(["docker", "inspect", "-f", "{{json .Config.Entrypoint}}", name],
+                   timeout=timeout)
+    if rc != 0:
+        return None
+    try:
+        got = json.loads(out.strip() or "null")
+    except ValueError:
+        return None
+    return list(got) if isinstance(got, list) else []
+
+
+def events(project, popen=None):
+    """Follow `docker events` for this compose project's containers. Yields dicts.
+
+    Only kill, stop and die, and only containers carrying the project's compose label -
+    so the staging server, Obelisk itself and everything else on the host never reach
+    the caller. Blocks between events; returns when the stream ends, which is what the
+    caller's reconnect is for. The process is ended on the way out either way, so a
+    reconnect never leaves the previous `docker events` running behind it.
+    """
+    popen = popen or subprocess.Popen
+    args = ["docker", "events", "--format", "{{json .}}",
+            "--filter", "type=container",
+            "--filter", "label=com.docker.compose.project=%s" % project,
+            "--filter", "event=kill", "--filter", "event=stop", "--filter", "event=die"]
+    p = popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True)
+    try:
+        for line in p.stdout:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                got = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(got, dict):
+                yield got
+    finally:
+        try:
+            p.kill()
+        except Exception:                            # noqa: BLE001 - already gone
+            pass
+

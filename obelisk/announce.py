@@ -245,6 +245,10 @@ ICONS = {
     # Loud on purpose. The watch giving up on a map is the end of anything automatic
     # happening to it, and the map stays down until a person acts.
     "watch_stood_down": "❌",
+    # Something outside Obelisk signalled a map - the 1 October failure, made visible.
+    "external_stop": "❌",
+    # The crash watch would not start a map on a world that is not fit to start on.
+    "relaunch_held": "❌",
     "message_failed": "❌",
     "kick_failed": "❌",
     "ban_failed": "❌",
@@ -264,6 +268,8 @@ ICONS = {
     # Not a fault: the restart policy is on, so Docker owns recovery and the watch is
     # deliberately doing nothing.
     "watch_standing_by": "⚠",
+    # Waiting out an outside actor's grace period rather than fighting it.
+    "relaunch_waiting": "⚠",
     "offsite_unconfigured": "⚠", "push_unconfigured": "⚠",
     "ban_partial": "⚠",
     "unban_partial": "⚠",
