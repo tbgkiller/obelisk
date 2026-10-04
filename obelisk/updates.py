@@ -685,19 +685,29 @@ def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
     swap_files, why_build = staged_worth_applying(store, installed, ark_root)
     waiting = pending.count(store)
 
+    def refuse(text):
+        # Every pre-flight refusal is said, not only returned. The button that started
+        # this used to get its answer back in a job dict the page did not draw, so an
+        # apply refused over an unreadable player count looked like a click that went
+        # nowhere - no event, no log line, no Discord. Nothing has been touched at
+        # this point, so it is a warning, not an error.
+        announce.say("ark.apply_refused", "Apply did not go ahead: %s" % text,
+                     level="warning")
+        return False, text, {}
+
     if not swap_files and not waiting:
         if ready and not owns_updates(store):
-            return False, ("a build is staged and verified, but POK is set to apply "
+            return refuse(("a build is staged and verified, but POK is set to apply "
                            "updates itself - two update systems on one cluster is how "
                            "you get two restarts. Switch \"Who applies ARK updates\" to "
-                           "Obelisk first."), {}
+                           "Obelisk first."))
         if ready:
             # Something IS staged; it is just not worth a restart. Said in the words
             # staged_worth_applying used, so the page, the log and the refusal all
             # name the same build for the same reason.
-            return False, why_build, {}
-        return False, ("nothing is waiting to be applied - no settings queued, and no "
-                       "update staged and verified"), {}
+            return refuse(why_build)
+        return refuse(("nothing is waiting to be applied - no settings queued, and no "
+                       "update staged and verified"))
 
     # Who is actually on, asked once. Two things need the answer and only one of them
     # used to ask: the refusals below, and the warning countdown further down. The
@@ -722,19 +732,19 @@ def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
             # apply. Catching it above to keep the warning decision safe quietly made
             # an unreadable count look like zero to the refusals below, which is the
             # one reading this file exists to reject.
-            return False, ("the player count could not be read, so it is not known "
+            return refuse(("the player count could not be read, so it is not known "
                            "whether anyone is on. Apply with force if you mean to "
-                           "restart anyway."), {}
+                           "restart anyway."))
         if silent:
-            return False, ("%d map(s) did not answer, so it is not known whether "
+            return refuse(("%d map(s) did not answer, so it is not known whether "
                            "anyone is on them: %s. Apply with force if you mean to "
                            "restart anyway." % (len(silent),
-                                                ", ".join(l for l, _ in silent))), {}
+                                                ", ".join(l for l, _ in silent))))
         if total:
             busiest = ", ".join("%s (%d)" % (m, n) for m, n in sorted(
                 counts.items(), key=lambda kv: -kv[1]) if n)
-            return False, ("%d player(s) are online: %s. Apply with force, or let the "
-                           "scheduled window do it." % (total, busiest)), {}
+            return refuse(("%d player(s) are online: %s. Apply with force, or let the "
+                           "scheduled window do it." % (total, busiest)))
 
     build = (ready or {}).get("build")
     what = []

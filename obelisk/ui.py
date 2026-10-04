@@ -777,6 +777,8 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
         buttons = ('<div class=note>Working: %s <span class=help>This page updates '
                    'itself.</span></div>' % (step or "starting"))
     else:
+        buttons = ""
+    if not busy:
         # Not re-derived here. `bool(ready) and owns` is what used to stand in this
         # line, and it is the same too-weak test the apply itself used to carry: it
         # renders an enabled button for a rehearsal of the build already running, and
@@ -794,7 +796,7 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
         # where the server image is the one applying builds. The stricter of the two
         # wins; an enabled button is the thing that has to be earned twice.
         can_apply = bool(worth) and owns
-        buttons = (
+        buttons = job_result(job) + (
             '<button type=submit formaction="/admin/update/prime"%s>Prime update</button> '
             '<button type=submit formaction="/admin/update/apply"%s>Apply now</button> '
             % ("" if staging_on else " disabled", "" if can_apply else " disabled"))
@@ -1011,23 +1013,88 @@ def render_mod_chips(rows=None, loaded=None, expected=None):
     return '<div class=chips>%s</div>' % "".join(chips) if chips else ""
 
 
+def boot_detail(s):
+    """Under a booting map's status: what it last said, and whether that is normal.
+
+    The phase alone read "Generating the world (14m so far)" on every map for a
+    quarter of an hour on 4 October, which looked stuck. The lines below it are what
+    show it is moving.
+    """
+    bits = []
+    if s.get("last_line"):
+        bits.append('<div class=help title="last line of the container log">'
+                    'server: <code>%s</code></div>' % _e(s["last_line"]))
+    if s.get("game_line") and s.get("game_line") != s.get("last_line"):
+        bits.append('<div class=help title="last line of ShooterGame.log">'
+                    'game log: <code>%s</code></div>' % _e(s["game_line"]))
+    if s.get("expect"):
+        bits.append('<div class=help>%s</div>' % _e(s["expect"]))
+    return "".join(bits)
+
+
 def render_relay(info):
-    """10/10 reachable, in green, or which ones are not, in red."""
+    """10/10 reachable, in green, or which ones are not, in red - or why it is not up.
+
+    A relay that is not running at all used to render nothing here, which on a page
+    that says "player counts are not available" left the reader with no idea whether
+    it was coming back.
+    """
     if not info:
         return ""
+    state = info.get("state")
+    if state in ("waiting", "restarting", "failing"):
+        words = {"waiting": "Chat relay waiting for maps",
+                 "restarting": "Chat relay restarting",
+                 "failing": "Chat relay keeps failing"}[state]
+        why = info.get("why") or ""
+        retry = info.get("retry_at")
+        if retry and state != "waiting":
+            why += " - next try in %ds" % max(0, int(retry - time.time()))
+        return ('<div class="badge %s">%s</div>%s'
+                % ("unk" if state == "waiting" else "bad", _e(words),
+                   ('<div class=help>%s</div>' % _e(why)) if why else ""))
     total = int(info.get("total") or 0)
     good = int(info.get("reachable") or 0)
     if not total:
         return ""
     ok = good == total
-    return ('<div class="badge %s">Chat relay %d/%d maps reachable</div>%s'
+    return ('<div class="badge %s">Chat relay %d/%d maps reachable</div>%s%s'
             % ("good" if ok else "bad", good, total,
                ('<div class=help>Cannot reach: %s</div>' % _e(info.get("unreachable"))
-                if not ok and info.get("unreachable") else "")))
+                if not ok and info.get("unreachable") else ""),
+               render_discord(info.get("discord"))))
+
+
+def render_discord(d):
+    """One line on whether Discord is getting anything, when it is not."""
+    if not d or d.get("state") in (None, "connected", "ok", "idle"):
+        return ""
+    if d.get("state") == "off":
+        return ('<div class=help>Discord: off &mdash; %s.</div>'
+                % _e(d.get("why") or "not set up"))
+    return '<div class=warn>Discord: %s</div>' % _e(d.get("why") or d.get("state"))
+
+
+def render_boot(maps):
+    """Every map that is still starting, with its evidence, for the Right now panel.
+
+    During an apply the step reads "checking every map is really serving" for as long
+    as the slowest map takes, which on 4 October was over twenty minutes with nothing
+    else on screen. This is the something else.
+    """
+    if not maps:
+        return ""
+    rows = "".join(
+        '<tr><td>%s</td><td>%s%s</td></tr>'
+        % (_e(m.get("label") or m.get("service") or "?"), _e(m.get("says") or ""),
+           boot_detail(m))
+        for m in maps)
+    return ('<div class=panel><div class=ptitle>Maps starting (%d)</div>'
+            '<table>%s</table></div>' % (len(maps), rows))
 
 
 def render_dashboard(status=None, ready=None, failed=None, job=None, relay=None,
-                     backup=None, restore=None):
+                     backup=None, restore=None, boot=None):
     """What Obelisk is doing right now, as a picture rather than a paragraph.
 
     The channel gets the same phases as text; this is the at-a-glance version. Both are
@@ -1083,6 +1150,10 @@ def render_dashboard(status=None, ready=None, failed=None, job=None, relay=None,
         blocks.append('<div class=panel><div class="badge %s">%s</div>%s</div>'
                       % (cls, word, render_mod_chips(rows=status["mods"])))
 
+    boot_html = render_boot(boot)
+    if boot_html:
+        blocks.append(boot_html)
+
     relay_html = render_relay(relay)
     if relay_html:
         blocks.append('<div class=panel>%s</div>' % relay_html)
@@ -1129,26 +1200,57 @@ def render_pending(rows, job=None, players=None, primed=None):
     if (job or {}).get("state") == "running":
         buttons = ('<div class=note>Applying now: %s</div>'
                    % _e(job.get("step") or "starting"))
+    elif (job or {}).get("state") == "done" and job.get("what") == "apply"             and not job.get("ok"):
+        # A refused apply has to be said where the button was pressed. It used to go
+        # back to "1 change pending" with the reason nowhere on the page, which reads
+        # as the click having been lost.
+        buttons = job_result(job) + _pending_buttons(players)
     else:
-        total, counts, silent = players or (0, {}, [])
-        note = ""
-        if silent:
-            note = ('<div class=problem>%d map(s) did not answer, so it is not known '
-                    'whether anyone is on them.</div>' % len(silent))
-        elif total:
-            note = ('<div class=problem>%d player(s) are online - applying now would '
-                    'restart their servers.</div>' % total)
-        buttons = (note +
-                   '<button type=submit name=apply value=1>Apply now</button> '
-                   '<button class=ghost type=submit name=discard value=all>'
-                   'Discard all</button>'
-                   '<label class=inline><input type=checkbox name=force value=1> '
-                   'apply even with players online</label>')
+        buttons = _pending_buttons(players)
 
     return ('<form method=post action="/admin/pending">'
             '<fieldset><legend>Waiting to be applied</legend>%s'
             '<table>%s</table><div style="margin-top:14px">%s</div>'
             '</fieldset></form>' % (head, "".join(lines), buttons))
+
+
+def job_result(job):
+    """How the last apply or prime ended, in the colour of what it means.
+
+    Amber for a refusal - nothing was touched - and red for a failure part way. Both
+    carry the time, so a banner from this morning is not read as this minute's.
+    """
+    job = job or {}
+    if job.get("state") != "done" or not job.get("message"):
+        return ""
+    what = {"apply": "Apply", "prime": "Prime"}.get(job.get("what"), "Update")
+    when = time.strftime("%H:%M", time.localtime(job.get("finished") or time.time()))
+    if job.get("ok"):
+        return '<div class=note><b>%s finished %s.</b> %s</div>' % (
+            what, when, _e(job["message"]))
+    if job.get("refused"):
+        return ('<div class=warn><b>%s did not start (%s)</b> &mdash; %s</div>'
+                % (what, when, _e(job["message"])))
+    return ('<div class=problem><b>%s failed (%s)</b> &mdash; %s</div>'
+            % (what, when, _e(job["message"])))
+
+
+def _pending_buttons(players):
+    """Apply, discard, and what is known about who would be restarted."""
+    total, _counts, silent = players or (0, {}, [])
+    note = ""
+    if silent:
+        note = ('<div class=problem>%d map(s) did not answer, so it is not known '
+                'whether anyone is on them.</div>' % len(silent))
+    elif total:
+        note = ('<div class=problem>%d player(s) are online - applying now would '
+                'restart their servers.</div>' % total)
+    return (note +
+            '<button type=submit name=apply value=1>Apply now</button> '
+            '<button class=ghost type=submit name=discard value=all>'
+            'Discard all</button>'
+            '<label class=inline><input type=checkbox name=force value=1> '
+            'apply even with players online</label>')
 
 
 def render_events(items, jobs=None, limit=None, compact=False):
@@ -1537,9 +1639,9 @@ def render_status(status, players=None, addresses=None, host_known=True):
         # as Container, it is not something anybody acts on from here, and the address
         # is what people actually came to this row for.
         addr = (addresses or {}).get(label, "")
-        rows += ("<tr><td>%s</td><td class=%s>%s</td>%s"
+        rows += ("<tr><td>%s</td><td class=%s>%s%s</td>%s"
                  "<td>%s</td></tr>"
-                 % (named, css.get(level, ""), _e(says), cell,
+                 % (named, css.get(level, ""), _e(says), boot_detail(s), cell,
                     ('<code>%s</code>' % _e(addr)) if addr else
                     '<span class=help>&mdash;</span>'))
         if s.get("log_tail"):

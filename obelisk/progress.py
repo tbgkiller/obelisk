@@ -181,3 +181,109 @@ def _mins(seconds):
     if seconds < 5400:
         return "%dm" % (seconds // 60)
     return "%dh %dm" % (seconds // 3600, (seconds % 3600) // 60)
+
+
+# ---------------------------------------------------------------- what it said last
+#
+# The phase is a word; the last line is the evidence. During the 4 October update every
+# map read "Generating the world (Nm so far)" for a quarter of an hour, which is true and
+# says nothing about whether anything is moving - while the container log was printing
+# "Server log file not created yet... (510s elapsed)" and the game log "Log file open".
+# The line itself is what tells a slow start from a stuck one, so it is shown.
+
+_ANSI = re.compile(r"\x1b\[[0-9;?]*[A-Za-z]")
+# "[2026.10.04-12.00.00:123][  0]" (the game's own log) and "2026-10-04 12:00:00 " /
+# "[12:00:00]" (POK's wrapper) - the clock is already on the page as elapsed time.
+_STAMP = re.compile(r"^(\[[\d.:\-]+\]\s*(\[\s*\d+\])?\s*|\d{4}-\d{2}-\d{2}[ T][\d:.,]+\s*"
+                    r"|\[?\d{2}:\d{2}:\d{2}\]?\s*)")
+# Lines that are true and useless: separators, blank banners, steamcmd's spinner.
+_NOISE = re.compile(r"^[-=*#_.\s]*$|^Redirecting stderr|^Loading Steam API")
+
+
+def last_line(text, width=180):
+    """The last line of a log that says something, cleaned for a table cell."""
+    for raw in reversed(str(text or "").splitlines()):
+        line = _STAMP.sub("", _ANSI.sub("", raw)).strip()
+        if not line or _NOISE.search(line):
+            continue
+        return line if len(line) <= width else line[:width - 1] + "…"
+    return ""
+
+
+_FULL_STARTUP = re.compile(r"Full Startup:\s*([0-9.]+)\s*seconds")
+
+
+def full_startup_seconds(text):
+    """The game's own "Full Startup: 932.35 seconds", or None if it has not said it."""
+    hits = _FULL_STARTUP.findall(str(text or ""))
+    try:
+        return float(hits[-1]) if hits else None
+    except ValueError:
+        return None
+
+
+# path -> ((mtime, size), seconds). A finished log never changes, so it is read once.
+_STARTUP_CACHE = {}
+
+
+def previous_startup(logs_dir, listdir=None, stat=None, read=None, limit=6,
+                     max_bytes=64 * 1024 * 1024):
+    """How long this map's last completed start took, from its own logs. Or None.
+
+    ASA keeps the previous runs' logs beside the current one, and each completed start
+    wrote its own "Full Startup" line - so the expectation is this map's measured
+    history, not a number somebody guessed. Newest first; the first log that has the
+    line wins.
+    """
+    import os
+    listdir = listdir or os.listdir
+    stat = stat or os.stat
+    read = read or (lambda p: open(p, encoding="utf-8", errors="replace").read())
+    try:
+        names = [n for n in listdir(logs_dir)
+                 if n.startswith("ShooterGame") and n.endswith(".log")]
+    except OSError:
+        return None
+    found = []
+    for n in names:
+        path = "%s/%s" % (str(logs_dir).rstrip("/"), n)
+        try:
+            st = stat(path)
+        except OSError:
+            continue
+        found.append((st.st_mtime, st.st_size, path))
+    for mtime, size, path in sorted(found, reverse=True)[:limit]:
+        key = (mtime, size)
+        cached = _STARTUP_CACHE.get(path)
+        if cached and cached[0] == key:
+            secs = cached[1]
+        elif size > max_bytes:
+            continue
+        else:
+            try:
+                secs = full_startup_seconds(read(path))
+            except OSError:
+                continue
+            _STARTUP_CACHE[path] = (key, secs)
+        if secs:
+            return secs
+    return None
+
+
+# What a normal start looks like, said so a slow one does not read as a stuck one.
+# Measured, not assumed: ASA under Proton took six to sixteen minutes a map with ten
+# starting at once on the cluster this was written against (The Center 932s, The
+# Island 351s on 2 October).
+TYPICAL = "6-16 min per map is normal for ASA under Proton when several maps start together"
+
+
+def expectation(elapsed, previous=None, phase=None):
+    """One sentence on whether this boot is in the normal range. "" when not useful."""
+    if not elapsed or elapsed < 60:
+        return ""
+    if previous:
+        if elapsed > max(previous * 1.5, previous + 300):
+            return ("Taking longer than its last start (%s) - check the line above is "
+                    "still changing." % _mins(previous))
+        return "Its last full start took %s; %s." % (_mins(previous), TYPICAL)
+    return TYPICAL[0].upper() + TYPICAL[1:] + "."
