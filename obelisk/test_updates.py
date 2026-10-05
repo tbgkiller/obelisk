@@ -954,6 +954,40 @@ check("a settings batch will not restart a cluster somebody is playing on",
       not ok and "player(s) are online" in msg, msg)
 check("and moved nothing", calls == [], calls)
 
+# ---- a refusal is said, not only returned
+#
+# 4 October: Apply was pressed, the page flashed "starting" and went back to "1 change
+# pending". The engine had refused - the player count could not be read - and returned
+# its reason into a job dict nothing drew. No event, no log line, no Discord.
+for _label, _players, _want in (
+        ("an unreadable player count", lambda: (_ for _ in ()).throw(OSError("no rcon")),
+         "player count could not be read"),
+        ("maps that did not answer", lambda: (0, {}, [("The Center", "timeout")]),
+         "did not answer"),
+        ("players online", lambda: (2, {"island": 2}, []), "player(s) are online")):
+    drain()
+    st = real_store()
+    _pend.stage(st, {"max_players": 250})
+    _calls, rename = moved_nothing()
+    ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, players=_players,
+                                      rename=rename, staged_build=STAGED_BUILD,
+                                      exists=tree_exists())
+    _ref = [i for i in drain() if i["event"] == "ark.apply_refused"]
+    check("a refusal over %s is announced" % _label,
+          not ok and len(_ref) == 1 and _want in _ref[0]["text"], (msg, _ref))
+    check("at warning level, because nothing was touched (%s)" % _label,
+          _ref and _ref[0]["level"] == "warning", _ref)
+    check("and the detail is still empty, so the page can tell a refusal from a "
+          "failure (%s)" % _label, _d == {}, _d)
+
+drain()
+st = real_store()
+ok, msg, _d = updates.apply_batch(st, ARK, installed=OLD_BUILD, rename=rename,
+                                  staged_build=STAGED_BUILD, exists=tree_exists())
+_ref = [i for i in drain() if i["event"] == "ark.apply_refused"]
+check("nothing to apply is a refusal that is announced too",
+      not ok and len(_ref) == 1 and "nothing is waiting" in _ref[0]["text"], _ref)
+
 check("apply_update is still the same routine, under its old name",
       updates.apply_update is updates.apply_batch)
 

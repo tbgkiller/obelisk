@@ -310,6 +310,14 @@ ICONS = {
     # something the send knows. A green tick beside "delivered, not confirmed"
     # would be the console’s own rule broken in the channel.
     "rcon_sent": "•",
+    # The relay and Discord, said on their own rather than inferred from silence.
+    "restarted": "✅", "connected": "✅",
+    "restarting": "⚠", "channel_missing": "⚠",
+    "failing": "❌", "admin_unreachable": "❌",
+    # A button that did not go ahead. Amber: nothing was touched.
+    "apply_refused": "⚠", "prime_refused": "⚠",
+    # Maps still starting, one message edited in place until they all serve.
+    "boot": "…",
 }
 
 

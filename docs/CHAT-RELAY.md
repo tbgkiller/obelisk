@@ -44,6 +44,24 @@ the maps run with `-servergamelog -servergamelogincludetribelogs -ServerRCONOutp
 (the POK image adds those). Without a token it still relays map <-> map.
 
 
+## When the relay is not up
+
+The relay starts on its own as soon as any map is running, and restarts on its own if
+it stops (5 seconds, doubling to 5 minutes between tries). The **Right now** panel on the
+Cluster page says which state it is in: waiting for maps, restarting (with the reason
+and the next try), or failing. The first stop is a warning in the Activity feed;
+three in a row is an error alert.
+
+Discord is retried the same way. A rejected token, a missing Message Content Intent or
+a channel the bot cannot see is said once, in the feed and under the relay status, in
+words that name what to fix. A token changed on the settings page is picked up within
+a couple of minutes, with no restart.
+
+Admin notices do not depend on the relay. If the relay's own Discord connection is not
+holding the admin channel, Obelisk posts to it directly with the bot token over
+Discord's HTTP API. Updates, refusals and map boot progress still reach the admin
+channel while every map is down, as long as a token and admin channel ID are set.
+
 ## In-game player commands (v5)
 
 Any player can type these in normal in-game chat on any map; the bot replies into that map's chat (visible to everyone on the map):

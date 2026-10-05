@@ -1529,12 +1529,30 @@ def status(store):
         return out
     out["services"] = dockerctl.compose_ps(compose_path(store), project(store))
     out["running"] = sum(1 for s in out["services"] if s.get("state") == "running")
-    _enrich(out["services"])
+    try:
+        ark = layout.ark_root_of(store)
+    except Exception:                             # noqa: BLE001 - logs are optional
+        ark = None
+    _enrich(out["services"], ark_root=ark)
     out["trouble"] = [s for s in out["services"] if s.get("looping") or s.get("failure")]
     return out
 
 
-def _enrich(services):
+def _game_log_tail(ark_root, instance, limit=64 * 1024):
+    """The end of one map's ShooterGame.log, or "". Never raises."""
+    if not (ark_root and instance):
+        return ""
+    path = "%s/Logs/ShooterGame.log" % layout.instance_dir(ark_root, instance)
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            fh.seek(max(0, fh.tell() - limit))
+            return fh.read().decode("utf-8", "replace")
+    except OSError:
+        return ""
+
+
+def _enrich(services, ark_root=None):
     """Add what the container is actually doing, and whether it is failing.
 
     A container that aborts and restarts every few seconds reports `running` the whole
@@ -1564,6 +1582,21 @@ def _enrich(services):
                 text = ""
         phase, percent, failure = progress.read_log(text)
         s["phase"], s["percent"], s["failure"] = phase, percent, failure
+        # The evidence under the phase word, for a map that is not serving yet: the last
+        # thing the container said, the last thing the game itself wrote, and how long
+        # this map's previous start took - so a slow boot reads as slow, not stuck.
+        s["last_line"] = s["game_line"] = s["expect"] = ""
+        if text and s.get("state") == "running" and not s["looping"]:
+            s["last_line"] = progress.last_line(text)
+            game = _game_log_tail(ark_root, s.get("service"))
+            s["game_line"] = progress.last_line(game)
+            previous = None
+            if ark_root and s.get("service"):
+                previous = progress.previous_startup(
+                    "%s/Logs" % layout.instance_dir(ark_root, s["service"]))
+            s["previous_startup"] = previous
+            s["expect"] = "" if failure else progress.expectation(
+                s.get("uptime_seconds"), previous, phase)
         s["log_tail"] = (chr(10).join(text.splitlines()[-12:])
                          if (s["looping"] or failure) else "")
         s["level"], s["says"] = progress.describe(s)

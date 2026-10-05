@@ -57,6 +57,30 @@ ARK_UPDATE = {}
 # so the dashboard can show the same fact as a colour instead of a sentence.
 RELAY_INFO = {}
 
+# The maps that are still starting, as boot_watch last saw them. Read by the page.
+BOOT_INFO = {"maps": [], "at": 0.0}
+
+
+def _relay_info():
+    """RELAY_INFO plus how Discord is doing, for the Right now panel."""
+    out = dict(RELAY_INFO)
+    try:
+        from . import bot, discordrest
+        # The relay's own connection is the primary while the relay is running. When
+        # it is not, its status is stale or was never set, and what the fallback
+        # poster managed is the true line.
+        if getattr(bot, "LIVE", None) is not None:
+            d = dict(bot.DISCORD_STATUS)
+            if d.get("state") != "connected" and discordrest.STATUS.get("state") in (
+                    "ok", "failed"):
+                d = dict(discordrest.STATUS)
+        else:
+            d = dict(discordrest.STATUS)
+        out["discord"] = d
+    except Exception:                                # noqa: BLE001 - never a blank page
+        pass
+    return out
+
 # One lock for anything that stops and starts the cluster - the buttons and, crucially,
 # the two loops that fire on their own.
 #
@@ -776,6 +800,7 @@ def build_app(store, docker=None):
                              "Dropped all %d queued change(s)." % gone)
         elif form.get("apply"):
             if ujob["state"] == "running" or cluster_busy.locked():
+                _say_busy("Apply")
                 raise web.HTTPFound("/admin/cluster")
             ujob.update(state="running", ok=None, message="", step="starting",
                         what="apply", started=time.time())
@@ -803,12 +828,14 @@ def build_app(store, docker=None):
         except Exception as e:                       # noqa: BLE001 - surfaced below
             ok, msg = False, "Priming failed: %s" % e
             log.exception("priming failed")
-        ujob.update(state="done", ok=ok, message=msg, step="done")
+        ujob.update(state="done", ok=ok, message=msg, step="done",
+                    finished=time.time(), refused=False)
 
     async def update_prime(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
         if ujob["state"] == "running" or cluster_busy.locked():
+            _say_busy("Prime")
             raise web.HTTPFound("/admin/cluster")
         ujob.update(state="running", ok=None, message="", step="starting",
                     what="prime", started=time.time())
@@ -895,19 +922,25 @@ def build_app(store, docker=None):
         return result
 
     async def _apply_task(force):
+        detail = None
         try:
             async with cluster_busy:
-                ok, msg, _detail = await asyncio.to_thread(_apply_now, force)
+                ok, msg, detail = await asyncio.to_thread(_apply_now, force)
         except Exception as e:                       # noqa: BLE001 - surfaced below
             ok, msg = False, "Applying the update failed: %s" % e
             log.exception("applying the update failed")
-        ujob.update(state="done", ok=ok, message=msg, step="done")
+            announce.say("ark.update_failed", msg, level="error")
+        # `refused` is "nothing was touched": every pre-flight refusal returns an empty
+        # detail, and the page paints it amber rather than red.
+        ujob.update(state="done", ok=ok, message=msg, step="done",
+                    finished=time.time(), refused=(not ok and detail == {}))
 
     async def update_apply(request):
         if not authed(request):
             raise web.HTTPFound("/setup")
         form = await request.post()
         if ujob["state"] == "running" or cluster_busy.locked():
+            _say_busy("Apply")
             raise web.HTTPFound("/admin/cluster")
         ujob.update(state="running", ok=None, message="", step="starting",
                     what="apply", started=time.time())
@@ -954,6 +987,22 @@ def build_app(store, docker=None):
             "dash": _dashboard(),
         })
 
+    def _say_busy(what):
+        """A button pressed while something else holds the cluster is said, not dropped.
+
+        It used to redirect back to the page with nothing - indistinguishable from the
+        click having worked, until the page showed it had not.
+        """
+        doing = (("an update is already %s (%s)"
+                  % ("priming" if ujob.get("what") == "prime" else "applying",
+                     ujob.get("step") or "starting"))
+                 if ujob["state"] == "running" else
+                 "another cluster operation (a stop, launch, restore or scheduled "
+                 "apply) is holding the cluster")
+        announce.say("ark.apply_refused" if what == "Apply" else "ark.prime_refused",
+                     "%s did not start: %s. Try again when it finishes." % (what, doing),
+                     level="warning")
+
     def _ujob_live():
         out = dict(ujob)
         out["elapsed"] = int(time.time() - ujob["started"]) if ujob.get("started") else 0
@@ -966,7 +1015,8 @@ def build_app(store, docker=None):
             # one that also carries the buttons - and two differing pictures of one
             # state is the thing this merge exists to remove, not to relocate. The
             # cards keep the jobs Obelisk owns end to end and the relay.
-            return ui.render_dashboard(relay=RELAY_INFO, backup=job, restore=rjob)
+            return ui.render_dashboard(relay=_relay_info(), backup=job, restore=rjob,
+                                       boot=BOOT_INFO.get("maps"))
         except Exception as e:                       # noqa: BLE001 - never a blank page
             log.warning("could not render the dashboard: %s", e)
             return ""
@@ -3602,10 +3652,17 @@ async def relay_watch(store, bot, interval=120):
             if not _wire_relay(store, bot):
                 continue
             after = set(bot.SERVERS or {})
-            if after == before:
-                continue
-            log.info("relay re-wired: now covering %d map(s) (was %d)",
-                     len(after), len(before))
+            if after != before:
+                log.info("relay re-wired: now covering %d map(s) (was %d)",
+                         len(after), len(before))
+            # Measured every pass, not only when the map list changes. It used to stop
+            # here when the list was the same, so "can reach 0 of 5" announced while
+            # the maps were booting stayed the last word long after all five came up -
+            # the feed on 4 October still showed 0 of 5 and 9 of 10 from the 3rd.
+            # _say_coverage only speaks when the answer changes, so this costs nothing
+            # in the channel.
+            if getattr(bot, "LIVE", None) is None:
+                continue                  # the supervisor reports its own (re)start
             good, bad = await asyncio.to_thread(clusterctl.reachable, store)
             _say_coverage(len(good), len(after), bad)
         except Exception as e:                          # noqa: BLE001 - never fatal
@@ -3617,8 +3674,13 @@ def _say_coverage(reachable, total, bad):
 
     It said "reaching all 1 maps" - true, and read like a bug because it was one.
     """
-    RELAY_INFO.update(total=total, reachable=reachable,
-                      unreachable=", ".join(n for n, _w in bad))
+    unreachable = ", ".join(n for n, _w in bad)
+    same = (RELAY_INFO.get("total"), RELAY_INFO.get("reachable"),
+            RELAY_INFO.get("unreachable")) == (total, reachable, unreachable)
+    RELAY_INFO.update(total=total, reachable=reachable, unreachable=unreachable)
+    if same and RELAY_INFO.get("said"):
+        return                            # re-measured, and nothing has changed
+    RELAY_INFO["said"] = True
     maps = "map" if total == 1 else "maps"
     if bad:
         announce.say("relay.degraded",
@@ -4225,31 +4287,20 @@ async def main():
     except Exception as e:                               # never a reason not to start
         log.warning("could not join the cluster network: %s", e)
 
-    wired = _wire_relay(store, bot)
-    if wired:
-        # Coverage is a claim, so check it rather than counting containers. The relay
-        # reported ten maps it could not reach for a full deploy cycle, and the only
-        # sign was a warning per map per poll, in a log nobody was reading.
-        try:
-            good, bad = await asyncio.to_thread(clusterctl.reachable, store)
-        except Exception as e:                           # noqa: BLE001
-            good, bad = [], [("all maps", str(e))]
-        total = len(bot.SERVERS)
-        if bad:
-            log.error("relay reaches %d of %d map(s) - cannot reach: %s",
-                      len(good), total,
-                      ", ".join("%s (%s)" % (n, why) for n, why in bad[:4]))
-        else:
-            log.info("relay covering %d map(s), all reachable: %s",
-                     total, ", ".join(bot.SERVERS))
-        _say_coverage(len(good), total, bad)
-        log.info("relaying chat between: %s", ", ".join(bot.SERVERS))
-        # And keep checking. A cluster that comes up in pieces used to leave the relay
-        # pointed at whatever was running when the manager booted.
-        tasks.append(asyncio.create_task(relay_watch(store, bot)))
-        tasks.append(asyncio.create_task(bot.main()))
-    else:
-        log.info("no cluster running yet - relay idle until maps are launched")
+    # Supervised rather than started once. It used to be started here only if a map was
+    # already running at this instant - and a manager that came up while the maps were
+    # down or still booting (an image update, a reboot, a stop-then-apply) logged "relay
+    # idle until maps are launched" and then never started it at all. No chat, no
+    # player counts, no Discord, until somebody restarted the manager by hand. The
+    # supervisor waits for maps, starts it, and starts it again if it dies.
+    tasks.append(asyncio.create_task(relay_supervisor(store, bot)))
+    # And keep checking. A cluster that comes up in pieces used to leave the relay
+    # pointed at whatever was running when the manager booted.
+    tasks.append(asyncio.create_task(relay_watch(store, bot)))
+    # Admin notices reach Discord even when the relay cannot carry them.
+    tasks.append(asyncio.create_task(discord_admin_fallback(store, bot)))
+    # What each map is doing while it boots, said where people look.
+    tasks.append(asyncio.create_task(boot_watch(store)))
 
     if not tasks:
         log.error("nothing to run: web UI is off and no cluster is configured")
@@ -4382,6 +4433,176 @@ _RELAY_SETTINGS = (
     ("wipe_times", "WIPE_TIMES", _times),
     ("wipe_warn_minutes", "WIPE_WARN_MINUTES", _minutes),
 )
+
+
+async def relay_supervisor(store, bot, sleep=asyncio.sleep, recheck=30,
+                           alert_after=3, run=None, now=time.time):
+    """Start the chat relay when there are maps, and start it again when it stops.
+
+    Before this the relay was started once, at boot, and only if a map was already
+    running at that instant. A manager that came up while the cluster was down - an
+    image update, a reboot, the stop at the start of an apply - logged "relay idle
+    until maps are launched" and then never started it, so there was no cross-map
+    chat, no player count, and no Discord until somebody restarted the manager. And if
+    the relay did start and then raised, the exception went up through main()'s gather
+    and took the web UI down with it.
+
+    Now: wait for maps, start, and on any exit restart with a backoff (5s doubling to
+    five minutes). The first stop is a warning; `alert_after` in a row is an error, said
+    once, so a relay that cannot stay up is an alert rather than a log line. A run that
+    lasted ten minutes resets the count - that is a relay that works and then hit
+    something, not one that cannot start.
+    """
+    run = run or bot.main
+    failures, waiting_said = 0, False
+    while True:
+        try:
+            wired = _wire_relay(store, bot)
+        except Exception as e:                           # noqa: BLE001 - retried
+            log.warning("could not wire the relay: %s", e)
+            wired = False
+        if not wired:
+            RELAY_INFO.update(state="waiting", why="no map is running yet, so there is "
+                              "nothing to relay between - it starts on its own when "
+                              "one is", retry_at=None)
+            if not waiting_said:
+                log.info("no cluster running yet - the relay starts on its own when "
+                         "maps are launched")
+                waiting_said = True
+            await sleep(recheck)
+            continue
+        waiting_said = False
+
+        # Coverage is a claim, so check it rather than counting containers. The relay
+        # reported ten maps it could not reach for a full deploy cycle, and the only
+        # sign was a warning per map per poll, in a log nobody was reading.
+        try:
+            good, bad = await asyncio.to_thread(clusterctl.reachable, store)
+        except Exception as e:                           # noqa: BLE001
+            good, bad = [], [("all maps", str(e))]
+        total = len(bot.SERVERS)
+        if bad:
+            log.error("relay reaches %d of %d map(s) - cannot reach: %s",
+                      len(good), total,
+                      ", ".join("%s (%s)" % (n, why) for n, why in bad[:4]))
+        else:
+            log.info("relay covering %d map(s), all reachable: %s",
+                     total, ", ".join(bot.SERVERS))
+        _say_coverage(len(good), total, bad)
+        log.info("relaying chat between: %s", ", ".join(bot.SERVERS))
+        RELAY_INFO.update(state="running", why="", retry_at=None)
+        if failures:
+            announce.say("relay.restarted",
+                         "Chat relay started again after %d stop(s)." % failures)
+
+        started = now()
+        try:
+            await run()
+            why = "it stopped without an error"
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                           # noqa: BLE001 - said below
+            log.exception("chat relay stopped")
+            why = "%s: %s" % (e.__class__.__name__, e)
+        if now() - started > 600:
+            failures = 0
+        failures += 1
+        delay = min(300, 5 * 2 ** (failures - 1))
+        RELAY_INFO.update(state="restarting" if failures < alert_after else "failing",
+                          why=why, attempts=failures, retry_at=now() + delay)
+        if failures == 1:
+            announce.say("relay.restarting",
+                         "Chat relay stopped (%s). Restarting it in %ds." % (why, delay),
+                         level="warning")
+        elif failures == alert_after:
+            announce.say("relay.failing",
+                         "Chat relay has stopped %d times in a row and cannot stay up: "
+                         "%s. Cross-map chat, player counts and the Discord bridge are "
+                         "out until it does. Retrying every few minutes; admin notices "
+                         "still reach Discord directly if a token is set."
+                         % (failures, why), level="error")
+        await sleep(delay)
+
+
+async def discord_admin_fallback(store, bot):
+    """Admin notices to Discord over HTTP while the relay's connection is not up."""
+    from . import discordrest
+
+    def settings():
+        return (_text(store.get("discord_token")),
+                _id(store.get("discord_admin_channel_id")))
+
+    def relay_has_admin():
+        live = getattr(bot, "LIVE", None)
+        return bool(live is not None and getattr(live, "admin_send", None))
+
+    await discordrest.fallback_loop(
+        settings, relay_has_admin, announce.pop_all,
+        lambda event, text: announce.say(event, text, level="error"))
+
+
+def _boot_rows(store, status=None):
+    """Every map that is running but not yet serving, named, with its evidence."""
+    st = (status or clusterctl.status)(store)
+    try:
+        by_instance = {r["instance"]: r["name"]
+                       for r in (build_plan(store).get("maps") or [])}
+    except Exception:                                    # noqa: BLE001 - ids will do
+        by_instance = {}
+    out = []
+    for svc in st.get("services") or []:
+        if svc.get("state") != "running" or (svc.get("health") or "") == "healthy":
+            continue
+        row = {k: svc.get(k) for k in (
+            "service", "says", "level", "phase", "last_line", "game_line", "expect",
+            "uptime_seconds", "previous_startup")}
+        row["label"] = by_instance.get(svc.get("service")) or svc.get("service")
+        out.append(row)
+    return out
+
+
+async def boot_watch(store, interval=30, status=None, sleep=asyncio.sleep,
+                     say_every=120, now=time.time):
+    """What each starting map is doing, on the page and in Discord, while it starts.
+
+    On 4 October an apply sat on "checking every map is really serving" for over twenty
+    minutes, and the cluster page said "Generating the world" for every map - while each
+    container was printing exactly how far it had got. This reads that every thirty
+    seconds for the Right now panel, and keeps one Discord message per boot that is
+    edited in place (a slot), so the channel shows progress without scrolling.
+
+    Said at most every `say_every` seconds and only when something changed, and the
+    story is closed when every map is serving.
+    """
+    from . import progress
+    typical = progress.TYPICAL[0].upper() + progress.TYPICAL[1:] + "."
+    last_said, last_text, open_story = 0.0, "", False
+    while True:
+        await sleep(interval)
+        try:
+            maps = await asyncio.to_thread(_boot_rows, store, status)
+            BOOT_INFO.update(maps=maps, at=now())
+            if not maps:
+                if open_story:
+                    announce.say("cluster.boot", "Every map is serving.",
+                                 slot="boot", slot_end=True)
+                    open_story, last_text = False, ""
+                continue
+            lines = []
+            for m in maps:
+                line = "%s: %s" % (m["label"], m.get("says") or "starting")
+                if m.get("last_line"):
+                    line += " - %s" % m["last_line"][:120]
+                lines.append(line)
+            detail = "\n".join(lines)
+            if detail != last_text and now() - last_said >= say_every:
+                announce.say("cluster.boot",
+                             "%d map(s) still starting. %s\n%s"
+                             % (len(maps), typical, detail[:1500]),
+                             slot="boot", detail=detail)
+                last_said, last_text, open_story = now(), detail, True
+        except Exception as e:                           # noqa: BLE001 - never fatal
+            log.info("boot watch skipped: %s", e)
 
 
 # Last in the file, and it has to stay last: everything main() reaches for must

@@ -454,37 +454,12 @@ class Relay:
     async def _post_or_edit(self, send, ann, item):
         """Post an announcement, or edit the one this slot is already showing.
 
-        A slot is a story in progress. The first stage posts and the message is kept;
-        every stage after it edits that same message, so a five-minute stop is one line
-        in the channel that keeps changing rather than six that scroll past.
-
-        Every way this can go wrong ends in a posted message rather than a silent one.
-        The message can be deleted by hand, the edit can be rate-limited, Discord can
-        have been restarted since - and a stop that says nothing is the failure this
-        whole feature exists to remove, so a failed edit posts afresh.
+        The logic lives in post_or_edit() at module level, because the relay is not the
+        only thing that posts to the admin channel any more: when the relay is down the
+        manager posts through Discord's REST API instead, and the two must not disagree
+        about how a slot is kept.
         """
-        text = ann.format_for_discord(item)
-        slot = item.get("slot") or ""
-        edited = False
-        if slot:
-            held = self._slot_messages.get(slot)
-            if held is not None:
-                try:
-                    await held.edit(content=text[:1990])
-                    edited = True
-                except Exception as e:                    # noqa: BLE001
-                    log.info("could not edit the %s status message, posting a new "
-                             "one: %s", slot, e)
-                    self._slot_messages.pop(slot, None)
-        if not edited:
-            msg = await send(text)
-            if slot and msg is not None:
-                self._slot_messages[slot] = msg
-        # The end of a story releases its slot, whichever way the last stage landed, so
-        # the next stop starts a new message rather than quietly rewriting the one
-        # somebody may still be reading.
-        if slot and item.get("slot_end"):
-            self._slot_messages.pop(slot, None)
+        await post_or_edit(self._slot_messages, send, ann, item)
 
     async def announce_loop(self):
         """Mirror Obelisk's own announcements into the Discord admin channel.
@@ -816,6 +791,42 @@ td.ok{color:#3fb950}td.bad{color:#f85149;font-weight:600}
             await asyncio.gather(*(self.poll_gamelog(l, hp) for l, hp in SERVERS.items()))
             await asyncio.sleep(POLL_SECONDS)
 
+async def post_or_edit(slots, send, ann, item):
+    """Post an announcement, or edit the one this slot is already showing.
+
+    A slot is a story in progress. The first stage posts and the message is kept;
+    every stage after it edits that same message, so a five-minute stop is one line
+    in the channel that keeps changing rather than six that scroll past.
+
+    Every way this can go wrong ends in a posted message rather than a silent one.
+    The message can be deleted by hand, the edit can be rate-limited, Discord can
+    have been restarted since - and a stop that says nothing is the failure this
+    whole feature exists to remove, so a failed edit posts afresh.
+    """
+    text = ann.format_for_discord(item)
+    slot = item.get("slot") or ""
+    edited = False
+    if slot:
+        held = slots.get(slot)
+        if held is not None:
+            try:
+                await held.edit(content=text[:1990])
+                edited = True
+            except Exception as e:                    # noqa: BLE001
+                log.info("could not edit the %s status message, posting a new "
+                         "one: %s", slot, e)
+                slots.pop(slot, None)
+    if not edited:
+        msg = await send(text)
+        if slot and msg is not None:
+            slots[slot] = msg
+    # The end of a story releases its slot, whichever way the last stage landed, so
+    # the next stop starts a new message rather than quietly rewriting the one
+    # somebody may still be reading.
+    if slot and item.get("slot_end"):
+        slots.pop(slot, None)
+
+
 # ---------------------------------------------------------------- discord side
 async def run_discord(relay):
     import discord
@@ -825,18 +836,25 @@ async def run_discord(relay):
 
     @client.event
     async def on_ready():
-        ch = client.get_channel(DISCORD_CHANNEL_ID)
-        if ch is None:
+        DISCORD_STATUS.update(state="connected", why="", since=time.time())
+        missing = []
+        # A missing chat channel used to `return` from here, which also skipped the
+        # tribe-log and admin channels below - so a cluster with only an admin channel
+        # set, or a chat channel ID with a typo in it, got no admin notices at all.
+        ch = client.get_channel(DISCORD_CHANNEL_ID) if DISCORD_CHANNEL_ID else None
+        if DISCORD_CHANNEL_ID and ch is None:
             log.error("Discord channel %s not found - is the bot in the server?", DISCORD_CHANNEL_ID)
-            return
-        async def send(text):
-            await ch.send(text[:1900], allowed_mentions=discord.AllowedMentions.none())
-        relay.discord_send = send
-        log.info("Discord ready as %s, relaying #%s", client.user, getattr(ch, "name", ch.id))
+            missing.append("chat relay channel %s" % DISCORD_CHANNEL_ID)
+        if ch is not None:
+            async def send(text):
+                await ch.send(text[:1900], allowed_mentions=discord.AllowedMentions.none())
+            relay.discord_send = send
+            log.info("Discord ready as %s, relaying #%s", client.user, getattr(ch, "name", ch.id))
         if TRIBELOG_CHANNEL_ID:
             tl = client.get_channel(TRIBELOG_CHANNEL_ID)
             if tl is None:
                 log.error("Tribelog channel %s not found / not visible to the bot", TRIBELOG_CHANNEL_ID)
+                missing.append("tribe log channel %s" % TRIBELOG_CHANNEL_ID)
             else:
                 async def send_tl(label, entries):
                     embeds = []
@@ -856,6 +874,7 @@ async def run_discord(relay):
             ad = client.get_channel(ADMIN_CHANNEL_ID)
             if ad is None:
                 log.error("Admin channel %s not found / not visible to the bot", ADMIN_CHANNEL_ID)
+                missing.append("admin channel %s" % ADMIN_CHANNEL_ID)
             else:
                 async def send_ad(text):
                     # Returns the message, which is what makes a live-updating status
@@ -865,6 +884,17 @@ async def run_discord(relay):
                         text[:1990], allowed_mentions=discord.AllowedMentions.none())
                 relay.admin_send = send_ad
                 log.info("Admin channel -> #%s (role gate: %s)", getattr(ad, "name", ad.id), ADMIN_ROLE_ID or "none")
+        if missing:
+            # Connected, but somewhere it was told to post is not visible to it. That
+            # is a settings problem an admin can fix, so it is said where they look.
+            why = ("connected as %s, but cannot see the %s. Check the ID, and that "
+                   "the bot was invited to that server with View Channels and Send "
+                   "Messages." % (client.user, ", ".join(missing)))
+            DISCORD_STATUS.update(state="partial", why=why)
+            _say_discord("discord.channel_missing", "Discord: " + why, "warning")
+        else:
+            _say_discord("discord.connected",
+                         "Discord connected as %s." % client.user, "info")
 
     def is_admin(member):
         if not ADMIN_ROLE_ID:
@@ -954,7 +984,101 @@ async def run_discord(relay):
         log.info("[Discord] %s: %s", name, content)
         await relay.broadcast(GAME_FORMAT.format(label="Discord", name=name, msg=content))
 
-    await client.start(DISCORD_TOKEN)
+    # The token the connection was made with. Settings are re-read into this module
+    # every couple of minutes, and a token changed on the settings page used to sit
+    # unused until the manager restarted - the same "saved, but nothing happened" the
+    # settings bridge exists to remove.
+    started_with = DISCORD_TOKEN
+
+    async def watch_token():
+        while True:
+            await asyncio.sleep(30)
+            if DISCORD_TOKEN != started_with:
+                log.info("Discord token changed - reconnecting")
+                await client.close()
+                return
+
+    watcher = asyncio.create_task(watch_token())
+    try:
+        await client.start(DISCORD_TOKEN)
+    finally:
+        watcher.cancel()
+        relay.discord_send = relay.tribelog_send = relay.admin_send = None
+        if not client.is_closed():
+            await client.close()
+
+
+# What the Discord side is doing, for the page. "off" until there is a token to use.
+DISCORD_STATUS = {"state": "off", "why": "", "since": 0.0}
+
+# The last thing said about Discord, so a connection that fails every five minutes for
+# a day is one line in the feed rather than three hundred.
+_DISCORD_SAID = [None]
+
+
+def _say_discord(event, text, level):
+    if _DISCORD_SAID[0] == (event, text):
+        return
+    _DISCORD_SAID[0] = (event, text)
+    try:
+        from . import announce
+        announce.say(event, text, level=level)
+    except Exception as e:                               # noqa: BLE001 - never fatal
+        log.warning("could not announce %s: %s", event, e)
+
+
+def discord_failure(e):
+    """A sentence for why the Discord connection failed, and whether retrying can help.
+
+    A wrong token never starts working by itself, so it is retried slowly; a network
+    blip is retried quickly. Both are retried, because a token fixed on the settings
+    page should be picked up without anyone restarting anything.
+    """
+    name = e.__class__.__name__
+    if name == "LoginFailure":
+        return ("Discord rejected the bot token. Paste a fresh one from the Developer "
+                "Portal (Bot -> Reset Token) into Settings -> Discord."), False
+    if name == "PrivilegedIntentsRequired":
+        return ("Discord refused the connection because Message Content Intent is off. "
+                "Turn it on under Bot in the Developer Portal."), False
+    return "Discord connection failed: %s: %s" % (name, e), True
+
+
+async def discord_forever(relay, sleep=asyncio.sleep, connect=None):
+    """Keep the Discord side connected, with backoff, and say so when it cannot be.
+
+    It used to be one `client.start()` inside the relay's gather: a login failure
+    raised out of it and took the whole relay down with it, and a token typed in after
+    the relay started was never used at all.
+    """
+    connect = connect or run_discord
+    failures = 0
+    while True:
+        if not (DISCORD_TOKEN and (DISCORD_CHANNEL_ID or ADMIN_CHANNEL_ID
+                                   or TRIBELOG_CHANNEL_ID)):
+            DISCORD_STATUS.update(state="off", why="no bot token or channel is set")
+            await sleep(30)
+            continue
+        DISCORD_STATUS.update(state="connecting", why="")
+        try:
+            await connect(relay)
+            failures = 0                                 # a clean close: token change
+            await sleep(1)
+            continue
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:                           # noqa: BLE001 - said below
+            why, transient = discord_failure(e)
+            log.error("%s", why)
+        failures += 1
+        delay = min(600, (10 if transient else 120) * 2 ** min(failures - 1, 6))
+        DISCORD_STATUS.update(state="failed", why=why, since=time.time(),
+                              retry_at=time.time() + delay)
+        _say_discord("discord.failed",
+                     "%s Retrying in %ds." % (why, delay) if failures == 1 else
+                     "%s (still failing, retrying every few minutes)" % why,
+                     "error")
+        await sleep(delay)
 
 # The relay that is actually running, so the rest of the process can read what it
 # already knows. It polls every map for ListPlayers once a minute anyway; asking the
@@ -1017,6 +1141,14 @@ def online_snapshot():
 
 
 async def main():
+    """Run the relay until one of its parts fails, then stop all of them and raise.
+
+    Its tasks used to be gathered bare. When one raised, gather handed the exception up
+    and left the others running with nobody holding them - so a manager that restarted
+    the relay would have had two pollers posting every chat line twice. Now a failure
+    in any part cancels the rest before it is reported, which is what makes it safe for
+    the manager to start this again.
+    """
     global LIVE
     relay = Relay()
     LIVE = relay
@@ -1025,11 +1157,17 @@ async def main():
     tasks.append(asyncio.create_task(relay.announce_loop()))
     tasks.append(asyncio.create_task(relay.poll_online()))
     tasks.append(asyncio.create_task(relay.status_server()))
-    if DISCORD_TOKEN and DISCORD_CHANNEL_ID:
-        tasks.append(asyncio.create_task(run_discord(relay)))
-    else:
-        log.info("DISCORD_TOKEN / DISCORD_CHANNEL_ID not set - running map<->map relay only")
-    await asyncio.gather(*tasks)
+    # Always supervised, even with no token yet: discord_forever waits for one, so a
+    # token typed into the settings page is picked up without restarting anything.
+    tasks.append(asyncio.create_task(discord_forever(relay)))
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        for t in tasks:
+            t.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        if LIVE is relay:
+            LIVE = None
 
 if __name__ == "__main__":
     if not CLUSTER_CONFIGURED:
