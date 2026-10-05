@@ -249,3 +249,71 @@ def not_writable_by_server(root, stat=None, uid=SERVER_UID, gid=SERVER_GID):
                             % (path, getattr(st, "st_uid", "?"),
                                getattr(st, "st_gid", "?"), mode & 0o777))
     return problems
+
+
+# Never handed to the server's user, wherever they sit in the tree.
+#   _corrupt-evidence: worlds kept aside after a corruption, for looking at. They are a
+#     record, and nothing the game should be able to write on its way past.
+#   stop-guard.py: Obelisk's own, rewritten on every launch and read-only to the
+#     server by design (see not_writable_by_server). Its folder is skipped whole.
+OWNERSHIP_SKIP_DIRS = ("_corrupt-evidence",)
+OWNERSHIP_SKIP_FILES = ("stop-guard.py",)
+
+
+def fix_ownership(root, uid=SERVER_UID, gid=SERVER_GID, walk=None, lstat=None,
+                  lchown=None):
+    """Hand everything the game writes under the Ark root to the server's user.
+
+    (fixed, failed): fixed is [(path, old_uid, old_gid)], failed is [(path, reason)].
+
+    Recursive, unlike give_to_server, because what goes wrong in practice is not the
+    folders Obelisk makes - those are already handed over - but files somebody else made
+    as root inside them. On 4 October that was shared/Config/GameUserSettings.ini and
+    the instances/*/Saved/clusters links, found by an update's precheck rather than
+    before it.
+
+    Symlinks are changed themselves and never followed, so a link cannot walk this out
+    of the Ark root. Only entries not already uid:gid are touched, so a tree that is
+    right costs a walk and nothing else. Never raises.
+    """
+    walk = walk or os.walk
+    lstat = lstat or os.lstat
+    if lchown is None:
+        lchown = getattr(os, "lchown", None)
+    if lchown is None:
+        return [], []                     # no POSIX ownership here (a dev box)
+    root = str(root).replace("\\", "/").rstrip("/")
+    generated = ark_paths(root)["generated"]
+    fixed, failed = [], []
+
+    def one(path):
+        try:
+            st = lstat(path)
+        except OSError as e:
+            failed.append((path, str(e)))
+            return
+        if (st.st_uid, st.st_gid) == (uid, gid):
+            return
+        try:
+            lchown(path, uid, gid)
+            fixed.append((path, st.st_uid, st.st_gid))
+        except OSError as e:
+            failed.append((path, str(e)))
+
+    try:
+        for dirpath, dirnames, filenames in walk(root, topdown=True, followlinks=False):
+            here = str(dirpath).replace("\\", "/").rstrip("/")
+            if here == root:
+                one(root)
+            # Pruned in place, so the walk never goes inside them.
+            dirnames[:] = [d for d in dirnames
+                           if d not in OWNERSHIP_SKIP_DIRS
+                           and "%s/%s" % (here, d) != generated]
+            for name in dirnames:
+                one("%s/%s" % (here, name))
+            for name in filenames:
+                if name not in OWNERSHIP_SKIP_FILES:
+                    one("%s/%s" % (here, name))
+    except OSError as e:
+        failed.append((root, str(e)))
+    return fixed, failed

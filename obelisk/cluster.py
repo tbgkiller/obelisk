@@ -48,6 +48,50 @@ def compose_path(store):
     return "%s/%s" % (layout.root_of(store), COMPOSE_NAME)
 
 
+# How many fixes get an event of their own before the rest are summarised in one. A
+# tree that was copied in as root can be thousands of files, and a feed of thousands of
+# identical lines hides the one that mattered. Every fix is still its own log line.
+OWNERSHIP_EVENTS = 25
+
+
+def fix_ownership(store, ark_root=None, say=None, fix=None, check=None):
+    """Give every game-writable path to the server's user before an apply. (ok, why).
+
+    ok is False only when, after fixing what it could, something the server must write
+    is still not writable - the same test launch() refuses on. Asked before the stop,
+    because finding it at the launch that follows the stop is how a cluster ends up
+    down with a refusal nobody was there to read.
+
+    Each fix is said: an event per path, up to OWNERSHIP_EVENTS, then one summary with
+    the full list in its detail.
+    """
+    from . import announce
+    say = say or announce.say
+    root = ark_root or layout.ark_root_of(store)
+    fixed, failed = (fix or layout.fix_ownership)(root)
+    for path, uid, gid in fixed:
+        log.info("ownership: %s was %s:%s, now %d:%d",
+                 path, uid, gid, layout.SERVER_UID, layout.SERVER_GID)
+    for path, uid, gid in fixed[:OWNERSHIP_EVENTS]:
+        say("ownership.fixed", "Gave %s to the game server (was owned by %s:%s)."
+            % (path, uid, gid), path=path)
+    if len(fixed) > OWNERSHIP_EVENTS:
+        rest = fixed[OWNERSHIP_EVENTS:]
+        say("ownership.fixed", "Gave %d more path(s) to the game server (uid %d)."
+            % (len(rest), layout.SERVER_UID),
+            detail="\n".join("%s (was %s:%s)" % r for r in rest)[:20000])
+    if failed:
+        say("ownership.failed",
+            "Could not give %d path(s) to the game server: %s"
+            % (len(failed), "; ".join("%s (%s)" % f for f in failed[:3])),
+            level="warning", detail="\n".join("%s: %s" % f for f in failed)[:20000])
+    blocked = (check or layout.not_writable_by_server)(root)
+    if blocked:
+        return False, ("the game server (user %d) still cannot write to: %s"
+                       % (layout.SERVER_UID, "; ".join(blocked[:4])))
+    return True, ("%d path(s) fixed" % len(fixed)) if fixed else "already right"
+
+
 def prepare(store, run=None):
     """Create the data root layout for the selected maps. Safe to repeat."""
     keys = _map_keys(store)

@@ -597,6 +597,70 @@ check("and the files were swapped too",
 _ev = [i["event"] for i in drain()]
 check("announced as one apply", _ev.count("ark.apply_start") == 1, _ev)
 
+# ---- ownership is fixed before anything stops, and refuses while the cluster is up
+#
+# 4 October: root-owned files in folders the server writes were found by the update's
+# precheck. A launch refuses on them - and in an apply the launch comes after the stop,
+# so finding them there leaves the cluster down.
+drain()
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+c = Cluster()
+_, rename = moved_nothing()
+
+
+def _fix_ok():
+    c.log.append("own")
+    return True, "3 path(s) fixed"
+
+
+ok, msg, _d = updates.apply_batch(
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000,
+    fix_ownership=_fix_ok)
+check("ownership is fixed before the cluster is stopped",
+      ok and c.log[:2] == ["own", "stop"], (ok, msg, c.log))
+
+drain()
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+c = Cluster()
+_calls, rename = moved_nothing()
+ok, msg, _d = updates.apply_batch(
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000,
+    fix_ownership=lambda: (False, "the game server (user 7777) still cannot write "
+                                  "to: /ark/shared (owned by 0:0, mode 755)"))
+_ref = [i for i in drain() if i["event"] == "ark.apply_refused"]
+check("a path that still cannot be written refuses the apply",
+      not ok and "/ark/shared" in msg, msg)
+check("before anything was stopped", c.log == [] and _calls == [], (c.log, _calls))
+check("and the refusal is announced, saying nothing was stopped",
+      _ref and "Nothing was stopped" in _ref[0]["text"], _ref)
+check("the setting is still queued", _pend.count(st) == 1, _pend.count(st))
+
+drain()
+st = real_store()
+_pend.stage(st, {"max_players": 250})
+c = Cluster()
+_, rename = moved_nothing()
+
+
+def _fix_boom():
+    raise OSError("walk failed")
+
+
+ok, msg, _d = updates.apply_batch(
+    st, ARK, installed=OLD_BUILD, warn=c.warn, stop_all=c.stop, start_all=c.start,
+    verify=c.verify, players=lambda: (0, {}, []), rename=rename,
+    staged_build=STAGED_BUILD, exists=tree_exists(), now=lambda: 1000,
+    fix_ownership=_fix_boom)
+check("an ownership check that crashes refuses rather than stopping blind",
+      not ok and "walk failed" in msg and c.log == [], (msg, c.log))
+drain()
+
 # ---- config only, with nothing staged
 drain()
 st = real_store()

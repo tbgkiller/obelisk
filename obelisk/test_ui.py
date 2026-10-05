@@ -1330,6 +1330,7 @@ check("and keeps its singular nouns",
 # cluster", so they landed on Starting: an apply putting everything back rendered
 # exactly like one that was succeeding.
 _APPLY_STEPS = [
+    ("fixing file ownership", "Warning players"),
     ("warning players (30 minutes)", "Warning players"),
     ("nobody is on, so the 30-minute warning is skipped", "Warning players"),
     ("stopping the cluster and the staging server", "Stopping"),
