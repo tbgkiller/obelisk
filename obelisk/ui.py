@@ -889,7 +889,10 @@ PRIME_PHASES = [
 APPLY_PHASES = [
     # The skip line is here too: an empty cluster is not warned, and a step that matches
     # nothing scores -1 and greys the whole bar.
-    ("Warning players", ("warning players", "warning is skipped")),
+    # The ownership fix runs just before the warning and takes seconds, so it shares
+    # the opening phase rather than adding one the bar would barely show.
+    ("Warning players", ("warning players", "warning is skipped",
+                         "fixing file ownership")),
     # There was a "Saving" phase here, matched on "saving every world". The apply does
     # not send a save any more - each map writes its own on the way out when it is asked
     # to exit - so nothing emits that phrase, and a phase nothing ever emits leaves the

@@ -318,6 +318,9 @@ ICONS = {
     "apply_refused": "⚠", "prime_refused": "⚠",
     # Maps still starting, one message edited in place until they all serve.
     "boot": "…",
+    # A path handed to the game server's user before an apply. Quiet: it is a repair
+    # that worked, and the apply carries on.
+    "fixed": "•",
 }
 
 

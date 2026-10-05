@@ -644,7 +644,7 @@ def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
                 verify=None, players=None, on_step=None, force=False,
                 check_worlds=None, start_some=None, stop_staging=None,
                 rename=None, exists=None, now=None, installed=None,
-                staged_build=None):
+                staged_build=None, fix_ownership=None):
     """Apply everything that is waiting, in one restart. (ok, message, detail).
 
     Two kinds of thing wait for a safe moment - a build that has been staged and proved,
@@ -745,6 +745,20 @@ def apply_batch(store, ark_root, warn=None, stop_all=None, start_all=None,
                 counts.items(), key=lambda kv: -kv[1]) if n)
             return refuse(("%d player(s) are online: %s. Apply with force, or let the "
                            "scheduled window do it." % (total, busiest)))
+
+    # Ownership, before anything stops. A root-owned file in a folder the server writes
+    # does not stop the apply - it stops the launch at the end of it, with every map
+    # already down. So it is fixed here, each fix said, and anything that still cannot
+    # be written refuses now, while the cluster is still up.
+    if fix_ownership:
+        step("fixing file ownership")
+        try:
+            owned, why_owned = fix_ownership()
+        except Exception as e:                      # noqa: BLE001 - said below
+            owned, why_owned = False, "the ownership check failed: %s" % e
+        if not owned:
+            return refuse("%s. Nothing was stopped. Fix the ownership and apply again."
+                          % why_owned)
 
     build = (ready or {}).get("build")
     what = []

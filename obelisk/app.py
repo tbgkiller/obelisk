@@ -914,6 +914,7 @@ def build_app(store, docker=None):
             check_worlds=lambda: clusterctl.worlds_intact(store, _ark_root()),
             start_some=_start_some,
             players=lambda: clusterctl.players_online(store), force=force,
+            fix_ownership=lambda: clusterctl.fix_ownership(store),
             on_step=_note_update)
         # Inside _apply_task's `async with cluster_busy`, the same as the scheduled
         # path: the restore runs after the apply has finished and before the lock lets
@@ -4176,6 +4177,7 @@ def _scheduled_apply(store, force=False):
         # The only thing that brings a map up, here too.
         start_all=lambda: clusterctl.launch(store), verify=verify_all,
         players=lambda: clusterctl.players_online(store),
+        fix_ownership=lambda: clusterctl.fix_ownership(store),
         on_step=lambda text: log.info("update: %s", text))
     # Still inside the caller's lock - the window and the empty watch both hold it
     # around this call - so a damaged world the gate just held down is restored before
