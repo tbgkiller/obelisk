@@ -7,6 +7,18 @@ on:
       - "obelisk/**"
       - "docker/**"
       - '.github/workflows/publish.yml'
+  # The suite on every pull request, on GitHub's own Ubuntu runners, before anything
+  # reaches main. Main is what the live cluster updates itself from, so a PR that was
+  # only ever tested on a Windows desktop was being tested for the first time in
+  # production - and four suites (file modes, fork, symlinks) cannot run there at all.
+  # Tests only: the build job below is gated off for pull requests, so a PR never
+  # publishes an image, and a fork's PR gets no secrets and no write token.
+  pull_request:
+    branches: [main]
+    paths:
+      - "obelisk/**"
+      - "docker/**"
+      - '.github/workflows/publish.yml'
   workflow_dispatch:
 
 jobs:
@@ -15,6 +27,8 @@ jobs:
   # so a red commit shipped exactly as fast as a green one.
   test:
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -33,6 +47,10 @@ jobs:
 
   build:
     needs: test
+    # Never from a pull request. Publishing is what deploys: the image tagged latest is
+    # the one the cluster pulls, so only a push to main (or a deliberate manual run) may
+    # build and push it.
+    if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     permissions:
       contents: read
