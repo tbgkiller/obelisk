@@ -654,7 +654,7 @@ def render_version(info):
 
 
 def render_ark_update(store, status, ready=None, job=None, owns=True,
-                      staging_on=True, target="", applicable=None):
+                      staging_on=True, target="", applicable=None, state=None):
     """Running against latest, for the build and for every mod, with the buttons inline.
 
     Three states per row and not two. "Newer" and "current" are the easy ones; the third
@@ -708,9 +708,28 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
                 'Not checked yet. Obelisk asks Steam and CurseForge shortly after it '
                 'starts, and every half hour after that.</div></fieldset>')
 
+    # The engine's own reading of what is staged against what is available - the same
+    # one the staging loop decides on and the channel is told from. It used to be read
+    # by nobody here, so a build staged, booted and proved still drew as a bare
+    # "update available" with Prime offered beside it.
+    from . import updates as updatesctl
+    if state is None:
+        state = updatesctl.update_state(store, status)
+    worth, why_not = (applicable if applicable is not None
+                      else updatesctl.staged_worth_applying(store))
+
     build = status.get("build") or {}
-    rows = ['<tr><td><b>ARK server build</b></td><td>%s</td></tr>'
-            % cell(build.get("running"), build.get("latest"), build.get("newer"))]
+    if build.get("newer") and state.get("build_staged"):
+        # Staged is green - it has been downloaded and proved, which is the good news
+        # this panel exists to deliver. "Ready to apply" only when the Apply button
+        # below agrees; otherwise its own sentence says why not.
+        build_cell = ('<code>%s</code> → <code>%s</code> <span class=current>staged ✓%s'
+                      '</span>' % (_e(build.get("running") or "—"),
+                                   _e(build.get("latest")),
+                                   " — ready to apply" if (worth and owns) else ""))
+    else:
+        build_cell = cell(build.get("running"), build.get("latest"), build.get("newer"))
+    rows = ['<tr><td><b>ARK server build</b></td><td>%s</td></tr>' % build_cell]
     if build.get("problem"):
         rows.append('<tr><td></td><td class=help>%s</td></tr>' % _e(build["problem"]))
 
@@ -785,9 +804,6 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
         # pressing it stops ten servers to install what they are already on. The page
         # asks the engine's own question instead, so the button is disabled exactly
         # when the apply would refuse, and says the reason the apply would have given.
-        from . import updates as updatesctl
-        worth, why_not = (applicable if applicable is not None
-                          else updatesctl.staged_worth_applying(store))
         # `and owns` because the two inputs arrive separately and could contradict
         # each other. staged_worth_applying refuses on POK ownership itself, so for
         # every caller that exists this changes nothing - but the panel is handed
@@ -796,12 +812,22 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
         # where the server image is the one applying builds. The stricter of the two
         # wins; an enabled button is the thing that has to be earned twice.
         can_apply = bool(worth) and owns
-        buttons = job_result(job) + (
-            '<button type=submit formaction="/admin/update/prime"%s>Prime update</button> '
+        # Prime is offered when it would rehearse something new: a newer build or mod
+        # file, or a staged copy that failed. Not when the staged tree already holds
+        # exactly what is available - "why would it let me prime it if it's already
+        # primed?" was the right question. The way to rehearse it again anyway is
+        # folded away below, behind a confirm.
+        offered = state.get("prime_offered", True)
+        prime = ('<button type=submit formaction="/admin/update/prime"%s>Prime update'
+                 '</button> ' % ("" if staging_on else " disabled")) if (
+                     offered or not staging_on) else ""
+        buttons = job_result(job) + prime + (
             '<button type=submit formaction="/admin/update/apply"%s>Apply now</button> '
-            % ("" if staging_on else " disabled", "" if can_apply else " disabled"))
+            % ("" if can_apply else " disabled"))
         buttons += ('<label class=inline><input type=checkbox name=force value=1> '
                     'apply even with players online</label>')
+        if staging_on and not offered:
+            buttons += render_reprime(state)
         if ready and not worth and owns:
             # Only when something IS staged. With nothing staged the panel already
             # says so above, and a second sentence explaining why the button for it is
@@ -866,6 +892,27 @@ def render_ark_update(store, status, ready=None, job=None, owns=True,
             '<table class=versions>%s</table>%s'
             '<div style="margin-top:14px">%s</div></fieldset></form>'
             % (warn, "".join(rows), staged, buttons))
+
+
+def render_reprime(state):
+    """The way to rehearse an already-staged build again, folded away and confirmed.
+
+    Rarely right - the staged tree is proved - but not never: a staging boot that looks
+    wrong in hindsight is worth re-running. The server refuses it without `reprime`, so
+    the confirm is not the only lock.
+    """
+    ready = (state or {}).get("ready") or {}
+    when = time.strftime("%d %b %H:%M", time.localtime(ready.get("when") or 0))
+    return ('<details class=help style="margin-top:8px"><summary>Prime is not needed '
+            '&mdash; %s</summary><div>Build <code>%s</code> and the current mods were '
+            'verified by a staging boot at %s. Priming again downloads and boots the '
+            'same thing on the staging server; the cluster keeps running. '
+            '<button class=ghost type=submit formaction="/admin/update/prime" '
+            'name=reprime value=1 onclick="return confirm(&#39;The staged build is '
+            'already verified. Rehearse it again on the staging server anyway?&#39;)">'
+            'Re-prime anyway</button></div></details>'
+            % (_e((state or {}).get("prime_why") or "already staged"),
+               _e(ready.get("build") or "?"), _e(when)))
 
 
 # The phases a prime actually goes through, in order, with the words the flow already

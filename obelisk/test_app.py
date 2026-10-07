@@ -7846,6 +7846,87 @@ else:
     os.environ["OBELISK_ARK"] = _2pwas
 
 
+# ---- a staged build reads as staged on the real page, and Prime refuses to repeat it
+#
+# 7 October: build 25763660 staged and verified, the channel saying so, and the page
+# drawing it as "update available" beside an enabled Prime. The page and the channel
+# now read the same record, and the route holds when something posts anyway.
+_spdir = tempfile.mkdtemp()
+_spwas = os.environ.get("OBELISK_ARK")
+os.environ["OBELISK_ARK"] = os.path.join(_spdir, "ark")
+_spsf = os.path.join(_spdir, "ark", "ServerFiles")
+os.makedirs(_spsf, exist_ok=True)
+io.open(os.path.join(_spsf, "appmanifest_2430930.acf"), "w", encoding="utf-8").write(
+    '"AppState"\n{\n\t"appid"\t\t"2430930"\n\t"buildid"\t\t"25683903"\n}\n')
+_spstore, _spc, _spcode = bootstrap(os.path.join(_spdir, "obelisk"), environ={})
+_spstore.patch({"admin_password": "pw", "cluster_id": "stagedprime", "maps": "island",
+                "ark_update_mode": "obelisk", "staging_mode": "always"})
+
+
+async def _staged_prime():
+    from . import updates as _usp
+    _appmod.ARK_UPDATE.clear()
+    _appmod.ARK_UPDATE.update({
+        "build": {"running": "25683903", "latest": "25763660", "newer": True,
+                  "problem": ""},
+        "mods": [], "mods_newer": [], "any_newer": True, "unknown": False})
+    _usp.remember(_spstore, primed={
+        "ok": True, "build": "25763660", "loaded": {}, "when": 1759848420,
+        "target": _usp.target_key(_appmod.ARK_UPDATE)})
+    primes = []
+    _real_prime = _appmod.updatesctl.prime
+
+    def _fake_prime(*a, **kw):
+        primes.append(kw)
+        return True, "primed", {}
+
+    _appmod.updatesctl.prime = _fake_prime
+    while _ann.pop_all(limit=100):
+        pass
+    client = TestClient(TestServer(build_app(_spstore, docker=DOCKER_UP)))
+    await client.start_server()
+    try:
+        client.session.cookie_jar.update_cookies(
+            {COOKIE: str(_spstore.get("admin_token"))})
+        body = await (await client.get("/admin/cluster")).text()
+        _row = _window(body, "ARK server build", 300)
+        check("the page draws a staged build as staged, ready to apply",
+              "staged ✓ — ready to apply" in _row, _row)
+        check("not as an update available", "update available" not in _row, _row)
+        check("and does not offer Prime for it", "Prime update</button>" not in body,
+              _window(body, "Apply now", 400))
+
+        r = await client.post("/admin/update/prime", allow_redirects=False)
+        await asyncio.sleep(0.05)
+        _said = [i for i in _ann.pop_all(limit=100) if i["event"] == "ark.prime_refused"]
+        check("a Prime posted anyway is refused", r.status == 302 and primes == [],
+              (r.status, primes))
+        check("and says why, in the staging loop's own words",
+              _said and _usp.STAGED_ALREADY in _said[0]["text"], _said)
+        body = await (await client.get("/admin/cluster")).text()
+        check("the refusal is on the page where the button was",
+              "Prime did not start" in body, _window(body, "Prime did not start", 300))
+
+        r = await client.post("/admin/update/prime", data={"reprime": "1"},
+                              allow_redirects=False)
+        for _ in range(20):
+            if primes:
+                break
+            await asyncio.sleep(0.05)
+        check("re-priming asked for by name still works", len(primes) == 1, primes)
+    finally:
+        await client.close()
+        _appmod.updatesctl.prime = _real_prime
+        _appmod.ARK_UPDATE.clear()
+
+
+asyncio.run(_staged_prime())
+if _spwas is None:
+    os.environ.pop("OBELISK_ARK", None)
+else:
+    os.environ["OBELISK_ARK"] = _spwas
+
+
 # ---- an announcement from something that is not this process
 #
 # The gap this closes: announce.say() puts the Discord half on an in-process queue, so
