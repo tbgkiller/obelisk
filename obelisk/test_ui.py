@@ -1129,6 +1129,102 @@ check("while something is running the buttons are replaced by what it is doing",
       "downloading" in _busyp and "Prime update</button>" not in _busyp)
 
 
+# ---- a build that is staged reads as staged, and Prime is not offered for it again
+#
+# 7 October: build 25763660 was staged and verified - the channel said so, and the
+# staging loop logged "not staging: the staged tree already holds this, verified" -
+# while this panel drew "25683903 -> 25763660 update available" in amber with an
+# enabled Prime button. "Why would it allow me to prime it? If it's already primed?"
+_full = {
+    "build": {"running": "25683903", "latest": "25763660", "newer": True, "problem": ""},
+    "mods": [{"id": "929110", "name": "TG Stacking", "running": "7738786",
+              "latest": "7738786", "newer": False, "url": "", "problem": ""}],
+    "mods_newer": [], "any_newer": True, "unknown": False,
+}
+_key = _upd.target_key(_full)
+_held = {"ok": True, "build": "25763660", "when": 1759848420, "target": _key,
+         "loaded": {"929110": "7738786"}, "mods": ["929110"]}
+
+
+def _staged_store(primed_record):
+    st = _PanelStore()
+    st.data["ark_update"] = {"primed": primed_record}
+    return st
+
+
+_hs = _staged_store(_held)
+_hstate = _upd.update_state(_hs, _full)
+check("the engine reads the staged tree as holding what is available",
+      _hstate["build_staged"] and _hstate["holds_target"]
+      and not _hstate["prime_offered"], _hstate)
+check("in the same words the staging loop logs, from the same function",
+      _hstate["prime_why"] == _upd.STAGED_ALREADY
+      and _upd.needs_prime(_hs, _full) == (False, _upd.STAGED_ALREADY),
+      (_hstate["prime_why"], _upd.needs_prime(_hs, _full)))
+
+_ph = ui.render_ark_update(_hs, _full, ready=_held, target=_key,
+                           applicable=(True, "build 25763660 is staged and verified"))
+_brow = _ph[_ph.find("ARK server build"):][:300]
+check("the build row says staged and ready to apply, in green",
+      "class=current>staged ✓ — ready to apply" in _brow, _ascii(_brow))
+check("and not 'update available' for a build that is already staged",
+      "update available" not in _brow, _ascii(_brow))
+check("Prime is not offered when the staged tree already holds it",
+      "Prime update</button>" not in _ph, _ascii(_ph[-900:]))
+check("Apply still is", "disabled>Apply now" not in _ph and ">Apply now<" in _ph)
+check("the way to rehearse it again is folded under details, with a confirm",
+      "<details" in _ph and "name=reprime" in _ph and "confirm(" in _ph,
+      _ascii(_ph[-900:]))
+check("and the details say why Prime is not needed",
+      _upd.STAGED_ALREADY in _ph, _ascii(_ph[-900:]))
+
+# Staged, but Apply is off (POK owns updates): staged, without "ready to apply".
+_pok_ph = ui.render_ark_update(_hs, _full, ready=_held, target=_key, owns=False,
+                               applicable=(False, "POK applies updates"))
+_pok_row = _pok_ph[_pok_ph.find("ARK server build"):][:300]
+check("staged but not applicable says staged, and does not claim ready to apply",
+      "staged ✓" in _pok_row and "ready to apply" not in _pok_row, _ascii(_pok_row))
+
+# A mod has published since the staging: the build is still staged, but there is
+# something new to rehearse, so Prime comes back.
+_newer_mod = dict(_full, mods=[dict(_full["mods"][0], latest="7800000", newer=True)])
+_nm_state = _upd.update_state(_hs, _newer_mod)
+_pnm = ui.render_ark_update(_hs, _newer_mod, ready=_held,
+                            target=_upd.target_key(_newer_mod),
+                            applicable=(True, "staged"))
+check("a newer mod brings Prime back",
+      _nm_state["prime_offered"] and "Prime update</button>" in _pnm
+      and "name=reprime" not in _pnm, _nm_state)
+check("while the build row still says the build is staged",
+      "staged ✓" in _pnm[_pnm.find("ARK server build"):][:300])
+
+# A newer build than the staged one: update available again, Prime offered.
+_newer_build = dict(_full, build=dict(_full["build"], latest="25800000"))
+_pnb = ui.render_ark_update(_hs, _newer_build, ready=_held,
+                            target=_upd.target_key(_newer_build),
+                            applicable=(True, "staged"))
+_nb_row = _pnb[_pnb.find("ARK server build"):][:300]
+check("a build newer than the staged one reads as update available",
+      "update available" in _nb_row and "staged ✓" not in _nb_row, _ascii(_nb_row))
+check("and Prime is offered for it", "Prime update</button>" in _pnb)
+
+# Nothing staged: exactly as before.
+_none = _PanelStore()
+_pn = ui.render_ark_update(_none, _full)
+check("with nothing staged the build row is update available and Prime is offered",
+      "update available" in _pn[_pn.find("ARK server build"):][:300]
+      and "Prime update</button>" in _pn and "name=reprime" not in _pn)
+
+# The staged copy failed verification: primed() is None, so nothing is held.
+_failed_store = _staged_store(dict(_held, ok=False, problems=["mod never loaded"]))
+_fs = _upd.update_state(_failed_store, _full)
+_pf = ui.render_ark_update(_failed_store, _full)
+check("a staged copy that failed verification brings Prime back",
+      _fs["prime_offered"] and not _fs["build_staged"]
+      and "Prime update</button>" in _pf, _fs)
+check("and is not drawn as staged", "staged ✓" not in _pf)
+
+
 # ---- who owns updates decides UPDATE_SERVER, and that is the whole coordination story
 from obelisk.compose import generate_compose
 from obelisk.schema import BY_KEY as _BYKEY

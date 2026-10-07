@@ -280,6 +280,45 @@ def staged_target(store):
     return str((ready or {}).get("target") or "")
 
 
+# needs_prime's answer when there is nothing to stage, and the page's reason for not
+# offering Prime. One constant, so the log line and the button cannot drift apart.
+STAGED_ALREADY = "the staged tree already holds this, verified"
+
+
+def update_state(store, status):
+    """What the staged tree means against what is available. One reading for every reader.
+
+    The Cluster page, the staging loop's decision (and so the Discord messages it
+    produces), and the Prime button all ask this, because on 7 October they gave three
+    answers. The channel said build 25763660 was staged and proved, the loop logged
+    "not staging: the staged tree already holds this, verified" - and the page drew the
+    build row as "25683903 -> 25763660 update available" in amber with an enabled Prime
+    button beside it. The page was reading the Steam check alone and never asked what
+    had been staged.
+
+    Returns:
+      build_staged  the available build is the one on the staged, verified tree
+      holds_target  the staged tree holds the available build AND every mod's current
+                    file - there is nothing new to rehearse
+      prime_offered whether priming would do anything new
+      prime_why     why not, in the words the staging loop logs
+    """
+    status = status or {}
+    ready = primed(store)
+    latest = str((status.get("build") or {}).get("latest") or "")
+    key = target_key(status)
+    holds = bool(key) and staged_target(store) == key
+    build_staged = bool(ready and latest and str(ready.get("build") or "") == latest)
+    if not staging.enabled(store):
+        offered, why = False, "the staging server is off"
+    elif holds:
+        offered, why = False, STAGED_ALREADY
+    else:
+        offered, why = True, ""
+    return {"ready": ready, "build_staged": build_staged, "holds_target": holds,
+            "prime_offered": offered, "prime_why": why}
+
+
 def needs_prime(store, status, now=None):
     """(should we stage this now, why).
 
@@ -294,8 +333,8 @@ def needs_prime(store, status, now=None):
     if not key:
         return False, ("not everything could be checked, so there is no telling what "
                        "to stage")
-    if staged_target(store) == key:
-        return False, "the staged tree already holds this, verified"
+    if update_state(store, status)["holds_target"]:
+        return False, STAGED_ALREADY
 
     # on_demand exists to cost nothing until there is something to do, so it waits for
     # an actual update. `always` is running anyway and its whole point is to be ahead,

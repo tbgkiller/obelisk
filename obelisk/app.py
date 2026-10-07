@@ -837,6 +837,24 @@ def build_app(store, docker=None):
         if ujob["state"] == "running" or cluster_busy.locked():
             _say_busy("Prime")
             raise web.HTTPFound("/admin/cluster")
+        form = await request.post()
+        # The button is hidden when the staged tree already holds what is available;
+        # this is what holds when something posts anyway. Rehearsing it again has to
+        # be asked for by name, through the confirm under the panel's details.
+        st = updatesctl.update_state(store, ARK_UPDATE)
+        if (stagingctl.enabled(store) and not st["prime_offered"]
+                and not form.get("reprime")):
+            msg = ("Prime did not start: %s (build %s). Use \"Re-prime anyway\" under "
+                   "the update panel if you mean to rehearse it again."
+                   % (st["prime_why"], (st.get("ready") or {}).get("build") or "?"))
+            announce.say("ark.prime_refused", msg, level="warning")
+            ujob.update(state="done", ok=False, message=msg, step="done", what="prime",
+                        finished=time.time(), refused=True)
+            raise web.HTTPFound("/admin/cluster")
+        if form.get("reprime"):
+            announce.say("ark.prime_start",
+                         "Re-priming on request: the staged build is already verified, "
+                         "and is being rehearsed again on the staging server.")
         ujob.update(state="running", ok=None, message="", step="starting",
                     what="prime", started=time.time())
         asyncio.create_task(_prime_task())
