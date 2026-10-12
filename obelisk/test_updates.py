@@ -1097,7 +1097,6 @@ check("the announcement says the settings were put back",
 # the cheap mistake is putting one of them back under another name.
 import inspect as _inspect
 import io as _io
-import os as _os
 
 check("apply_batch takes no save at all",
       "save" not in _inspect.signature(updates.apply_batch).parameters,

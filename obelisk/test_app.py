@@ -732,7 +732,6 @@ import io as _io
 # It announced "Chat relay is up and reaching all 1 maps" - true, and it read like a bug
 # because it was one: the relay had wired at boot to the only map running during a
 # staggered restart, and never looked again.
-from . import announce as _ann
 from . import app as _app
 
 
@@ -6110,12 +6109,12 @@ try:
                                     allow_redirects=False)
             after_add = _copy38.deepcopy(_lstore.data)
 
-            up = await client.post("/admin/maps", data={"up": "center"},
-                                   allow_redirects=False)
+            await client.post("/admin/maps", data={"up": "center"},
+                              allow_redirects=False)
             after_up = str(_lstore.get("maps") or "")
 
-            drop = await client.post("/admin/maps", data={"drop": "ragnarok"},
-                                     allow_redirects=False)
+            await client.post("/admin/maps", data={"drop": "ragnarok"},
+                              allow_redirects=False)
             after_drop = _copy38.deepcopy(_lstore.data)
 
             dup = await client.post("/admin/maps", data={"add": "island"},

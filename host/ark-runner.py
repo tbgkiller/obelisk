@@ -452,7 +452,7 @@ def main():
         try:
             with open(path) as fh:
                 cmd = json.load(fh)
-        except Exception as e:
+        except Exception:
             cmd = None
         try:
             os.unlink(path)           # one attempt per command, always

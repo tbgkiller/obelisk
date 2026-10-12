@@ -302,6 +302,8 @@ ICONS = {
     "staged": "•", "discarded": "•", "window_open": "•",
     # An empty-cluster apply that did not go through, and when it will be tried again.
     "empty_apply_failed": "❌",
+    # A background loop that had been failing the same way is working again.
+    "recovered": "✅",
     "key_set": "•", "key_cleared": "•",
     # Learning or forgetting how to spell a map. Quiet on purpose: neither starts,
     # stops or deletes anything - the cluster runs exactly what it ran before.

@@ -89,7 +89,7 @@ check("no-op change reports nothing", st.patch({"max_players": 200}) == set())
 try:
     st.patch({"max_players": 20, "mod_ids": "bad"})
     check("a bad value blocks the whole patch", False)
-except Invalid as e:
+except Invalid:
     check("a bad value blocks the whole patch", True)
 check("patch was atomic - good value not applied", st.get("max_players") == 200)
 

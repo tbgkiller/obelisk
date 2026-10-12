@@ -27,6 +27,7 @@ from . import curseforge as cfctl
 from . import staging as stagingctl
 from . import updates as updatesctl
 from . import arkupdate
+from . import loopguard
 from . import bans as bansctl
 from . import cap as capctl
 from . import console as consolelib
@@ -557,6 +558,9 @@ def build_app(store, docker=None):
             banner = refusal
         elif message:
             banner = '<div class=note>%s</div>' % ui._e(message)
+        # A background loop failing the same way over and over, said at the top in red
+        # rather than left in a log. 11 October was one of these for a whole day.
+        banner = ui.render_loop_failures(loopguard.failing()) + banner
         # Both buttons on this page start every map, including one the gate is holding
         # down - onto the world it just refused. Only warned about while the map is
         # actually still down, so it clears itself once somebody has dealt with it.
@@ -2941,7 +2945,9 @@ async def backup_scheduler(store, interval=60):
     remembered "last run", so a restart cannot make it forget a night, and cannot make
     it fire twice for the same slot.
     """
+    guard = loopguard.Guard("backup_scheduler", "Scheduled backups")
     while True:
+        guard.tick()
         try:
             due, why = backupctl.due(store)
             if due:
@@ -2976,6 +2982,7 @@ async def backup_scheduler(store, interval=60):
                         announce.say("backup.offsite_failed", text, level="error")
         except Exception as e:                    # a bad night must not kill the loop
             log.error("scheduled backup failed: %s", e)
+            await guard.failed(e)
         await asyncio.sleep(interval)
 
 
@@ -2987,7 +2994,9 @@ async def version_watch():
     while an update sits unapplied. Obelisk asks for itself and says so in the UI. It
     never applies anything - that is the Docker page's job.
     """
+    guard = loopguard.Guard("version_watch", "The Obelisk version check")
     while True:
+        guard.tick()
         try:
             info = await asyncio.to_thread(versionctl.status)
             VERSION_INFO.update(info)
@@ -2999,6 +3008,7 @@ async def version_watch():
                              running=versionctl.short(info.get("commit"), 7))
         except Exception as e:                           # noqa: BLE001 - never fatal
             log.info("version check skipped: %s", e)
+            await guard.failed(e)
         await asyncio.sleep(6 * 3600)
 
 
@@ -3032,8 +3042,10 @@ async def empty_watch(store, interval=60, needed=3, sleep=asyncio.sleep, now=tim
     # to the log, the streak reset, three more empty minutes went by, and it said it
     # again - 200 times in the feed and in Discord, with nothing ever applied.
     failures, hold_until, failed_on = 0, 0.0, None
+    guard = loopguard.Guard("empty_watch", "Applying when the cluster is empty", sleep=sleep)
     while True:
         await sleep(interval)
+        guard.tick()
         try:
             # Is there anything to apply at all? Asked first because it is free and
             # because the answer was wrong: a primed record for the build already
@@ -3121,6 +3133,7 @@ async def empty_watch(store, interval=60, needed=3, sleep=asyncio.sleep, now=tim
                          "The empty-cluster check failed: %s: %s. Not trying again for "
                          "%d minute(s)." % (e.__class__.__name__, e, wait // 60),
                          level="error", failures=failures)
+            await guard.failed(e)
 
 
 async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
@@ -3149,15 +3162,18 @@ async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
     from . import savepoints
     seen_bad = set()                              # worlds that would not read
     seen_unchecked = set()                        # maps that could not be looked at
+    guard = loopguard.Guard("world_watch", "The world sweep")
     while True:
         if sleep_first:
             await asyncio.sleep(interval)
         sleep_first = True
+        guard.tick()
         try:
             keys = clusterctl._map_keys(store)
         except Exception as e:                    # noqa: BLE001 - never fatal
             log.info("world sweep skipped: %s", e)
             keys = []
+            await guard.failed(e)
         for key in keys:
             # One map at a time. This used to be one try around the whole loop, so the
             # first map that raised ended the sweep for every map after it - and the
@@ -3344,10 +3360,12 @@ async def loop_watch(store, interval=120, status=None, sleep_first=True):
     authority.
     """
     looping = set()
+    guard = loopguard.Guard("loop_watch", "The restart-loop watch")
     while True:
         if sleep_first:
             await asyncio.sleep(interval)
         sleep_first = True
+        guard.tick()
         try:
             st = (status or clusterctl.status)(store)
             services = st.get("services") or []
@@ -3368,6 +3386,7 @@ async def loop_watch(store, interval=120, status=None, sleep_first=True):
             looping = now
         except Exception as e:                    # noqa: BLE001 - never fatal
             log.info("restart-loop watch skipped: %s", e)
+            await guard.failed(e)
 
 
 
@@ -3669,7 +3688,7 @@ def _hold_if_damaged(store, label, key, world=None, now=None):
     return True
 
 
-async def crash_watch(store, interval=120, sleep_first=True, **kw):
+async def crash_watch(store, interval=120, sleep_first=True, sleep=asyncio.sleep, **kw):
     """Bring back a map that is down when Obelisk meant it to be up.
 
     Two consecutive looks before anything moves, which is the same discipline the world
@@ -3681,10 +3700,12 @@ async def crash_watch(store, interval=120, sleep_first=True, **kw):
     # Which outside-stop grace periods have already been announced, across passes - one
     # line per stop, not one every two minutes for twenty.
     graced = set()
+    guard = loopguard.Guard("crash_watch", "The crash watch", sleep=sleep)
     while True:
         if sleep_first:
-            await asyncio.sleep(interval)
+            await sleep(interval)
         sleep_first = True
+        guard.tick()
         try:
             out = await asyncio.to_thread(
                 lambda: crash_pass(store, seen_down=set(seen_down), told=graced, **kw))
@@ -3702,6 +3723,7 @@ async def crash_watch(store, interval=120, sleep_first=True, **kw):
             told = why
         except Exception as e:                       # noqa: BLE001 - never fatal
             log.info("crash watch skipped: %s", e)
+            await guard.failed(e)
 
 
 async def relay_watch(store, bot, interval=120):
@@ -3718,8 +3740,10 @@ async def relay_watch(store, bot, interval=120):
     the same measurement, on a loop. A cluster that comes up in pieces heals to full
     coverage on its own.
     """
+    guard = loopguard.Guard("relay_watch", "The chat relay coverage check")
     while True:
         await asyncio.sleep(interval)
+        guard.tick()
         try:
             before = set(bot.SERVERS or {})
             if not _wire_relay(store, bot):
@@ -3740,6 +3764,7 @@ async def relay_watch(store, bot, interval=120):
             _say_coverage(len(good), len(after), bad)
         except Exception as e:                          # noqa: BLE001 - never fatal
             log.info("relay coverage check skipped: %s", e)
+            await guard.failed(e)
 
 
 def _say_coverage(reachable, total, bad):
@@ -3776,8 +3801,10 @@ async def events_persist(store, interval=5):
     """
     path = layout.obelisk_paths(layout.root_of(store))["events"]
     last = announce.revision()
+    guard = loopguard.Guard("events_persist", "Saving the activity feed")
     while True:
         await asyncio.sleep(interval)
+        guard.tick()
         try:
             now = announce.revision()
             if now != last:
@@ -3788,9 +3815,10 @@ async def events_persist(store, interval=5):
                     log.warning("could not write the activity feed: %s", why)
         except Exception as e:                          # noqa: BLE001 - never fatal
             log.warning("activity feed not saved: %s", e)
+            await guard.failed(e)
 
 
-async def ark_update_watch(store, interval=1800, panel=None):
+async def ark_update_watch(store, interval=1800, panel=None, sleep=asyncio.sleep):
     """Notice new ARK builds and mod versions, and apply a staged one when the window
     opens. One loop, because both jobs are the same question asked at two intervals.
 
@@ -3801,7 +3829,10 @@ async def ark_update_watch(store, interval=1800, panel=None):
     nobody asked it to.
     """
     from . import staging as stg, updates as upd
+    guard = loopguard.Guard("ark_update_watch", "The ARK update check and update window",
+                            sleep=sleep)
     while True:
+        guard.tick()
         try:
             root = layout.ark_root_of(store)
             status = await asyncio.to_thread(upd.look, store, root)
@@ -3857,7 +3888,8 @@ async def ark_update_watch(store, interval=1800, panel=None):
                             opening_event="ark.window_open")
         except Exception as e:                          # a bad night must not kill it
             log.error("ARK update check failed: %s", e)
-        await asyncio.sleep(interval)
+            await guard.failed(e)
+        await sleep(interval)
 
 
 # ---------------------------------------------------------------- the automatic restore
@@ -4010,7 +4042,8 @@ def after_refused_apply(store, detail, **kw):
         return None
 
 
-async def auto_restore_watch(store, interval=600, sleep_first=True):
+async def auto_restore_watch(store, interval=600, sleep_first=True, sleep=asyncio.sleep,
+                             **kw):
     """Every ten minutes, look for a held map with a damaged world and restore it.
 
     For the maps that are already held - the live situation this was built in - and for
@@ -4018,20 +4051,23 @@ async def auto_restore_watch(store, interval=600, sleep_first=True):
     apply that is running will call the pass itself if it refuses, and one that is not
     will be finished by the next look.
     """
+    guard = loopguard.Guard("auto_restore_watch", "Automatic restore", sleep=sleep)
     while True:
         if sleep_first:
-            await asyncio.sleep(interval)
+            await sleep(interval)
         sleep_first = True
+        guard.tick()
         try:
             if store.get("auto_restore") and updatesctl.held_down(store) \
                     and not APPLY_LOCK.locked():
                 # No await between the check and the acquire, so nothing can take the
                 # lock in between: asyncio only switches tasks at an await.
                 async with APPLY_LOCK:
-                    await asyncio.to_thread(auto_restore_pass, store,
-                                            locked=lambda: False)
+                    await asyncio.to_thread(
+                        lambda: auto_restore_pass(store, locked=lambda: False, **kw))
         except Exception as e:                       # a bad pass must not kill it
             log.error("automatic restore check failed: %s", e)
+            await guard.failed(e)
 
 
 # ---------------------------------------------------------------- outside stops
@@ -4170,14 +4206,17 @@ async def external_stop_watch(store, stream=None, backoff=(2, 5, 15, 30, 60),
     sleep = sleep or asyncio.sleep
     stream = stream or (lambda: dockerctl.events(clusterctl.project(store)))
     seen, tries, n = {}, 0, 0
+    guard = loopguard.Guard("external_stop_watch", "The outside-stop watch", sleep=sleep)
     while rounds is None or n < rounds:
         n += 1
+        guard.tick()
         try:
             got = await asyncio.to_thread(follow_stops, store, stream(), seen=seen)
             tries = 0 if got else tries + 1
         except Exception as e:                       # noqa: BLE001 - reconnect
             tries += 1
             log.info("docker events stream failed (%s) - reconnecting", e)
+            await guard.failed(e)
         await sleep(backoff[min(max(tries - 1, 0), len(backoff) - 1)])
 
 
@@ -4659,8 +4698,10 @@ async def boot_watch(store, interval=30, status=None, sleep=asyncio.sleep,
     from . import progress
     typical = progress.TYPICAL[0].upper() + progress.TYPICAL[1:] + "."
     last_said, last_text, open_story = 0.0, "", False
+    guard = loopguard.Guard("boot_watch", "The map boot watch", sleep=sleep)
     while True:
         await sleep(interval)
+        guard.tick()
         try:
             maps = await asyncio.to_thread(_boot_rows, store, status)
             BOOT_INFO.update(maps=maps, at=now())
@@ -4685,6 +4726,7 @@ async def boot_watch(store, interval=30, status=None, sleep=asyncio.sleep,
                 last_said, last_text, open_story = now(), detail, True
         except Exception as e:                           # noqa: BLE001 - never fatal
             log.info("boot watch skipped: %s", e)
+            await guard.failed(e)
 
 
 # Last in the file, and it has to stay last: everything main() reaches for must
