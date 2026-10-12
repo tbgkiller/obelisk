@@ -13,12 +13,11 @@ on:
   # production - and four suites (file modes, fork, symlinks) cannot run there at all.
   # Tests only: the build job below is gated off for pull requests, so a PR never
   # publishes an image, and a fork's PR gets no secrets and no write token.
+  # Every pull request, whatever it touches: the test job is a required check on main,
+  # and a required check that never reports (a docs-only PR filtered out by paths)
+  # would block the PR forever.
   pull_request:
     branches: [main]
-    paths:
-      - "obelisk/**"
-      - "docker/**"
-      - '.github/workflows/publish.yml'
   workflow_dispatch:
 
 jobs:
@@ -41,6 +40,23 @@ jobs:
       # no test ran, and failed every three minutes for a day on the live cluster.
       - name: Static check (ruff)
         run: ruff check --output-format github .
+      # The guard guarding itself: plant the 11 October bug and require the check to
+      # fail on it, with the repo's own config. If ruff.toml stops selecting undefined
+      # names, or the check is otherwise neutered, this step goes red.
+      - name: Static check self-test
+        run: |
+          planted="$RUNNER_TEMP/planted.py"
+          {
+            echo "async def watch():"
+            echo "    async with lock:"
+            echo "        pass"
+          } > "$planted"
+          if out=$(ruff check --no-cache --config ruff.toml "$planted" 2>&1); then
+            echo "::error::the static check passed a file with an undefined name"
+            echo "$out"; exit 1
+          fi
+          echo "$out"
+          echo "$out" | grep -q "F821" || { echo "::error::F821 not reported"; exit 1; }
       - name: Run the suite
         run: |
           fail=0
