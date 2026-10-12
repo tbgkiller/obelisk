@@ -3002,7 +3002,14 @@ async def version_watch():
         await asyncio.sleep(6 * 3600)
 
 
-async def empty_watch(store, interval=60, needed=3):
+# How long an empty-cluster apply that did not go through waits before trying again:
+# 15 minutes, doubling, never more than six hours. Reset when it works, or when what is
+# waiting changes - a new build is a new question, not the old failure again.
+EMPTY_BACKOFF_FIRST = 15 * 60
+EMPTY_BACKOFF_MAX = 6 * 3600
+
+
+async def empty_watch(store, interval=60, needed=3, sleep=asyncio.sleep, now=time.time):
     """Apply what is waiting the moment nobody is playing.
 
     A restart costs whoever is on. An empty cluster costs nobody, so that is when the
@@ -3020,8 +3027,13 @@ async def empty_watch(store, interval=60, needed=3):
     from . import pending as pnd, updates as upd
 
     streak = 0
+    # The backoff. On 11 October this loop announced "being applied now" every three
+    # minutes for over a day, and crashed on the next line every time: the crash went
+    # to the log, the streak reset, three more empty minutes went by, and it said it
+    # again - 200 times in the feed and in Discord, with nothing ever applied.
+    failures, hold_until, failed_on = 0, 0.0, None
     while True:
-        await asyncio.sleep(interval)
+        await sleep(interval)
         try:
             # Is there anything to apply at all? Asked first because it is free and
             # because the answer was wrong: a primed record for the build already
@@ -3032,6 +3044,12 @@ async def empty_watch(store, interval=60, needed=3):
                 store, installed=arkupdate.installed_build(
                     layout.ark_paths(layout.ark_root_of(store))["serverfiles"])[0])
             if not worth:
+                streak = 0
+                continue
+
+            if failed_on is not None and why_worth != failed_on:
+                failures, hold_until, failed_on = 0, 0.0, None   # a new thing to apply
+            if now() < hold_until:
                 streak = 0
                 continue
 
@@ -3057,16 +3075,52 @@ async def empty_watch(store, interval=60, needed=3):
                 continue
 
             log.info("nobody is on and something is waiting: %s", why)
-            announce.say("change.window_open",
-                         "The cluster has been empty for %d minute(s) and %s, so it is "
-                         "being applied now."
-                         % (streak * interval // 60, why_worth))
+            minutes = streak * interval // 60
             streak = 0
-            async with lock:
-                await asyncio.to_thread(_scheduled_apply, store)
+            # The module-level lock, taken before anything is said. This line used to
+            # take a local named `lock`, which stopped existing when the lock argument
+            # was removed on 13 September - so every attempt raised NameError here,
+            # straight after announcing that the apply was starting.
+            async with APPLY_LOCK:
+                try:
+                    # Announced from inside, after the final player count has passed:
+                    # "being applied now" is only said about an apply that is.
+                    result = await asyncio.to_thread(
+                        _scheduled_apply, store, opening=(
+                            "The cluster has been empty for %d minute(s) and %s, so it "
+                            "is being applied now." % (minutes, why_worth)))
+                except Exception as e:                   # noqa: BLE001 - said below
+                    log.exception("the empty-cluster apply raised")
+                    result = (False, "%s: %s" % (e.__class__.__name__, e),
+                              {"raised": True})
+            ok, msg, detail = (tuple(result) + (None, None, None))[:3]
+            detail = detail or {}
+            if ok or detail.get("deferred"):
+                # Done, or somebody arrived on the final count - neither is a failure.
+                failures, hold_until, failed_on = 0, 0.0, None
+                continue
+            failures += 1
+            failed_on = why_worth
+            wait = min(EMPTY_BACKOFF_MAX, EMPTY_BACKOFF_FIRST * 2 ** (failures - 1))
+            hold_until = now() + wait
+            announce.say(
+                "change.empty_apply_failed",
+                "Applying to the empty cluster did not go through: %s. Not trying again "
+                "for %d minute(s)%s." % (
+                    msg or "no reason was given", wait // 60,
+                    " (failed %d times in a row)" % failures if failures > 1 else ""),
+                level="error" if detail.get("raised") else "warning",
+                failures=failures)
         except Exception as e:                          # a bad minute must not kill it
-            log.error("empty-cluster check failed: %s", e)
+            log.exception("empty-cluster check failed")
             streak = 0
+            failures += 1
+            wait = min(EMPTY_BACKOFF_MAX, EMPTY_BACKOFF_FIRST * 2 ** (failures - 1))
+            hold_until = now() + wait
+            announce.say("change.empty_apply_failed",
+                         "The empty-cluster check failed: %s: %s. Not trying again for "
+                         "%d minute(s)." % (e.__class__.__name__, e, wait // 60),
+                         level="error", failures=failures)
 
 
 async def world_watch(store, interval=6 * 3600, check=None, sleep_first=True):
@@ -3792,13 +3846,15 @@ async def ark_update_watch(store, interval=1800, panel=None):
                     # Say what is actually being applied. This announced "a verified
                     # update is staged" whatever the batch held, so a night that applied
                     # one setting change read like a build rollout in the channel.
-                    announce.say("ark.window_open",
-                                 "The update window is open and there are changes "
-                                 "waiting: %s. Applying them." % why)
                     async with APPLY_LOCK:
                         # Through the same routine the button uses, so the scheduled
-                        # path cannot drift from the one exercised by hand.
-                        await asyncio.to_thread(_scheduled_apply, store)
+                        # path cannot drift from the one exercised by hand. The
+                        # announcement goes in with it, said after the final count.
+                        await asyncio.to_thread(
+                            _scheduled_apply, store, opening=(
+                                "The update window is open and there are changes "
+                                "waiting: %s. Applying them." % why),
+                            opening_event="ark.window_open")
         except Exception as e:                          # a bad night must not kill it
             log.error("ARK update check failed: %s", e)
         await asyncio.sleep(interval)
@@ -4125,7 +4181,8 @@ async def external_stop_watch(store, stream=None, backoff=(2, 5, 15, 30, 60),
         await sleep(backoff[min(max(tries - 1, 0), len(backoff) - 1)])
 
 
-def _scheduled_apply(store, force=False):
+def _scheduled_apply(store, force=False, opening=None,
+                     opening_event="change.window_open"):
     """The unattended apply. Same verbs as the button, assembled in one place.
 
     The player count is taken again here, always. Whatever decided to call this did so
@@ -4146,7 +4203,12 @@ def _scheduled_apply(store, force=False):
                          "Changes were about to be applied to an empty cluster, but %s "
                          "answered differently on the final check. Left for later."
                          % who)
-            return False, "somebody is on after all", {}
+            return False, "somebody is on after all", {"deferred": True}
+
+    # Said here, after the final count, so "applying now" is never said about an apply
+    # that was about to be called off.
+    if opening:
+        announce.say(opening_event, opening)
 
     def warn(minutes, build):
         password = str(store.get("admin_password") or "")
