@@ -1082,6 +1082,25 @@ def boot_detail(s):
     return "".join(bits)
 
 
+def render_loop_failures(rows):
+    """Red, at the top of the Cluster page: background jobs that keep failing.
+
+    Each of them catches everything so one bad pass cannot take the UI down, which also
+    meant a job broken the same way for a day looked exactly like one that was fine.
+    """
+    if not rows:
+        return ""
+    items = "".join(
+        '<li><b>%s</b> has failed %d times in a row: <code>%s</code>. Next try in about '
+        '%d minute(s).</li>'
+        % (_e(r.get("label")), int(r.get("count") or 0), _e(r.get("error")),
+           max(0, int(((r.get("retry_at") or 0) - time.time()) // 60)))
+        for r in rows)
+    return ('<div class=problem><b>A background job keeps failing.</b> Obelisk is '
+            'backing off and will keep retrying. This is a bug: the error below and '
+            '<code>docker logs</code> are what to report.<ul>%s</ul></div>' % items)
+
+
 def render_relay(info):
     """10/10 reachable, in green, or which ones are not, in red - or why it is not up.
 

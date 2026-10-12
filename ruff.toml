@@ -1,0 +1,17 @@
+# The static check CI runs on every pull request. Deliberately narrow: these are the
+# errors that are bugs whatever the style, and the ones that would have stopped the
+# 11 October incident - `async with lock:` on a name that no longer existed, in a path
+# no test reached, which failed every three minutes for a day.
+#
+#   E9    the file does not parse
+#   F63   comparisons that are always true or false (`is` with a literal, ...)
+#   F7    statements in the wrong place (`return` outside a function, ...)
+#   F82   undefined names (F821, the incident), undefined exports, use before assignment
+#   F811  a name redefined before it was used
+#   F841  a local assigned and never used
+#
+# Run it locally the same way: `ruff check .`
+target-version = "py312"
+
+[lint]
+select = ["E9", "F63", "F7", "F82", "F811", "F841"]

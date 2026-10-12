@@ -143,8 +143,6 @@ def generate_compose(store, project="ark", in_use_ports=None, wait_for_master=No
     paths     = layout.ark_paths(ark)
     serverfiles = paths["serverfiles"]
     image     = store.get("ark_image")
-    game_base = int(store.get("game_port_base"))
-    rcon_base = int(store.get("rcon_port_base"))
     net       = "%s-net" % project
     master    = by_key[chosen[0]["key"]]["instance"]
 
@@ -307,7 +305,6 @@ def _obelisk_host(store):
     Asked of Docker like everything else. Falling back to the Ark folder's sibling keeps
     a generated file readable rather than empty if the socket cannot answer.
     """
-    from . import install
     host, _how = install.host_path_of(install.container_root())
     if host:
         return host

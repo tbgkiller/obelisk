@@ -930,7 +930,7 @@ async def run_discord(relay):
                     r = (await rcon(hp[0], hp[1], "ListPlayers")).strip()
                     names = [p["name"] for p in parse_players(r)]
                     out.append(f"**{label}**: " + (", ".join(names) if names else "nobody"))
-                except Exception as e:
+                except Exception:
                     out.append(f"**{label}**: unreachable")
             await reply("\n".join(out)); return
         if cmd == "!broadcast":
